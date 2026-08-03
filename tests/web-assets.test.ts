@@ -29,6 +29,8 @@ describe("web assets", () => {
     expect(qaResponse.statusCode).toBe(200);
     const knowledgeResponse = await app.inject({ method: "GET", url: "/knowledge" });
     expect(knowledgeResponse.statusCode).toBe(200);
+    const rubricsResponse = await app.inject({ method: "GET", url: "/rubrics" });
+    expect(rubricsResponse.statusCode).toBe(200);
     expect(qaResponse.body).toContain("课程资料库");
     const assetResponse = await app.inject({ method: "GET", url: "/assets/app.js" });
     expect(assetResponse.statusCode).toBe(200);
