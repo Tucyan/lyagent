@@ -172,6 +172,44 @@ describe("rubric versioning", () => {
     await expect(recovered.replaceDraft(assignment.id, draft.version, rubric)).rejects.toBeInstanceOf(RubricConflictError);
   });
 
+  it("idempotently recovers a crash after draft deletion before commit-marker deletion", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+    const draft = await service.createDraft(assignment.id, rubric);
+    const failing = new RubricService(service.root, { afterFreezeDraftDelete: () => { throw new Error("simulated crash after draft delete"); } });
+
+    await expect(failing.freeze(assignment.id, draft.version, [])).rejects.toThrow("simulated crash after draft delete");
+    const recovered = new RubricService(service.root);
+
+    await expect(recovered.getDraft(assignment.id)).resolves.toBeUndefined();
+    await expect(recovered.getDraft(assignment.id)).resolves.toBeUndefined();
+  });
+
+  it("serializes reads with an in-progress freeze and commits its timestamp", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+    const draft = await service.createDraft(assignment.id, rubric);
+    let releaseFreeze: (() => void) | undefined;
+    let signalPaused: (() => void) | undefined;
+    const freezePaused = new Promise<void>((resolve) => { signalPaused = resolve; });
+    const paused = new RubricService(service.root, {
+      afterFreezeVersionWrite: async () => {
+        signalPaused?.();
+        await new Promise<void>((resolve) => { releaseFreeze = resolve; });
+      },
+    });
+    const freezing = paused.freeze(assignment.id, draft.version, []);
+    await freezePaused;
+    const reading = paused.getDraft(assignment.id);
+
+    releaseFreeze?.();
+    const frozen = await freezing;
+    await expect(reading).resolves.toBeUndefined();
+    await expect(paused.getAssignment(assignment.id)).resolves.toMatchObject({ updatedAt: frozen.frozenAt });
+  });
+
   it("serializes concurrent draft replacements and freezes for one assignment", async () => {
     const service = await serviceForTest();
     const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });

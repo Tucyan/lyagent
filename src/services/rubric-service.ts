@@ -44,6 +44,7 @@ export interface RubricDesignSession {
 
 export interface RubricServiceOptions {
   afterFreezeVersionWrite?: (assignmentId: string, version: number) => void | Promise<void>;
+  afterFreezeDraftDelete?: (assignmentId: string, version: number) => void | Promise<void>;
 }
 
 interface RubricFreezeCommit {
@@ -84,11 +85,13 @@ export class RubricService {
   private readonly filesystem: SafeFilesystem;
   private readonly mutationTails = new Map<string, Promise<void>>();
   private readonly afterFreezeVersionWrite?: RubricServiceOptions["afterFreezeVersionWrite"];
+  private readonly afterFreezeDraftDelete?: RubricServiceOptions["afterFreezeDraftDelete"];
 
   constructor(root: string, options: RubricServiceOptions = {}) {
     this.root = path.resolve(root);
     this.filesystem = new SafeFilesystem(this.root, { allowedExtensions: new Set([".json", ".txt", ".md"]) });
     this.afterFreezeVersionWrite = options.afterFreezeVersionWrite;
+    this.afterFreezeDraftDelete = options.afterFreezeDraftDelete;
   }
 
   async createAssignment(input: { title: string; totalScore: number; requirements: string; sources: RubricSourceInput[] }): Promise<RubricAssignment> {
@@ -164,7 +167,7 @@ export class RubricService {
       if (selectedMode !== "additive" && selectedMode !== "deductive" && selectedMode !== "hybrid") throw new RubricServiceError("Rubric scoring mode is invalid");
       const existing = await this.getDesignSession(assignmentId);
       if (existing?.selectedMode === selectedMode) return existing;
-      if (await this.getDraft(assignmentId)) throw new RubricServiceError("The scoring mode cannot change after a rubric draft exists");
+      if (await this.getDraftUnlocked(assignmentId)) throw new RubricServiceError("The scoring mode cannot change after a rubric draft exists");
       if ((await this.listVersions(assignmentId)).length > 0) throw new RubricServiceError("The scoring mode cannot change after a rubric version is frozen");
       const session: RubricDesignSession = { assignmentId, selectedMode, updatedAt: new Date().toISOString() };
       await this.writeDesignSession(assignmentId, session);
@@ -190,7 +193,7 @@ export class RubricService {
 
   private async createDraftUnlocked(assignmentId: string, rubric: Rubric, baseRubricVersion?: number, conflictIfDraftExists = false): Promise<RubricDraft> {
     const assignment = await this.getAssignment(assignmentId);
-    if (await this.getDraft(assignmentId)) {
+    if (await this.getDraftUnlocked(assignmentId)) {
       if (conflictIfDraftExists) throw new RubricConflictError();
       throw new RubricServiceError("Assignment already has an editable rubric draft");
     }
@@ -203,6 +206,10 @@ export class RubricService {
   }
 
   async getDraft(assignmentId: string): Promise<RubricDraft | undefined> {
+    return this.mutateAssignment(assignmentId, () => this.getDraftUnlocked(assignmentId));
+  }
+
+  private async getDraftUnlocked(assignmentId: string): Promise<RubricDraft | undefined> {
     await this.getAssignment(assignmentId);
     await this.reconcileFreezeCommit(assignmentId);
     try {
@@ -216,7 +223,7 @@ export class RubricService {
   async replaceDraft(assignmentId: string, expectedVersion: number, rubric: Rubric): Promise<RubricDraft> {
     return this.mutateAssignment(assignmentId, async () => {
       const assignment = await this.getAssignment(assignmentId);
-      const draft = await this.getDraft(assignmentId);
+      const draft = await this.getDraftUnlocked(assignmentId);
       if (!draft) throw new RubricConflictError();
       if (draft.version !== expectedVersion) throw new RubricConflictError();
       await this.assertRubricMatchesAssignment(assignment, rubric);
@@ -230,7 +237,7 @@ export class RubricService {
   async freeze(assignmentId: string, expectedVersion: number, acknowledgedWarningCodes: string[]): Promise<FrozenRubricVersion> {
     return this.mutateAssignment(assignmentId, async () => {
       const assignment = await this.getAssignment(assignmentId);
-      const draft = await this.getDraft(assignmentId);
+      const draft = await this.getDraftUnlocked(assignmentId);
       if (!draft) throw new RubricConflictError();
       if (draft.version !== expectedVersion) throw new RubricConflictError();
       const validation = validateRubric(draft.rubric);
@@ -248,6 +255,7 @@ export class RubricService {
       await this.filesystem.writeText(this.versionFile(assignmentId, version), stringify(frozen));
       await this.afterFreezeVersionWrite?.(assignmentId, version);
       await this.filesystem.removeFile(this.draftFile(assignmentId));
+      await this.afterFreezeDraftDelete?.(assignmentId, version);
       await this.filesystem.removeFile(this.freezeCommitFile(assignmentId));
       await this.writeAssignment({ ...assignment, updatedAt: frozenAt });
       return frozen;
@@ -286,7 +294,7 @@ export class RubricService {
   }
 
   private async requireDraft(assignmentId: string): Promise<RubricDraft> {
-    const draft = await this.getDraft(assignmentId);
+    const draft = await this.getDraftUnlocked(assignmentId);
     if (!draft) throw new RubricServiceError("Assignment does not have an editable rubric draft");
     return draft;
   }
@@ -330,8 +338,16 @@ export class RubricService {
       if (error instanceof RubricServiceError && error.message === "Frozen rubric version was not found") return;
       throw error;
     }
-    await this.filesystem.removeFile(this.draftFile(assignmentId));
-    await this.filesystem.removeFile(this.freezeCommitFile(assignmentId));
+    await this.removeFileIfPresent(this.draftFile(assignmentId));
+    await this.removeFileIfPresent(this.freezeCommitFile(assignmentId));
+  }
+
+  private async removeFileIfPresent(relativePath: string): Promise<void> {
+    try {
+      await this.filesystem.removeFile(relativePath);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 
   private async mutateAssignment<T>(assignmentId: string, action: (waited: boolean) => Promise<T>): Promise<T> {

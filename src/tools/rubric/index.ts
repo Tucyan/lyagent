@@ -23,7 +23,7 @@ const SOURCE_EXCERPT_LIMIT = 12_000;
 export function createRubricDesignerTools(rubricService: RubricService, assignmentId: string, selectedMode: Rubric["mode"]): RubricDesignerTools {
   let question: RubricQuestion | undefined;
   let updatedDraft: RubricDraft | undefined;
-  const emptySchema = Type.Object({});
+  const emptySchema = Type.Object({}, { additionalProperties: false });
   const rubricValue = rubricParameterSchema(selectedMode);
 
   const readAssignmentContext: AgentTool<typeof emptySchema> = {
@@ -35,7 +35,7 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
     execute: async () => ({ content: [{ type: "text", text: JSON.stringify(await rubricService.getAssignment(assignmentId)) }], details: {} }),
   };
 
-  const readSourceSchema = Type.Object({ sourceId: Type.String({ minLength: 1, maxLength: 80 }) });
+  const readSourceSchema = Type.Object({ sourceId: Type.String({ minLength: 1, maxLength: 80 }) }, { additionalProperties: false });
   const readRubricSource: AgentTool<typeof readSourceSchema> = {
     name: "read_rubric_source",
     label: "Read rubric source",
@@ -69,7 +69,7 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
     execute: async () => ({ content: [{ type: "text", text: JSON.stringify(await rubricService.getDraft(assignmentId)) }], details: {} }),
   };
 
-  const createDraftSchema = Type.Object({ rubric: rubricValue });
+  const createDraftSchema = Type.Object({ rubric: rubricValue }, { additionalProperties: false });
   const createRubricDraft: AgentTool<typeof createDraftSchema> = {
     name: "create_rubric_draft",
     label: "Create rubric draft",
@@ -83,7 +83,7 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
     },
   };
 
-  const replaceDraftSchema = Type.Object({ expectedVersion: Type.Integer({ minimum: 1 }), rubric: rubricValue });
+  const replaceDraftSchema = Type.Object({ expectedVersion: Type.Integer({ minimum: 1 }), rubric: rubricValue }, { additionalProperties: false });
   const replaceRubricDraft: AgentTool<typeof replaceDraftSchema> = {
     name: "replace_rubric_draft",
     label: "Update rubric draft",
@@ -97,7 +97,7 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
     },
   };
 
-  const validateRubricSchema = Type.Object({ rubric: rubricValue });
+  const validateRubricSchema = Type.Object({ rubric: rubricValue }, { additionalProperties: false });
   const validateRubricTool: AgentTool<typeof validateRubricSchema> = {
     name: "validate_rubric",
     label: "Validate rubric",
@@ -110,7 +110,7 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
   const askQuestionSchema = Type.Object({
     question: Type.String({ minLength: 1, maxLength: 2_000 }),
     options: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 2, maxItems: 6 })),
-  });
+  }, { additionalProperties: false });
   const askRubricQuestion: AgentTool<typeof askQuestionSchema> = {
     name: "ask_rubric_question",
     label: "Ask rubric question",

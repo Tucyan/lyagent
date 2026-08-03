@@ -86,6 +86,7 @@ describe("rubric designer tools", () => {
     expect(JSON.stringify(createTool!.parameters)).toContain('"const":"additive"');
     expect(JSON.stringify(validateTool!.parameters)).toContain('"const":"additive"');
     expect(Value.Check(createTool!.parameters, { rubric: { ...additiveRubric, unexpected: "not allowed" } })).toBe(false);
+    expect(Value.Check(createTool!.parameters, { rubric: additiveRubric, unexpected: "not allowed" })).toBe(false);
     await expect(createTool!.execute("test", { rubric: deductiveRubric })).rejects.toThrow("does not match the selected scoring mode");
   });
 
@@ -219,6 +220,43 @@ describe("rubric designer agent", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify({ options }))])]);
+
+    await expect(createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id })
+      .recommendModes(["Prefer evidence and clear argumentation."]))
+      .rejects.toThrow("invalid scoring-mode recommendation");
+  });
+
+  it("rejects an unexpected top-level field in a mode recommendation", async () => {
+    const { service, assignment } = await fixture();
+    const faux = fauxProvider({ tokensPerSecond: 10_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify({
+      options: [
+        { mode: "additive", recommended: true, reason: "Clear criterion weights." },
+        { mode: "deductive", recommended: false },
+        { mode: "hybrid", recommended: false },
+      ],
+      unexpected: "not allowed",
+    }))])]);
+
+    await expect(createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id })
+      .recommendModes(["Prefer evidence and clear argumentation."]))
+      .rejects.toThrow("invalid scoring-mode recommendation");
+  });
+
+  it("rejects an unexpected field in a mode recommendation option", async () => {
+    const { service, assignment } = await fixture();
+    const faux = fauxProvider({ tokensPerSecond: 10_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify({
+      options: [
+        { mode: "additive", recommended: true, reason: "Clear criterion weights.", unexpected: "not allowed" },
+        { mode: "deductive", recommended: false },
+        { mode: "hybrid", recommended: false },
+      ],
+    }))])]);
 
     await expect(createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id })
       .recommendModes(["Prefer evidence and clear argumentation."]))

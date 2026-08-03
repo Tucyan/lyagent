@@ -12,8 +12,8 @@ const modeRecommendationSchema = z.object({
     recommended: z.boolean(),
     reason: z.string().trim().min(1).max(2_000).optional(),
     benefit: z.string().trim().min(1).max(2_000).optional(),
-  })).length(3),
-}).superRefine((value, context) => {
+  }).strict()).length(3),
+}).strict().superRefine((value, context) => {
   if (new Set(value.options.map((option) => option.mode)).size !== modes.length) context.addIssue({ code: "custom", message: "Each scoring mode must appear exactly once" });
   if (value.options.filter((option) => option.recommended).length !== 1) context.addIssue({ code: "custom", message: "Exactly one scoring mode must be recommended" });
   for (const option of value.options) {
