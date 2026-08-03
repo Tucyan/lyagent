@@ -93,6 +93,33 @@ describe("rubric designer agent", () => {
     ]);
   });
 
+  it.each([
+    ["an incomplete mode list", [
+      { mode: "additive", recommended: true, reason: "Fits weighted criteria." },
+      { mode: "deductive", recommended: false },
+    ]],
+    ["multiple recommended options", [
+      { mode: "additive", recommended: true, reason: "Fits weighted criteria." },
+      { mode: "deductive", recommended: true, reason: "Fits common-error rules." },
+      { mode: "hybrid", recommended: false },
+    ]],
+    ["a blank reason for the recommended option", [
+      { mode: "additive", recommended: true, reason: "   " },
+      { mode: "deductive", recommended: false },
+      { mode: "hybrid", recommended: false },
+    ]],
+  ])("rejects %s in a mode recommendation", async (_description, options) => {
+    const { service, assignment } = await fixture();
+    const faux = fauxProvider({ tokensPerSecond: 10_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage([fauxText(JSON.stringify({ options }))])]);
+
+    await expect(createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id })
+      .recommendModes(["Prefer evidence and clear argumentation."]))
+      .rejects.toThrow("invalid scoring-mode recommendation");
+  });
+
   it("captures a structured question with a safe final message", async () => {
     const { service, assignment } = await fixture();
     const faux = fauxProvider({ tokensPerSecond: 10_000 });

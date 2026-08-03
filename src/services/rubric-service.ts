@@ -227,6 +227,8 @@ export class RubricService {
   }
 
   private assertRubricMatchesAssignment(assignment: RubricAssignment, rubric: Rubric): void {
+    const validation = validateRubric(rubric);
+    if (validation.errors.length > 0) throw new RubricValidationError(validation);
     if (rubric.totalScore !== assignment.totalScore) throw new RubricServiceError("Rubric total score must match the assignment total score");
   }
 

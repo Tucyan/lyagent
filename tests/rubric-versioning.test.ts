@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { RubricConflictError, RubricService } from "../src/services/rubric-service.js";
+import { RubricConflictError, RubricService, RubricValidationError } from "../src/services/rubric-service.js";
 import type { Rubric } from "../src/schemas/rubric.js";
 
 const roots: string[] = [];
@@ -71,5 +71,18 @@ describe("rubric versioning", () => {
     expect(revision.rubric.mode).toBe("additive");
     if (revision.rubric.mode !== "additive") throw new Error("Expected additive revision");
     expect(revision.rubric.criteria[0]!.name).toBe("论证质量");
+  });
+
+  it("rejects semantically invalid drafts before creating or replacing stored data", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });
+    const invalid: Rubric = { ...rubric, criteria: [{ ...rubric.criteria[0]!, maxScore: 99 }] };
+
+    await expect(service.createDraft(assignment.id, invalid)).rejects.toBeInstanceOf(RubricValidationError);
+    await expect(service.getDraft(assignment.id)).resolves.toBeUndefined();
+
+    const initial = await service.createDraft(assignment.id, rubric);
+    await expect(service.replaceDraft(assignment.id, initial.version, invalid)).rejects.toBeInstanceOf(RubricValidationError);
+    await expect(service.getDraft(assignment.id)).resolves.toMatchObject({ version: initial.version, rubric });
   });
 });
