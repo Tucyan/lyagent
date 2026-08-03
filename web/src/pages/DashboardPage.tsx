@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { withJsonHeaders } from "../lib/api";
+import { dashboardQuickActions } from "./dashboard-model";
 
 type DashboardCourse = {
   id: string;
@@ -76,6 +77,7 @@ export function DashboardPage() {
         <div><span>答疑会话</span><strong>{snapshot.totals.qaSessions}</strong><small>本地已保存会话</small></div>
         <div><span>知识版本</span><strong>{snapshot.courses.reduce((total, course) => total + course.releaseCount, 0)}</strong><small>不可变发布记录</small></div>
       </section>
+      <section className="dashboard-card dashboard-quick-actions"><div className="section-heading"><div><h2>快捷开始</h2><p>从常用教学工作中继续。</p></div></div><div>{dashboardQuickActions.map((action) => <a key={action.href} href={action.href}><strong>{action.label}</strong><span>{action.description}</span></a>)}</div></section>
       <section className="dashboard-card"><div className="section-heading"><div><h2>课程状态</h2><p>只统计当前已发布资料与本地答疑会话。</p></div><a href="/knowledge">管理课程资料</a></div>
         {snapshot.courses.length === 0 ? <div className="dashboard-empty"><h3>还没有课程</h3><p>先创建课程并导入已整理的 Markdown 资料，随后可发布为答疑可读的知识版本。</p><a href="/knowledge">前往课程资料库</a></div> : <div className="course-table-wrap"><table><thead><tr><th>课程</th><th>资料状态</th><th>文档</th><th>版本</th><th>答疑会话</th><th>最近活动</th><th>操作</th></tr></thead><tbody>{snapshot.courses.map((course) => <tr key={course.id}><td><strong>{course.name}</strong><small>{course.activeRelease ? `当前版本 ${course.activeRelease.id.slice(0, 8)}` : "尚无当前版本"}</small></td><td><span className={`status ${course.knowledgeStatus}`}>{statusLabel[course.knowledgeStatus]}</span></td><td>{course.documentCount}</td><td>{course.releaseCount}</td><td>{course.qaSessionCount}</td><td>{dateTime(course.lastActivityAt)}</td><td className="course-links"><a href={`/knowledge?course=${encodeURIComponent(course.id)}`}>资料</a>{course.knowledgeStatus === "published" ? <a href={`/qa?course=${encodeURIComponent(course.id)}`}>答疑</a> : <span>答疑不可用</span>}</td></tr>)}</tbody></table></div>}
       </section>
