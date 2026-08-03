@@ -1,0 +1,19 @@
+{
+  "deepseekApiKey": "<local-only-key>",
+  "webSearch": {
+    "enabled": true,
+    "provider": "ddgs",
+    "maxResults": 5
+  },
+  "knowledgeReadMaxLines": 100,
+  "sourceReadMaxLines": 200,
+  "searchDefaultResults": 5,
+  "searchMaxResults": 10,
+  "gradingConcurrency": 4,
+  "highConfidenceThreshold": 0.8,
+  "lowConfidenceThreshold": 0.6,
+  "overallReviewThreshold": 0.7,
+  "passingScoreReviewRange": 3,
+  "sessionHistoryMessages": 20,
+  "logLevel": "info"
+}
