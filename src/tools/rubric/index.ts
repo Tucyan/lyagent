@@ -18,11 +18,11 @@ export interface RubricDesignerTools {
  * Creates the complete, fixed allow-list for one rubric-design conversation.
  * The assignment id is deliberately closed over instead of accepted from the model.
  */
-export function createRubricDesignerTools(rubricService: RubricService, assignmentId: string): RubricDesignerTools {
+export function createRubricDesignerTools(rubricService: RubricService, assignmentId: string, selectedMode: Rubric["mode"]): RubricDesignerTools {
   let question: RubricQuestion | undefined;
   let updatedDraft: RubricDraft | undefined;
   const emptySchema = Type.Object({});
-  const rubricValue = Type.Object({}, { additionalProperties: true });
+  const rubricValue = rubricParameterSchema(selectedMode);
 
   const readAssignmentContext: AgentTool<typeof emptySchema> = {
     name: "read_assignment_context",
@@ -56,7 +56,7 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
   const createRubricDraft: AgentTool<typeof createDraftSchema> = {
     name: "create_rubric_draft",
     label: "Create rubric draft",
-    description: "Create the first editable rubric draft for this session. Its totalScore must match the assignment exactly.",
+    description: `Create the first editable ${selectedMode} rubric draft for this session. Its totalScore must match the assignment exactly.`,
     parameters: createDraftSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, parameters) => {
@@ -70,7 +70,7 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
   const replaceRubricDraft: AgentTool<typeof replaceDraftSchema> = {
     name: "replace_rubric_draft",
     label: "Update rubric draft",
-    description: "Replace the current editable draft. Read the draft first and supply its exact version as expectedVersion.",
+    description: `Replace the current editable ${selectedMode} draft. Read the draft first and supply its exact version as expectedVersion.`,
     parameters: replaceDraftSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, parameters) => {
@@ -116,4 +116,74 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
 
 function parseRubric(value: unknown): Rubric {
   return rubricSchema.parse(value);
+}
+
+function rubricParameterSchema(mode: Rubric["mode"]) {
+  const score = Type.Number({ minimum: 0 });
+  const positiveScore = Type.Number({ exclusiveMinimum: 0 });
+  const id = Type.String({ minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]*$" });
+  const level = Type.Object({
+    id,
+    minScore: score,
+    maxScore: score,
+    condition: Type.String({ minLength: 1, maxLength: 2_000 }),
+  }, { additionalProperties: false });
+  const criterion = Type.Object({
+    id,
+    name: Type.String({ minLength: 1, maxLength: 160 }),
+    description: Type.String({ minLength: 1, maxLength: 4_000 }),
+    maxScore: positiveScore,
+    scorePolicy: Type.Union([Type.Literal("exact-level"), Type.Literal("range"), Type.Literal("continuous")]),
+    evidenceRequired: Type.Boolean(),
+    levels: Type.Optional(Type.Array(level, { maxItems: 20 })),
+  }, { additionalProperties: false });
+  const overlapGroup = Type.Object({
+    id,
+    aggregation: Type.Union([Type.Literal("highest-only"), Type.Literal("sum")]),
+  }, { additionalProperties: false });
+  const deductionRule = Type.Object({
+    id,
+    name: Type.String({ minLength: 1, maxLength: 160 }),
+    condition: Type.String({ minLength: 1, maxLength: 2_000 }),
+    deduction: positiveScore,
+    maxDeduction: positiveScore,
+    occurrence: Type.Union([Type.Literal("once"), Type.Literal("per-occurrence")]),
+    evidenceRequired: Type.Boolean(),
+    overlapGroup: Type.Optional(id),
+  }, { additionalProperties: false });
+  const bonusRule = Type.Object({
+    id,
+    name: Type.String({ minLength: 1, maxLength: 160 }),
+    condition: Type.String({ minLength: 1, maxLength: 2_000 }),
+    bonus: positiveScore,
+    maxBonus: positiveScore,
+    occurrence: Type.Union([Type.Literal("once"), Type.Literal("per-occurrence")]),
+    evidenceRequired: Type.Boolean(),
+    overlapGroup: Type.Optional(id),
+  }, { additionalProperties: false });
+
+  if (mode === "additive") return Type.Object({
+    schemaVersion: Type.Literal("1.0"),
+    mode: Type.Literal("additive"),
+    totalScore: positiveScore,
+    partialCreditAllowed: Type.Boolean(),
+    criteria: Type.Array(criterion, { minItems: 1, maxItems: 40 }),
+  }, { additionalProperties: false });
+  if (mode === "deductive") return Type.Object({
+    schemaVersion: Type.Literal("1.0"),
+    mode: Type.Literal("deductive"),
+    totalScore: positiveScore,
+    rules: Type.Array(deductionRule, { minItems: 1, maxItems: 80 }),
+    overlapGroups: Type.Array(overlapGroup, { maxItems: 40 }),
+  }, { additionalProperties: false });
+  return Type.Object({
+    schemaVersion: Type.Literal("1.0"),
+    mode: Type.Literal("hybrid"),
+    totalScore: positiveScore,
+    partialCreditAllowed: Type.Boolean(),
+    criteria: Type.Array(criterion, { minItems: 1, maxItems: 40 }),
+    bonusRules: Type.Array(bonusRule, { maxItems: 40 }),
+    deductionRules: Type.Array(deductionRule, { maxItems: 80 }),
+    overlapGroups: Type.Array(overlapGroup, { maxItems: 40 }),
+  }, { additionalProperties: false });
 }

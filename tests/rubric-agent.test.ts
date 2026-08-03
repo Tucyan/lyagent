@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPiRubricDesigner } from "../src/agents/rubric-designer/agent.js";
+import { createPiRubricDesigner, formatRubricRecommendationSources } from "../src/agents/rubric-designer/agent.js";
 import { RubricService } from "../src/services/rubric-service.js";
 import { createRubricDesignerTools } from "../src/tools/rubric/index.js";
 
@@ -34,6 +34,7 @@ async function fixture() {
     requirements: "Evaluate the report's argument, evidence, and clarity.",
     sources: [{ role: "rubric_draft", name: "draft.md", content: "Prefer evidence and clear argumentation." }],
   });
+  await service.selectMode(assignment.id, "additive");
   return { service, assignment };
 }
 
@@ -50,7 +51,7 @@ describe("rubric designer tools", () => {
       requirements: "Other requirements.",
       sources: [{ role: "note", name: "other.md", content: "Other private source." }],
     });
-    const tools = createRubricDesignerTools(service, assignment.id);
+    const tools = createRubricDesignerTools(service, assignment.id, "additive");
 
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "read_assignment_context",
@@ -66,6 +67,24 @@ describe("rubric designer tools", () => {
 
     const sourceTool = tools.tools.find((tool) => tool.name === "read_rubric_source");
     await expect(sourceTool!.execute("test", { sourceId: other.sources[0]!.id })).rejects.toThrow("Rubric source was not found");
+  });
+
+  it("uses a selected-mode rubric schema and cannot create a different mode", async () => {
+    const { service, assignment } = await fixture();
+    const tools = createRubricDesignerTools(service, assignment.id, "additive");
+    const createTool = tools.tools.find((tool) => tool.name === "create_rubric_draft");
+    const validateTool = tools.tools.find((tool) => tool.name === "validate_rubric");
+    const deductiveRubric = {
+      schemaVersion: "1.0",
+      mode: "deductive",
+      totalScore: 100,
+      rules: [{ id: "late", name: "Late submission", condition: "Submitted after deadline", deduction: 10, maxDeduction: 10, occurrence: "once", evidenceRequired: true }],
+      overlapGroups: [],
+    };
+
+    expect(JSON.stringify(createTool!.parameters)).toContain('"const":"additive"');
+    expect(JSON.stringify(validateTool!.parameters)).toContain('"const":"additive"');
+    await expect(createTool!.execute("test", { rubric: deductiveRubric })).rejects.toThrow("does not match the selected scoring mode");
   });
 });
 
@@ -91,6 +110,51 @@ describe("rubric designer agent", () => {
     expect(recommendation.options.filter((option) => option.recommended)).toEqual([
       expect.objectContaining({ mode: "deductive", reason: "The draft focuses on common mistakes." }),
     ]);
+  });
+
+  it("returns static options without calling Pi when there are no sources", async () => {
+    const { service, assignment } = await fixture();
+    const faux = fauxProvider({ tokensPerSecond: 10_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    const recommendation = await createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id }).recommendModes([]);
+
+    expect(faux.state.callCount).toBe(0);
+    expect(recommendation.options).toHaveLength(3);
+    expect(recommendation.options.filter((option) => option.recommended)).toHaveLength(1);
+  });
+
+  it("caps untrusted source excerpts deterministically before calling Pi", async () => {
+    const { service, assignment } = await fixture();
+    const sources = ["A".repeat(30_000), "B".repeat(30_000)];
+    const formatted = formatRubricRecommendationSources(sources);
+    const faux = fauxProvider({ tokensPerSecond: 10_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    let receivedPrompt = "";
+    faux.setResponses([async (context) => {
+      const message = context.messages.find((candidate) => candidate.role === "user");
+      receivedPrompt = typeof message?.content === "string" ? message.content : message?.content
+        .filter((content) => content.type === "text")
+        .map((content) => content.text)
+        .join("") ?? "";
+      return fauxAssistantMessage([fauxText(JSON.stringify({
+        options: [
+          { mode: "additive", recommended: true, reason: "Clear criterion weights." },
+          { mode: "deductive", recommended: false },
+          { mode: "hybrid", recommended: false },
+        ],
+      }))]);
+    }]);
+
+    await createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id }).recommendModes(sources);
+
+    expect(formatted.length).toBeLessThanOrEqual(24_000);
+    expect(formatted).toContain("[Source 1]");
+    expect(formatted).toContain("[Source 2]");
+    expect(formatted).toContain("untrusted reference text");
+    expect(receivedPrompt).toBe(formatted);
   });
 
   it.each([

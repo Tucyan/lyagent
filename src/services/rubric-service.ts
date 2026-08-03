@@ -36,6 +36,12 @@ export interface RubricDraft {
   updatedAt: string;
 }
 
+export interface RubricDesignSession {
+  assignmentId: string;
+  selectedMode: Rubric["mode"];
+  updatedAt: string;
+}
+
 export interface FrozenRubricVersion {
   version: number;
   hash: string;
@@ -67,6 +73,7 @@ export class RubricValidationError extends RubricServiceError {
 export class RubricService {
   public readonly root: string;
   private readonly filesystem: SafeFilesystem;
+  private readonly mutationTails = new Map<string, Promise<void>>();
 
   constructor(root: string) {
     this.root = path.resolve(root);
@@ -138,11 +145,41 @@ export class RubricService {
     return this.filesystem.readText(this.sourceFile(assignmentId, sourceId));
   }
 
-  async createDraft(assignmentId: string, rubric: Rubric, baseRubricVersion?: number): Promise<RubricDraft> {
+  async selectMode(assignmentId: string, selectedMode: Rubric["mode"]): Promise<RubricDesignSession> {
+    return this.mutateAssignment(assignmentId, async () => {
+      await this.getAssignment(assignmentId);
+      if (selectedMode !== "additive" && selectedMode !== "deductive" && selectedMode !== "hybrid") throw new RubricServiceError("Rubric scoring mode is invalid");
+      const existing = await this.getDesignSession(assignmentId);
+      if (existing?.selectedMode === selectedMode) return existing;
+      if (await this.getDraft(assignmentId)) throw new RubricServiceError("The scoring mode cannot change after a rubric draft exists");
+      if ((await this.listVersions(assignmentId)).length > 0) throw new RubricServiceError("The scoring mode cannot change after a rubric version is frozen");
+      const session: RubricDesignSession = { assignmentId, selectedMode, updatedAt: new Date().toISOString() };
+      await this.writeDesignSession(assignmentId, session);
+      return session;
+    });
+  }
+
+  async getDesignSession(assignmentId: string): Promise<RubricDesignSession | undefined> {
     await this.getAssignment(assignmentId);
+    try {
+      const session = await this.readJson<RubricDesignSession>(this.designSessionFile(assignmentId));
+      if (session.assignmentId !== assignmentId) throw new RubricServiceError("Rubric design session was not found");
+      return session;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  async createDraft(assignmentId: string, rubric: Rubric, baseRubricVersion?: number): Promise<RubricDraft> {
+    return this.mutateAssignment(assignmentId, () => this.createDraftUnlocked(assignmentId, rubric, baseRubricVersion));
+  }
+
+  private async createDraftUnlocked(assignmentId: string, rubric: Rubric, baseRubricVersion?: number): Promise<RubricDraft> {
+    const assignment = await this.getAssignment(assignmentId);
     if (await this.getDraft(assignmentId)) throw new RubricServiceError("Assignment already has an editable rubric draft");
     if (baseRubricVersion !== undefined) await this.getVersion(assignmentId, baseRubricVersion);
-    this.assertRubricMatchesAssignment(await this.getAssignment(assignmentId), rubric);
+    await this.assertRubricMatchesAssignment(assignment, rubric);
     const now = new Date().toISOString();
     const draft: RubricDraft = { version: 1, rubric: rubricSchema.parse(rubric), updatedAt: now, ...(baseRubricVersion === undefined ? {} : { baseRubricVersion }) };
     await this.writeDraft(assignmentId, draft);
@@ -160,35 +197,41 @@ export class RubricService {
   }
 
   async replaceDraft(assignmentId: string, expectedVersion: number, rubric: Rubric): Promise<RubricDraft> {
-    const assignment = await this.getAssignment(assignmentId);
-    const draft = await this.requireDraft(assignmentId);
-    if (draft.version !== expectedVersion) throw new RubricConflictError();
-    this.assertRubricMatchesAssignment(assignment, rubric);
-    const updated: RubricDraft = { ...draft, version: draft.version + 1, rubric: rubricSchema.parse(rubric), updatedAt: new Date().toISOString() };
-    await this.writeDraft(assignmentId, updated);
-    await this.writeAssignment({ ...assignment, updatedAt: updated.updatedAt });
-    return updated;
+    return this.mutateAssignment(assignmentId, async () => {
+      const assignment = await this.getAssignment(assignmentId);
+      const draft = await this.getDraft(assignmentId);
+      if (!draft) throw new RubricConflictError();
+      if (draft.version !== expectedVersion) throw new RubricConflictError();
+      await this.assertRubricMatchesAssignment(assignment, rubric);
+      const updated: RubricDraft = { ...draft, version: draft.version + 1, rubric: rubricSchema.parse(rubric), updatedAt: new Date().toISOString() };
+      await this.writeDraft(assignmentId, updated);
+      await this.writeAssignment({ ...assignment, updatedAt: updated.updatedAt });
+      return updated;
+    });
   }
 
   async freeze(assignmentId: string, expectedVersion: number, acknowledgedWarningCodes: string[]): Promise<FrozenRubricVersion> {
-    const assignment = await this.getAssignment(assignmentId);
-    const draft = await this.requireDraft(assignmentId);
-    if (draft.version !== expectedVersion) throw new RubricConflictError();
-    const validation = validateRubric(draft.rubric);
-    if (validation.errors.length > 0) throw new RubricValidationError(validation);
-    const requiredWarnings = validation.warnings.map((warning) => warning.code).sort();
-    if (JSON.stringify([...new Set(acknowledgedWarningCodes)].sort()) !== JSON.stringify(requiredWarnings)) {
-      throw new RubricServiceError("Current rubric warnings must be acknowledged before freezing");
-    }
-    const versions = await this.listVersions(assignmentId);
-    const version = (versions[0]?.version ?? 0) + 1;
-    const frozenAt = new Date().toISOString();
-    const hash = hashJson({ assignmentId, version, rubric: draft.rubric });
-    const frozen: FrozenRubricVersion = { version, hash, frozenAt, rubric: draft.rubric };
-    await this.filesystem.writeText(this.versionFile(assignmentId, version), stringify(frozen));
-    await this.filesystem.removeFile(this.draftFile(assignmentId));
-    await this.writeAssignment({ ...assignment, updatedAt: frozenAt });
-    return frozen;
+    return this.mutateAssignment(assignmentId, async () => {
+      const assignment = await this.getAssignment(assignmentId);
+      const draft = await this.getDraft(assignmentId);
+      if (!draft) throw new RubricConflictError();
+      if (draft.version !== expectedVersion) throw new RubricConflictError();
+      const validation = validateRubric(draft.rubric);
+      if (validation.errors.length > 0) throw new RubricValidationError(validation);
+      const requiredWarnings = validation.warnings.map((warning) => warning.code).sort();
+      if (JSON.stringify([...new Set(acknowledgedWarningCodes)].sort()) !== JSON.stringify(requiredWarnings)) {
+        throw new RubricServiceError("Current rubric warnings must be acknowledged before freezing");
+      }
+      const versions = await this.listVersions(assignmentId);
+      const version = (versions[0]?.version ?? 0) + 1;
+      const frozenAt = new Date().toISOString();
+      const hash = hashJson({ assignmentId, version, rubric: draft.rubric });
+      const frozen: FrozenRubricVersion = { version, hash, frozenAt, rubric: draft.rubric };
+      await this.filesystem.writeText(this.versionFile(assignmentId, version), stringify(frozen));
+      await this.filesystem.removeFile(this.draftFile(assignmentId));
+      await this.writeAssignment({ ...assignment, updatedAt: frozenAt });
+      return frozen;
+    });
   }
 
   async listVersions(assignmentId: string): Promise<FrozenRubricVersion[]> {
@@ -211,8 +254,10 @@ export class RubricService {
   }
 
   async createRevision(assignmentId: string, version: number): Promise<RubricDraft> {
-    const frozen = await this.getVersion(assignmentId, version);
-    return this.createDraft(assignmentId, frozen.rubric, frozen.version);
+    return this.mutateAssignment(assignmentId, async () => {
+      const frozen = await this.getVersion(assignmentId, version);
+      return this.createDraftUnlocked(assignmentId, frozen.rubric, frozen.version);
+    });
   }
 
   async renderVersionMarkdown(assignmentId: string, version: number): Promise<string> {
@@ -226,7 +271,10 @@ export class RubricService {
     return draft;
   }
 
-  private assertRubricMatchesAssignment(assignment: RubricAssignment, rubric: Rubric): void {
+  private async assertRubricMatchesAssignment(assignment: RubricAssignment, rubric: Rubric): Promise<void> {
+    const session = await this.getDesignSession(assignment.id);
+    if (!session) throw new RubricServiceError("Select a scoring mode before creating a rubric draft");
+    if (session.selectedMode !== rubric.mode) throw new RubricServiceError("Rubric mode does not match the selected scoring mode");
     const validation = validateRubric(rubric);
     if (validation.errors.length > 0) throw new RubricValidationError(validation);
     if (rubric.totalScore !== assignment.totalScore) throw new RubricServiceError("Rubric total score must match the assignment total score");
@@ -238,6 +286,25 @@ export class RubricService {
 
   private async writeDraft(assignmentId: string, draft: RubricDraft): Promise<void> {
     await this.filesystem.writeText(this.draftFile(assignmentId), stringify(draft));
+  }
+
+  private async writeDesignSession(assignmentId: string, session: RubricDesignSession): Promise<void> {
+    await this.filesystem.writeText(this.designSessionFile(assignmentId), stringify(session));
+  }
+
+  private async mutateAssignment<T>(assignmentId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.mutationTails.get(assignmentId) ?? Promise.resolve();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => gate);
+    this.mutationTails.set(assignmentId, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await action();
+    } finally {
+      release?.();
+      if (this.mutationTails.get(assignmentId) === tail) this.mutationTails.delete(assignmentId);
+    }
   }
 
   private async readJson<T>(relativePath: string): Promise<T> {
@@ -258,6 +325,10 @@ export class RubricService {
 
   private draftFile(assignmentId: string): string {
     return `${this.rubricsDirectory(assignmentId)}/draft.json`;
+  }
+
+  private designSessionFile(assignmentId: string): string {
+    return `assignments/${assignmentId}/design-session.json`;
   }
 
   private versionFile(assignmentId: string, version: number): string {
