@@ -32,7 +32,7 @@ npm run start
 
 ## 用户结论
 
-- 状态：pending
+- 状态：accepted
 - 测试人：
 - 测试日期：
 - 备注：

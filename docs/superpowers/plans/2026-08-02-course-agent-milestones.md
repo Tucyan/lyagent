@@ -62,8 +62,8 @@ changes_requested → in_progress
 | 里程碑 | 完整用户功能 | 边界 | 当前状态 |
 |---|---|---|---|
 |M1|课程资料库导入、发布、浏览和回滚|MVP Core|accepted|
-|M2|带原文引用的Web课程答疑|MVP Core|ready_for_user_test|
-|M3|加分/减分Rubric设计与版本发布|MVP Core|planned|
+|M2|带原文引用的Web课程答疑|MVP Core|accepted|
+|M3|加分/减分/混合Rubric设计与版本发布|MVP Core|in_progress|
 |M4|单份作业批改、Review和导出|MVP Core|planned|
 |M5|可恢复批量批改和班级汇总|MVP Core|planned|
 |M6|本地备份、恢复和运行诊断|MVP Core|planned|

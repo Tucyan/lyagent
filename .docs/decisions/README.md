@@ -7,6 +7,7 @@
 | ADR | 状态 | 决策 |
 |---|---|---|
 |[0001](0001-filesystem-and-sqlite-boundary.md)|Accepted|业务内容使用文件，任务控制状态使用SQLite|
+|[0002](0002-rubric-canonical-model.md)|Accepted|评分表以结构化JSON冻结，并支持混合计分制|
 
 ## 何时创建或修改
 

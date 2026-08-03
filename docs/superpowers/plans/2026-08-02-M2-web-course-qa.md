@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript ESM、Fastify、Pi SDK、DeepSeek、Zod、React/Vite、Vitest。
 
-**Status:** `ready_for_user_test`（2026-08-02；DDGS 网络搜索已实现并完成自动化回归，等待用户验收）。
+**Status:** `accepted`（2026-08-03；用户确认 M2 验收通过）。
 
 ---
 
