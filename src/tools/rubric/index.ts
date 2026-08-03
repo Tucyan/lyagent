@@ -14,6 +14,8 @@ export interface RubricDesignerTools {
   updatedDraft(): RubricDraft | undefined;
 }
 
+const SOURCE_EXCERPT_LIMIT = 12_000;
+
 /**
  * Creates the complete, fixed allow-list for one rubric-design conversation.
  * The assignment id is deliberately closed over instead of accepted from the model.
@@ -40,7 +42,22 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
     description: "Read one draft-standard or note source that belongs to this rubric session. Use source IDs from read_assignment_context.",
     parameters: readSourceSchema,
     executionMode: "sequential",
-    execute: async (_toolCallId, parameters) => ({ content: [{ type: "text", text: JSON.stringify({ sourceId: parameters.sourceId, content: await rubricService.readSource(assignmentId, parameters.sourceId) }) }], details: {} }),
+    execute: async (_toolCallId, parameters) => {
+      const assignment = await rubricService.getAssignment(assignmentId);
+      const source = assignment.sources.find((candidate) => candidate.id === parameters.sourceId);
+      if (!source) throw new Error("Rubric source was not found");
+      const content = await rubricService.readSource(assignmentId, parameters.sourceId);
+      return {
+        content: [{ type: "text", text: JSON.stringify({
+          sourceId: source.id,
+          label: `Source: ${source.name}`,
+          untrusted: true,
+          excerpt: content.slice(0, SOURCE_EXCERPT_LIMIT),
+          truncated: content.length > SOURCE_EXCERPT_LIMIT,
+        }) }],
+        details: {},
+      };
+    },
   };
 
   const readRubricDraft: AgentTool<typeof emptySchema> = {

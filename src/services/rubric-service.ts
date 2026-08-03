@@ -42,6 +42,15 @@ export interface RubricDesignSession {
   updatedAt: string;
 }
 
+export interface RubricServiceOptions {
+  afterFreezeVersionWrite?: (assignmentId: string, version: number) => void | Promise<void>;
+}
+
+interface RubricFreezeCommit {
+  draftVersion: number;
+  frozenVersion: number;
+}
+
 export interface FrozenRubricVersion {
   version: number;
   hash: string;
@@ -74,10 +83,12 @@ export class RubricService {
   public readonly root: string;
   private readonly filesystem: SafeFilesystem;
   private readonly mutationTails = new Map<string, Promise<void>>();
+  private readonly afterFreezeVersionWrite?: RubricServiceOptions["afterFreezeVersionWrite"];
 
-  constructor(root: string) {
+  constructor(root: string, options: RubricServiceOptions = {}) {
     this.root = path.resolve(root);
     this.filesystem = new SafeFilesystem(this.root, { allowedExtensions: new Set([".json", ".txt", ".md"]) });
+    this.afterFreezeVersionWrite = options.afterFreezeVersionWrite;
   }
 
   async createAssignment(input: { title: string; totalScore: number; requirements: string; sources: RubricSourceInput[] }): Promise<RubricAssignment> {
@@ -131,12 +142,14 @@ export class RubricService {
   }
 
   async renameAssignment(assignmentId: string, title: string): Promise<RubricAssignment> {
-    const assignment = await this.getAssignment(assignmentId);
-    const normalized = title.trim();
-    if (normalized.length === 0 || normalized.length > 120) throw new RubricServiceError("Assignment title must be between 1 and 120 characters");
-    const updated: RubricAssignment = { ...assignment, title: normalized, updatedAt: new Date().toISOString() };
-    await this.writeAssignment(updated);
-    return updated;
+    return this.mutateAssignment(assignmentId, async () => {
+      const assignment = await this.getAssignment(assignmentId);
+      const normalized = title.trim();
+      if (normalized.length === 0 || normalized.length > 120) throw new RubricServiceError("Assignment title must be between 1 and 120 characters");
+      const updated: RubricAssignment = { ...assignment, title: normalized, updatedAt: new Date().toISOString() };
+      await this.writeAssignment(updated);
+      return updated;
+    });
   }
 
   async readSource(assignmentId: string, sourceId: string): Promise<string> {
@@ -172,12 +185,15 @@ export class RubricService {
   }
 
   async createDraft(assignmentId: string, rubric: Rubric, baseRubricVersion?: number): Promise<RubricDraft> {
-    return this.mutateAssignment(assignmentId, () => this.createDraftUnlocked(assignmentId, rubric, baseRubricVersion));
+    return this.mutateAssignment(assignmentId, (waited) => this.createDraftUnlocked(assignmentId, rubric, baseRubricVersion, waited));
   }
 
-  private async createDraftUnlocked(assignmentId: string, rubric: Rubric, baseRubricVersion?: number): Promise<RubricDraft> {
+  private async createDraftUnlocked(assignmentId: string, rubric: Rubric, baseRubricVersion?: number, conflictIfDraftExists = false): Promise<RubricDraft> {
     const assignment = await this.getAssignment(assignmentId);
-    if (await this.getDraft(assignmentId)) throw new RubricServiceError("Assignment already has an editable rubric draft");
+    if (await this.getDraft(assignmentId)) {
+      if (conflictIfDraftExists) throw new RubricConflictError();
+      throw new RubricServiceError("Assignment already has an editable rubric draft");
+    }
     if (baseRubricVersion !== undefined) await this.getVersion(assignmentId, baseRubricVersion);
     await this.assertRubricMatchesAssignment(assignment, rubric);
     const now = new Date().toISOString();
@@ -188,6 +204,7 @@ export class RubricService {
 
   async getDraft(assignmentId: string): Promise<RubricDraft | undefined> {
     await this.getAssignment(assignmentId);
+    await this.reconcileFreezeCommit(assignmentId);
     try {
       return await this.readJson<RubricDraft>(this.draftFile(assignmentId));
     } catch (error: unknown) {
@@ -227,8 +244,11 @@ export class RubricService {
       const frozenAt = new Date().toISOString();
       const hash = hashJson({ assignmentId, version, rubric: draft.rubric });
       const frozen: FrozenRubricVersion = { version, hash, frozenAt, rubric: draft.rubric };
+      await this.writeFreezeCommit(assignmentId, { draftVersion: draft.version, frozenVersion: version });
       await this.filesystem.writeText(this.versionFile(assignmentId, version), stringify(frozen));
+      await this.afterFreezeVersionWrite?.(assignmentId, version);
       await this.filesystem.removeFile(this.draftFile(assignmentId));
+      await this.filesystem.removeFile(this.freezeCommitFile(assignmentId));
       await this.writeAssignment({ ...assignment, updatedAt: frozenAt });
       return frozen;
     });
@@ -254,9 +274,9 @@ export class RubricService {
   }
 
   async createRevision(assignmentId: string, version: number): Promise<RubricDraft> {
-    return this.mutateAssignment(assignmentId, async () => {
+    return this.mutateAssignment(assignmentId, async (waited) => {
       const frozen = await this.getVersion(assignmentId, version);
-      return this.createDraftUnlocked(assignmentId, frozen.rubric, frozen.version);
+      return this.createDraftUnlocked(assignmentId, frozen.rubric, frozen.version, waited);
     });
   }
 
@@ -292,7 +312,30 @@ export class RubricService {
     await this.filesystem.writeText(this.designSessionFile(assignmentId), stringify(session));
   }
 
-  private async mutateAssignment<T>(assignmentId: string, action: () => Promise<T>): Promise<T> {
+  private async writeFreezeCommit(assignmentId: string, commit: RubricFreezeCommit): Promise<void> {
+    await this.filesystem.writeText(this.freezeCommitFile(assignmentId), stringify(commit));
+  }
+
+  private async reconcileFreezeCommit(assignmentId: string): Promise<void> {
+    let commit: RubricFreezeCommit;
+    try {
+      commit = await this.readJson<RubricFreezeCommit>(this.freezeCommitFile(assignmentId));
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    try {
+      await this.getVersion(assignmentId, commit.frozenVersion);
+    } catch (error: unknown) {
+      if (error instanceof RubricServiceError && error.message === "Frozen rubric version was not found") return;
+      throw error;
+    }
+    await this.filesystem.removeFile(this.draftFile(assignmentId));
+    await this.filesystem.removeFile(this.freezeCommitFile(assignmentId));
+  }
+
+  private async mutateAssignment<T>(assignmentId: string, action: (waited: boolean) => Promise<T>): Promise<T> {
+    const waited = this.mutationTails.has(assignmentId);
     const previous = this.mutationTails.get(assignmentId) ?? Promise.resolve();
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -300,7 +343,7 @@ export class RubricService {
     this.mutationTails.set(assignmentId, tail);
     await previous.catch(() => undefined);
     try {
-      return await action();
+      return await action(waited);
     } finally {
       release?.();
       if (this.mutationTails.get(assignmentId) === tail) this.mutationTails.delete(assignmentId);
@@ -325,6 +368,10 @@ export class RubricService {
 
   private draftFile(assignmentId: string): string {
     return `${this.rubricsDirectory(assignmentId)}/draft.json`;
+  }
+
+  private freezeCommitFile(assignmentId: string): string {
+    return `${this.rubricsDirectory(assignmentId)}/freeze-commit.json`;
   }
 
   private designSessionFile(assignmentId: string): string {

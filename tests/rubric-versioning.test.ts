@@ -108,6 +108,70 @@ describe("rubric versioning", () => {
     await expect(service.getDraft(assignment.id)).resolves.toMatchObject({ version: draft.version, rubric });
   });
 
+  it("keeps the selected mode immutable after a draft and after a frozen version", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+    const draft = await service.createDraft(assignment.id, rubric);
+
+    await expect(service.selectMode(assignment.id, "deductive")).rejects.toThrow("cannot change after a rubric draft exists");
+    await expect(service.getDesignSession(assignment.id)).resolves.toMatchObject({ selectedMode: "additive" });
+    await service.freeze(assignment.id, draft.version, []);
+    await expect(service.selectMode(assignment.id, "deductive")).rejects.toThrow("cannot change after a rubric version is frozen");
+    await expect(service.getDesignSession(assignment.id)).resolves.toMatchObject({ selectedMode: "additive" });
+  });
+
+  it("reports conflicts for concurrent draft creation and revision creation", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+
+    const creates = await Promise.allSettled([service.createDraft(assignment.id, rubric), service.createDraft(assignment.id, rubric)]);
+    expect(creates.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(creates.filter((result) => result.status === "rejected").map((result) => (result as PromiseRejectedResult).reason)).toEqual([expect.any(RubricConflictError)]);
+
+    const draft = await service.getDraft(assignment.id);
+    await service.freeze(assignment.id, draft!.version, []);
+    const revisions = await Promise.allSettled([service.createRevision(assignment.id, 1), service.createRevision(assignment.id, 1)]);
+    expect(revisions.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(revisions.filter((result) => result.status === "rejected").map((result) => (result as PromiseRejectedResult).reason)).toEqual([expect.any(RubricConflictError)]);
+  });
+
+  it("serializes renames with draft replacement and freezing", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "Original", totalScore: 100, requirements: "报告", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+    const draft = await service.createDraft(assignment.id, rubric);
+
+    await Promise.all([
+      service.renameAssignment(assignment.id, "After replace"),
+      service.replaceDraft(assignment.id, draft.version, { ...rubric, criteria: [{ ...rubric.criteria[0]!, name: "Updated" }] }),
+    ]);
+    await expect(service.getAssignment(assignment.id)).resolves.toMatchObject({ title: "After replace" });
+
+    const updated = await service.getDraft(assignment.id);
+    await Promise.all([
+      service.renameAssignment(assignment.id, "After freeze"),
+      service.freeze(assignment.id, updated!.version, []),
+    ]);
+    await expect(service.getAssignment(assignment.id)).resolves.toMatchObject({ title: "After freeze" });
+  });
+
+  it("recovers a version write failure before draft removal without leaving an editable draft", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+    const draft = await service.createDraft(assignment.id, rubric);
+    const failing = new RubricService(service.root, { afterFreezeVersionWrite: () => { throw new Error("simulated crash"); } });
+
+    await expect(failing.freeze(assignment.id, draft.version, [])).rejects.toThrow("simulated crash");
+    const recovered = new RubricService(service.root);
+
+    await expect(recovered.listVersions(assignment.id)).resolves.toEqual([expect.objectContaining({ version: 1 })]);
+    await expect(recovered.getDraft(assignment.id)).resolves.toBeUndefined();
+    await expect(recovered.replaceDraft(assignment.id, draft.version, rubric)).rejects.toBeInstanceOf(RubricConflictError);
+  });
+
   it("serializes concurrent draft replacements and freezes for one assignment", async () => {
     const service = await serviceForTest();
     const assignment = await service.createAssignment({ title: "报告评分表", totalScore: 100, requirements: "报告", sources: [] });
