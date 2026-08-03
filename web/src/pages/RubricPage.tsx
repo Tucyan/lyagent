@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { withJsonHeaders } from "../lib/api";
 import { consumeSse } from "../lib/consume-sse";
-import { assignmentIdFromSearch } from "./rubric-page-model";
+import { assignmentIdFromSearch, loadRubricSession } from "./rubric-page-model";
 
 type RubricMode = "additive" | "deductive" | "hybrid";
 type RubricAssignment = { id: string; title: string; totalScore: number; requirements: string; sources: Array<{ id: string; role: "rubric_draft" | "note"; name: string; size: number }> };
@@ -50,15 +50,20 @@ export function RubricPage() {
     setSelectedMode(undefined);
     setDraft(undefined);
     setMessages([]);
-    void Promise.all([
-      api<RubricAssignment>(`/api/rubrics/assignments/${selectedAssignmentId}`),
-      api<{ options: Recommendation[] }>(`/api/rubrics/assignments/${selectedAssignmentId}/recommendations`),
-      api<RubricDraft | null>(`/api/rubrics/assignments/${selectedAssignmentId}/draft`),
-    ]).then(([nextAssignment, recommendation, nextDraft]) => {
-      setAssignment(nextAssignment);
-      setRecommendations(recommendation.options);
-      setDraft(nextDraft ?? undefined);
-      setNotice(nextDraft ? "已打开会话草稿，可继续让 Agent 调整评分标准。" : "请选择评分制度后，再开始与 Agent 设计评分表。");
+    setRecommendations([]);
+    void loadRubricSession({
+      assignment: () => api<RubricAssignment>(`/api/rubrics/assignments/${selectedAssignmentId}`),
+      draft: () => api<RubricDraft | null>(`/api/rubrics/assignments/${selectedAssignmentId}/draft`),
+      recommendations: () => api<{ options: Recommendation[] }>(`/api/rubrics/assignments/${selectedAssignmentId}/recommendations`),
+      onCore: (nextAssignment, nextDraft) => {
+        setAssignment(nextAssignment);
+        setDraft(nextDraft ?? undefined);
+        setNotice(nextDraft ? "已打开会话草稿，可继续让 Agent 调整评分标准。" : "正在加载评分制度建议…");
+      },
+      onRecommendations: (recommendation) => {
+        setRecommendations(recommendation.options);
+        setNotice("请选择评分制度后，再开始与 Agent 设计评分表。");
+      },
     }).catch((error: Error) => setNotice(error.message));
   }, [selectedAssignmentId]);
 
@@ -122,7 +127,7 @@ export function RubricPage() {
   const activeContent = assignment ? <>
     <div className="rubric-session-heading"><div><p className="eyebrow">当前评分会话</p><h2>{assignment.title}</h2><p>{assignment.totalScore} 分 · {assignment.sources.length} 份参考资料</p></div><a href="/rubrics">新建评分表</a></div>
     <details className="rubric-context"><summary>查看作业要求与参考资料</summary><p>{assignment.requirements}</p>{assignment.sources.length > 0 && <ul>{assignment.sources.map((item) => <li key={item.id}>{item.role === "rubric_draft" ? "评分草稿" : "设计备注"}：{item.name}</li>)}</ul>}</details>
-    {!selectedMode ? <section className="rubric-mode-gate"><h3>先选择评分制度</h3><p>选择后才会启用正式对话；带有参考内容的会话会展示 Agent 的推荐。</p><div className="rubric-mode-grid">{recommendations.map((item) => <article key={item.mode} className={item.recommended ? "recommended" : ""}><div><strong>{modeLabel[item.mode]}{item.recommended ? "（推荐）" : ""}</strong><p>{item.reason ?? item.benefit ?? "适用于当前评分场景。"}</p></div><button type="button" className={item.recommended ? "primary-button" : ""} disabled={submitting} onClick={() => void chooseMode(item.mode)}>选择{modeLabel[item.mode]}</button></article>)}</div></section> : <section className="rubric-chat"><div><h3>与评分表 Agent 对话</h3><span>{modeLabel[selectedMode]}</span></div><div className="rubric-message-list">{messages.length === 0 ? <p>请描述你希望的评分维度、权重、扣分规则或等级锚点。</p> : messages.map((message, index) => <p key={`${message.role}-${index}`} className={message.role}>{message.content}</p>)}</div><form onSubmit={(event) => void sendMessage(event)}><textarea value={chatInput} disabled={submitting} onChange={(event) => setChatInput(event.target.value)} placeholder="例如：按论证质量、案例分析和表达规范设计 100 分评分表。" /><button className="primary-button" disabled={submitting || !chatInput.trim()} type="submit">发送</button></form></section>}
+    {!selectedMode ? <section className="rubric-mode-gate"><h3>先选择评分制度</h3><p>选择后才会启用正式对话；带有参考内容的会话会展示 Agent 的推荐。</p><div className="rubric-mode-grid">{recommendations.length === 0 ? <p>正在生成评分制度建议…</p> : recommendations.map((item) => <article key={item.mode} className={item.recommended ? "recommended" : ""}><div><strong>{modeLabel[item.mode]}{item.recommended ? "（推荐）" : ""}</strong><p>{item.reason ?? item.benefit ?? "适用于当前评分场景。"}</p></div><button type="button" className={item.recommended ? "primary-button" : ""} disabled={submitting} onClick={() => void chooseMode(item.mode)}>选择{modeLabel[item.mode]}</button></article>)}</div></section> : <section className="rubric-chat"><div><h3>与评分表 Agent 对话</h3><span>{modeLabel[selectedMode]}</span></div><div className="rubric-message-list">{messages.length === 0 ? <p>请描述你希望的评分维度、权重、扣分规则或等级锚点。</p> : messages.map((message, index) => <p key={`${message.role}-${index}`} className={message.role}>{message.content}</p>)}</div><form onSubmit={(event) => void sendMessage(event)}><textarea value={chatInput} disabled={submitting} onChange={(event) => setChatInput(event.target.value)} placeholder="例如：按论证质量、案例分析和表达规范设计 100 分评分表。" /><button className="primary-button" disabled={submitting || !chatInput.trim()} type="submit">发送</button></form></section>}
   </> : <>
     <div><h2>新建评分会话</h2><p>先记录作业要求和可选的评分草稿或备注；创建后即可选择评分制度。</p></div>
     <form onSubmit={(event) => void createAssignment(event)} className="rubric-create-form"><label>会话名称<input required value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="例如：AI 与生活的融合及挑战 - 作业报告评分表" /></label><label>总分<input required type="number" min="0.01" step="0.01" value={totalScore} onChange={(event) => setTotalScore(event.target.value)} /></label><label>作业要求<textarea required value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="说明作业目标、提交要求和评分重点。" /></label><label>参考内容（可选）<textarea value={source} onChange={(event) => setSource(event.target.value)} placeholder="粘贴评分标准草稿或备注；有内容时会用于生成评分制度建议。" /></label>{source.trim() && <label>参考内容类型<select value={sourceRole} onChange={(event) => setSourceRole(event.target.value as "rubric_draft" | "note")}><option value="rubric_draft">评分标准草稿</option><option value="note">设计备注</option></select></label>}<div className="rubric-form-actions"><button className="primary-button" type="submit" disabled={submitting}>创建并选择评分制度</button></div></form>
