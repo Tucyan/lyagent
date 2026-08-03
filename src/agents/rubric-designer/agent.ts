@@ -93,7 +93,22 @@ export function createPiRubricDesigner(options: PiRubricDesignerOptions): PiRubr
       const abort = () => agent.abort();
       signal?.addEventListener("abort", abort, { once: true });
       try {
-        await agent.prompt(request);
+        const resultTool = await options.rubricService.getDraft(options.assignmentId) ? "replace_rubric_draft" : "create_rubric_draft";
+        await agent.prompt([
+          "You must use the provided rubric tools now.",
+          "Do not return prose.",
+          `First call read_assignment_context. Then call ${resultTool}.`,
+          "Call ask_rubric_question only when essential information is missing.",
+          "Teacher request:",
+          request,
+        ].join("\n"));
+        if (!rubricTools.capturedQuestion() && !rubricTools.updatedDraft()) {
+          await agent.prompt([
+            "You did not use a required rubric tool.",
+            `Do not return prose. Call read_assignment_context, then call ${resultTool} now.`,
+            "Complete the original teacher request using a tool.",
+          ].join("\n"));
+        }
       } finally {
         signal?.removeEventListener("abort", abort);
       }
