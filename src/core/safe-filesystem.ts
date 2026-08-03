@@ -43,6 +43,14 @@ export class SafeFilesystem {
     await rm(resolved);
   }
 
+  async removeDirectory(relativePath: string): Promise<void> {
+    const resolved = this.parseRelativePath(relativePath, { allowDirectory: true });
+    await this.assertSafeExistingPath(resolved, relativePath);
+    const stat = await lstat(resolved);
+    if (!stat.isDirectory()) throw new UnsafePathError(relativePath, "target is not a directory");
+    await rm(resolved, { recursive: true, force: false });
+  }
+
   async copyInto(sourceAbsolutePath: string, targetRelativePath: string): Promise<void> {
     const target = await this.resolveForWrite(targetRelativePath);
     const temporary = `${target}.tmp-${randomUUID()}`;

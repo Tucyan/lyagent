@@ -2,6 +2,7 @@ import path from "node:path";
 import pino from "pino";
 import { createDeepSeekMaterialPlanner } from "./agents/material-import/deepseek.js";
 import { createDeepSeekCourseQaAgentFactory } from "./agents/course-qa/deepseek.js";
+import { createDeepSeekRubricDesignerFactory } from "./agents/rubric-designer/deepseek.js";
 import { createServer } from "./api/server.js";
 import { registerWebAssets } from "./api/web-assets.js";
 import { loadAppConfig } from "./config/app-config.js";
@@ -15,12 +16,14 @@ const logger = pino({ name: "course-agent", level: process.env.LOG_LEVEL ?? "inf
 const config = await loadAppConfig(workspaceRoot);
 const deepseek = createDeepSeekMaterialPlanner(config.deepseekApiKey);
 const courseQa = createDeepSeekCourseQaAgentFactory(config.deepseekApiKey);
+const rubricDesigner = createDeepSeekRubricDesignerFactory(config.deepseekApiKey);
 const ddgs = new DdgsSearchService(createDdgsRunner(undefined, config.webSearch.pythonCommand), { maxResults: config.webSearch.maxResults });
 const webFetcher = new SafeWebFetcher();
 const app = await createServer({
   workspaceRoot,
   ...(deepseek.planner ? { materialPlanner: deepseek.planner } : {}),
   ...(courseQa.factory ? { courseQaAgentFactory: courseQa.factory } : {}),
+  ...(rubricDesigner.factory ? { rubricDesignerFactory: rubricDesigner.factory } : {}),
   ...(config.webSearch.enabled ? { webEvidenceFactory: () => new WebEvidenceService(ddgs, (url) => webFetcher.fetch(url)) } : {}),
   modelStatus: deepseek.status,
 });

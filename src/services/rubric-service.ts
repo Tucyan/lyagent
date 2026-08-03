@@ -155,6 +155,13 @@ export class RubricService {
     });
   }
 
+  async deleteAssignment(assignmentId: string): Promise<void> {
+    return this.mutateAssignment(assignmentId, async () => {
+      await this.getAssignment(assignmentId);
+      await this.filesystem.removeDirectory(`assignments/${assignmentId}`);
+    });
+  }
+
   async readSource(assignmentId: string, sourceId: string): Promise<string> {
     const assignment = await this.getAssignment(assignmentId);
     if (!assignment.sources.some((source) => source.id === sourceId)) throw new RubricServiceError("Rubric source was not found");

@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { ZodError, z } from "zod";
 import { sseComment, sseFrame } from "./streaming/sse.js";
 import type { PiCourseQaAgent } from "../agents/course-qa/agent.js";
@@ -13,15 +13,20 @@ import {
   type KnowledgePlan,
   type SourceSection,
 } from "../services/material-service.js";
+import type { PiRubricDesigner, RubricDesignerOutcome } from "../agents/rubric-designer/agent.js";
+import { rubricSchema, validateRubric } from "../schemas/rubric.js";
+import { RubricConflictError, RubricService, RubricServiceError, RubricValidationError } from "../services/rubric-service.js";
 
 export type MaterialPlanner = (sections: SourceSection[]) => Promise<KnowledgePlan>;
 export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeService["forCourse"]>>, web?: WebEvidenceService) => PiCourseQaAgent;
+export type RubricDesignerFactory = (assignmentId: string, rubricService: RubricService) => PiRubricDesigner;
 
 export interface ServerOptions {
   workspaceRoot: string;
   materialPlanner?: MaterialPlanner;
   courseQaAgentFactory?: CourseQaAgentFactory;
   webEvidenceFactory?: () => WebEvidenceService;
+  rubricDesignerFactory?: RubricDesignerFactory;
   modelStatus?: { provider: string; model: string; configured: boolean };
 }
 
@@ -49,12 +54,27 @@ const contentEditSchema = z.object({
   path: z.string().min(1).max(240),
   content: z.string().max(10 * 1024 * 1024),
 });
+const rubricAssignmentSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  totalScore: z.number().positive(),
+  requirements: z.string().trim().min(1).max(100_000),
+  sources: z.array(z.object({ role: z.enum(["rubric_draft", "note"]), name: z.string().trim().min(1).max(160), content: z.string().max(1024 * 1024) })).max(10).default([]),
+});
+const rubricAssignmentIdSchema = z.object({ assignmentId: z.string().uuid() });
+const rubricVersionParamsSchema = z.object({ assignmentId: z.string().uuid(), version: z.coerce.number().int().positive() });
+const rubricModeSchema = z.object({ mode: z.enum(["additive", "deductive", "hybrid"]) });
+const rubricDraftSchema = z.object({ expectedVersion: z.number().int().nonnegative(), rubric: z.unknown() });
+const rubricValueSchema = z.object({ rubric: z.unknown() });
+const rubricFreezeSchema = z.object({ expectedVersion: z.number().int().positive(), acknowledgedWarningCodes: z.array(z.string().min(1).max(120)).max(100) });
+const rubricChatSchema = z.object({ message: z.string().trim().min(1).max(8_000) });
+const rubricTitleSchema = z.object({ title: z.string().trim().min(1).max(120) });
 
 export async function createServer(options: ServerOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   const materials = new MaterialService(options.workspaceRoot);
   const knowledge = new KnowledgeService(options.workspaceRoot);
   const sessions = new SessionService(options.workspaceRoot);
+  const rubrics = new RubricService(options.workspaceRoot);
   const modelStatus = options.modelStatus ?? { provider: "deepseek", model: "deepseek-v4-flash", configured: false };
   const dashboard = new DashboardService(options.workspaceRoot, modelStatus);
   const planner = options.materialPlanner ?? defaultPlanner;
@@ -64,6 +84,12 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (error instanceof KnowledgeAccessError) return reply.code(error.code === "ACTIVE_RELEASE_NOT_FOUND" ? 409 : 422).send({ code: error.code, message: error.message });
     if (error instanceof SessionNotFoundError) return reply.code(404).send({ code: "SESSION_NOT_FOUND", message: error.message });
     if (error instanceof KnowledgeReleaseError) return reply.code(error.message.includes("changed") ? 409 : 422).send({ code: error.message.includes("changed") ? "CONFLICT" : "KNOWLEDGE_ERROR", message: error.message });
+    if (error instanceof RubricConflictError) return reply.code(409).send({ code: "RUBRIC_CONFLICT", message: "The rubric draft has changed; refresh and try again" });
+    if (error instanceof RubricValidationError) return reply.code(422).send({ code: "RUBRIC_VALIDATION_FAILED", errors: error.validation.errors, warnings: error.validation.warnings });
+    if (error instanceof RubricServiceError) {
+      if (error.message.includes("was not found")) return reply.code(404).send({ code: "RUBRIC_NOT_FOUND", message: "The requested rubric session does not exist" });
+      return reply.code(422).send({ code: "RUBRIC_STATE_ERROR", message: "The rubric request is not valid for the current session state" });
+    }
     const requestError = error as NodeJS.ErrnoException & { statusCode?: unknown };
     if (typeof requestError.statusCode === "number" && requestError.statusCode >= 400 && requestError.statusCode < 500) {
       return reply.code(requestError.statusCode).send({ code: requestError.code ?? "REQUEST_ERROR", message: "Request validation failed" });
@@ -75,6 +101,84 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.get("/api/health", async () => ({ ok: true }));
   app.get("/api/system/model", async () => modelStatus);
   app.get("/api/dashboard", async () => dashboard.snapshot());
+  app.get("/api/rubrics/assignments", async () => rubrics.listAssignments());
+  app.post("/api/rubrics/assignments", async (request, reply) => reply.code(201).send(await rubrics.createAssignment(rubricAssignmentSchema.parse(request.body))));
+  app.get("/api/rubrics/assignments/:assignmentId", async (request) => rubrics.getAssignment(rubricAssignmentIdSchema.parse(request.params).assignmentId));
+  app.patch("/api/rubrics/assignments/:assignmentId", async (request) => {
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    return rubrics.renameAssignment(assignmentId, rubricTitleSchema.parse(request.body).title);
+  });
+  app.delete("/api/rubrics/assignments/:assignmentId", async (request, reply) => {
+    await rubrics.deleteAssignment(rubricAssignmentIdSchema.parse(request.params).assignmentId);
+    return reply.code(204).send();
+  });
+  app.get("/api/rubrics/assignments/:assignmentId/recommendations", async (request) => {
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    const assignment = await rubrics.getAssignment(assignmentId);
+    if (assignment.sources.length === 0 || !options.rubricDesignerFactory) return { source: "static" as const, ...staticRubricRecommendation() };
+    try {
+      const sources = await Promise.all(assignment.sources.map((source) => rubrics.readSource(assignmentId, source.id)));
+      return { source: "model" as const, ...(await options.rubricDesignerFactory(assignmentId, rubrics).recommendModes(sources)) };
+    } catch {
+      return { source: "static" as const, ...staticRubricRecommendation() };
+    }
+  });
+  app.put("/api/rubrics/assignments/:assignmentId/mode", async (request) => {
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    const session = await rubrics.selectMode(assignmentId, rubricModeSchema.parse(request.body).mode);
+    return { ...session, state: options.rubricDesignerFactory ? "ready" : "manual" };
+  });
+  app.put("/api/rubrics/assignments/:assignmentId/mode/stream", async (request, reply) => {
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    const { mode } = rubricModeSchema.parse(request.body);
+    await rubrics.selectMode(assignmentId, mode);
+    if (!options.rubricDesignerFactory) return { selectedMode: mode, state: "manual" };
+    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), "Create the first rubric draft for this assignment.", (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome));
+  });
+  app.get("/api/rubrics/assignments/:assignmentId/draft", async (request) => rubrics.getDraft(rubricAssignmentIdSchema.parse(request.params).assignmentId));
+  app.put("/api/rubrics/assignments/:assignmentId/draft", async (request) => {
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    const payload = rubricDraftSchema.parse(request.body);
+    const parsed = rubricSchema.parse(payload.rubric);
+    if (payload.expectedVersion === 0) return rubrics.createDraft(assignmentId, parsed);
+    return rubrics.replaceDraft(assignmentId, payload.expectedVersion, parsed);
+  });
+  app.post("/api/rubrics/assignments/:assignmentId/validate", async (request, reply) => {
+    rubricAssignmentIdSchema.parse(request.params);
+    const rubric = rubricSchema.parse(rubricValueSchema.parse(request.body).rubric);
+    const validation = validateRubric(rubric);
+    if (validation.errors.length > 0) return reply.code(422).send({ code: "RUBRIC_VALIDATION_FAILED", ...validation });
+    return validation;
+  });
+  app.post("/api/rubrics/assignments/:assignmentId/freeze", async (request, reply) => {
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    const payload = rubricFreezeSchema.parse(request.body);
+    return reply.code(201).send(await rubrics.freeze(assignmentId, payload.expectedVersion, payload.acknowledgedWarningCodes));
+  });
+  app.get("/api/rubrics/assignments/:assignmentId/versions", async (request) => rubrics.listVersions(rubricAssignmentIdSchema.parse(request.params).assignmentId));
+  app.get("/api/rubrics/assignments/:assignmentId/versions/:version", async (request) => {
+    const { assignmentId, version } = rubricVersionParamsSchema.parse(request.params);
+    return rubrics.getVersion(assignmentId, version);
+  });
+  app.post("/api/rubrics/assignments/:assignmentId/versions/:version/revisions", async (request) => {
+    const { assignmentId, version } = rubricVersionParamsSchema.parse(request.params);
+    return rubrics.createRevision(assignmentId, version);
+  });
+  app.get("/api/rubrics/assignments/:assignmentId/versions/:version/export.json", async (request, reply) => {
+    const { assignmentId, version } = rubricVersionParamsSchema.parse(request.params);
+    return reply.type("application/json; charset=utf-8").send(await rubrics.getVersion(assignmentId, version));
+  });
+  app.get("/api/rubrics/assignments/:assignmentId/versions/:version/export.md", async (request, reply) => {
+    const { assignmentId, version } = rubricVersionParamsSchema.parse(request.params);
+    return reply.type("text/markdown; charset=utf-8").send(await rubrics.renderVersionMarkdown(assignmentId, version));
+  });
+  app.post("/api/rubrics/assignments/:assignmentId/messages/stream", async (request, reply) => {
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    const { message } = rubricChatSchema.parse(request.body);
+    if (!await rubrics.getDesignSession(assignmentId)) throw new RubricServiceError("Select a scoring mode before starting rubric design");
+    if (!options.rubricDesignerFactory) return reply.code(200).send({ state: "manual", message: "Manual rubric editing is available while the model is not configured." });
+    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), message, (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome));
+  });
   app.get("/api/courses", async () => materials.listCourses());
   app.post("/api/courses", async (request, reply) => {
     const course = await materials.createCourse(createCourseSchema.parse(request.body).name);
@@ -228,6 +332,55 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   });
 
   return app;
+}
+
+function staticRubricRecommendation() {
+  return {
+    options: [
+      { mode: "additive" as const, recommended: false, benefit: "Makes criterion weights and awarded points easy to review." },
+      { mode: "deductive" as const, recommended: true, reason: "Without source material, a clear baseline with explicit deductions is the safest starting point." },
+      { mode: "hybrid" as const, recommended: false, benefit: "Can combine required criteria with transparent bonuses and deductions." },
+    ],
+  };
+}
+
+async function streamRubricDesign(request: FastifyRequest, reply: FastifyReply, designer: PiRubricDesigner, message: string, persistOutcome: (outcome: RubricDesignerOutcome) => Promise<void>): Promise<FastifyReply> {
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+  });
+  reply.raw.write(sseComment("rubric-designer"));
+  const controller = new AbortController();
+  const abortOnClose = () => { if (!reply.raw.writableEnded) controller.abort(); };
+  request.raw.once("close", abortOnClose);
+  const keepAlive = setInterval(() => { if (!reply.raw.writableEnded) reply.raw.write(sseComment("keep-alive")); }, 15_000);
+  const emit = (event: string, value: unknown) => {
+    if (!controller.signal.aborted && !reply.raw.writableEnded) reply.raw.write(sseFrame(event, value));
+  };
+  try {
+    const outcome = await designer.design(message, controller.signal);
+    if (!controller.signal.aborted) {
+      await persistOutcome(outcome);
+      if (outcome.kind === "question") emit("question", { question: outcome.question });
+      else emit("draft", { version: outcome.draft.version, updatedAt: outcome.draft.updatedAt });
+      emit("final", { kind: outcome.kind, message: outcome.message });
+    }
+  } catch {
+    if (!controller.signal.aborted) emit("error", { code: "RUBRIC_DESIGN_FAILED", message: "The rubric design request could not be completed" });
+  } finally {
+    clearInterval(keepAlive);
+    request.raw.removeListener("close", abortOnClose);
+    if (!reply.raw.writableEnded) reply.raw.end();
+  }
+  return reply;
+}
+
+async function persistRubricDesignOutcome(rubrics: RubricService, assignmentId: string, outcome: RubricDesignerOutcome): Promise<void> {
+  if (outcome.kind !== "draft") return;
+  const stored = await rubrics.getDraft(assignmentId);
+  if (!stored) await rubrics.createDraft(assignmentId, outcome.draft.rubric);
 }
 
 async function defaultPlanner(sections: SourceSection[]): Promise<KnowledgePlan> {
