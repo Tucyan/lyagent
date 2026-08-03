@@ -98,6 +98,11 @@ describe("rubric designer agent", () => {
       { mode: "additive", recommended: true, reason: "Fits weighted criteria." },
       { mode: "deductive", recommended: false },
     ]],
+    ["a three-item list with a duplicate mode", [
+      { mode: "additive", recommended: true, reason: "Fits weighted criteria." },
+      { mode: "additive", recommended: false },
+      { mode: "hybrid", recommended: false },
+    ]],
     ["multiple recommended options", [
       { mode: "additive", recommended: true, reason: "Fits weighted criteria." },
       { mode: "deductive", recommended: true, reason: "Fits common-error rules." },
