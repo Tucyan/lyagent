@@ -72,6 +72,16 @@ describe("rubric HTTP API", () => {
     await app.close();
   });
 
+  it("returns null when an assignment has no editable rubric draft", async () => {
+    const app = await serverForTest();
+    const assignment = await createAssignment(app);
+
+    const response = await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toBeNull();
+    await app.close();
+  });
+
   it("rejects formal rubric chat until a scoring mode has been selected", async () => {
     const designer: PiRubricDesigner = {
       recommendModes: async () => ({ options: [] }),

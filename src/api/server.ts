@@ -136,7 +136,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (!options.rubricDesignerFactory) return { selectedMode: mode, state: "manual" };
     return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), "Create the first rubric draft for this assignment.", (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome));
   });
-  app.get("/api/rubrics/assignments/:assignmentId/draft", async (request) => rubrics.getDraft(rubricAssignmentIdSchema.parse(request.params).assignmentId));
+  app.get("/api/rubrics/assignments/:assignmentId/draft", async (request) => (await rubrics.getDraft(rubricAssignmentIdSchema.parse(request.params).assignmentId)) ?? null);
   app.put("/api/rubrics/assignments/:assignmentId/draft", async (request) => {
     const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
     const payload = rubricDraftSchema.parse(request.body);
