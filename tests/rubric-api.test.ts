@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -127,6 +128,49 @@ describe("rubric HTTP API", () => {
     expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/versions/1/export.json` })).json()).toMatchObject({ version: 1, rubric });
     expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/versions/1/export.md` })).body).toContain("Argument");
     expect((await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/versions/1/revisions` })).json()).toMatchObject({ version: 1, baseRubricVersion: 1 });
+    await app.close();
+  });
+
+  it("allows only an explicit revision to reopen editable work after a rubric is frozen", async () => {
+    const app = await serverForTest();
+    const assignment = await createAssignment(app);
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/draft`, payload: { expectedVersion: 0, rubric } });
+    await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/freeze`, payload: { expectedVersion: 1, acknowledgedWarningCodes: ["CONTINUOUS_WITHOUT_ANCHORS"] } });
+
+    expect((await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/draft`, payload: { expectedVersion: 0, rubric } })).statusCode).toBe(422);
+    expect((await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode/stream`, payload: { mode: "additive" } })).statusCode).toBe(422);
+    expect((await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/messages/stream`, payload: { message: "Revise this rubric." } })).statusCode).toBe(422);
+    expect((await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/versions/1/revisions` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` })).json()).toMatchObject({ baseRubricVersion: 1, rubric });
+    await app.close();
+  });
+
+  it("returns 404 rather than validating a rubric for a nonexistent assignment", async () => {
+    const app = await serverForTest();
+
+    const response = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${randomUUID()}/validate`, payload: { rubric } });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: "RUBRIC_NOT_FOUND" });
+    await app.close();
+  });
+
+  it("persists a subsequent designer draft when its factory did not use rubric tools", async () => {
+    const revised = { ...rubric, criteria: [{ ...rubric.criteria[0]!, name: "Revised argument" }] };
+    const designer: PiRubricDesigner = {
+      recommendModes: async () => ({ options: [] }),
+      design: vi.fn()
+        .mockResolvedValueOnce({ kind: "draft" as const, draft: { version: 1, rubric, updatedAt: "2026-08-03T00:00:00.000Z" }, message: "The rubric draft has been updated and is ready for review." as const })
+        .mockResolvedValueOnce({ kind: "draft" as const, draft: { version: 2, rubric: revised, updatedAt: "2026-08-03T00:01:00.000Z" }, message: "The rubric draft has been updated and is ready for review." as const }),
+    };
+    const app = await serverForTest(() => designer);
+    const assignment = await createAssignment(app);
+
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode/stream`, payload: { mode: "additive" } });
+    const updated = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/messages/stream`, payload: { message: "Make the argument criterion clearer." } });
+
+    expect(updated.body).toContain("event: draft");
+    expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` })).json()).toMatchObject({ version: 2, rubric: revised });
     await app.close();
   });
 

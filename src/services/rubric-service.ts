@@ -204,6 +204,9 @@ export class RubricService {
       if (conflictIfDraftExists) throw new RubricConflictError();
       throw new RubricServiceError("Assignment already has an editable rubric draft");
     }
+    if (baseRubricVersion === undefined && (await this.listVersions(assignmentId)).length > 0) {
+      throw new RubricServiceError("Create a revision from a frozen rubric version before editing again");
+    }
     if (baseRubricVersion !== undefined) await this.getVersion(assignmentId, baseRubricVersion);
     await this.assertRubricMatchesAssignment(assignment, rubric);
     const now = new Date().toISOString();

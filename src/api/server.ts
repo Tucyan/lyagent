@@ -131,6 +131,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.put("/api/rubrics/assignments/:assignmentId/mode/stream", async (request, reply) => {
     const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
     const { mode } = rubricModeSchema.parse(request.body);
+    await assertRubricCanOpenDraft(rubrics, assignmentId);
     await rubrics.selectMode(assignmentId, mode);
     if (!options.rubricDesignerFactory) return { selectedMode: mode, state: "manual" };
     return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), "Create the first rubric draft for this assignment.", (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome));
@@ -144,7 +145,8 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     return rubrics.replaceDraft(assignmentId, payload.expectedVersion, parsed);
   });
   app.post("/api/rubrics/assignments/:assignmentId/validate", async (request, reply) => {
-    rubricAssignmentIdSchema.parse(request.params);
+    const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
+    await rubrics.getAssignment(assignmentId);
     const rubric = rubricSchema.parse(rubricValueSchema.parse(request.body).rubric);
     const validation = validateRubric(rubric);
     if (validation.errors.length > 0) return reply.code(422).send({ code: "RUBRIC_VALIDATION_FAILED", ...validation });
@@ -176,6 +178,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
     const { message } = rubricChatSchema.parse(request.body);
     if (!await rubrics.getDesignSession(assignmentId)) throw new RubricServiceError("Select a scoring mode before starting rubric design");
+    await assertRubricCanOpenDraft(rubrics, assignmentId);
     if (!options.rubricDesignerFactory) return reply.code(200).send({ state: "manual", message: "Manual rubric editing is available while the model is not configured." });
     return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), message, (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome));
   });
@@ -380,7 +383,24 @@ async function streamRubricDesign(request: FastifyRequest, reply: FastifyReply, 
 async function persistRubricDesignOutcome(rubrics: RubricService, assignmentId: string, outcome: RubricDesignerOutcome): Promise<void> {
   if (outcome.kind !== "draft") return;
   const stored = await rubrics.getDraft(assignmentId);
-  if (!stored) await rubrics.createDraft(assignmentId, outcome.draft.rubric);
+  if (!stored) {
+    const created = await rubrics.createDraft(assignmentId, outcome.draft.rubric);
+    if (!sameRubricDraft(created, outcome.draft)) throw new RubricServiceError("The generated rubric draft version could not be verified");
+    return;
+  }
+  if (sameRubricDraft(stored, outcome.draft)) return;
+  if (outcome.draft.version !== stored.version + 1) throw new RubricServiceError("The generated rubric draft version could not be verified");
+  const updated = await rubrics.replaceDraft(assignmentId, stored.version, outcome.draft.rubric);
+  if (!sameRubricDraft(updated, outcome.draft)) throw new RubricServiceError("The generated rubric draft version could not be verified");
+}
+
+async function assertRubricCanOpenDraft(rubrics: RubricService, assignmentId: string): Promise<void> {
+  if (await rubrics.getDraft(assignmentId)) return;
+  if ((await rubrics.listVersions(assignmentId)).length > 0) throw new RubricServiceError("Create a revision from a frozen rubric version before editing again");
+}
+
+function sameRubricDraft(left: { version: number; rubric: unknown }, right: { version: number; rubric: unknown }): boolean {
+  return left.version === right.version && JSON.stringify(left.rubric) === JSON.stringify(right.rubric);
 }
 
 async function defaultPlanner(sections: SourceSection[]): Promise<KnowledgePlan> {
