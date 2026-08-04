@@ -59,9 +59,9 @@ type PreviewRubric = {
   partialCreditAllowed?: boolean;
   overlapGroups?: Array<{ id: string; aggregation: "highest-only" | "sum" }>;
   criteria?: Array<{ id?: string; name: string; description: string; maxScore: number; scorePolicy: "exact-level" | "range" | "continuous"; evidenceRequired: boolean; levels?: Array<{ id: string; minScore: number; maxScore: number; condition: string }> }>;
-  rules?: Array<{ name: string; condition: string; deduction: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
+  rules?: Array<{ name: string; condition: string; amountPolicy?: "fixed" | "per-occurrence" | "range"; deduction?: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
   bonusRules?: Array<{ name: string; condition: string; bonus: number; maxBonus: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
-  deductionRules?: Array<{ name: string; condition: string; deduction: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
+  deductionRules?: Array<{ name: string; condition: string; amountPolicy?: "fixed" | "per-occurrence" | "range"; deduction?: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
 };
 
 export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSection[] {
@@ -73,7 +73,7 @@ export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSecti
         title: criterion.name,
         score: `${criterion.maxScore} 分`,
         description: criterion.description,
-        detail: `${scorePolicyLabel(criterion.scorePolicy)} · ${criterion.evidenceRequired ? "需要证据" : "不强制证据"}`,
+        detail: `${scorePolicyLabel(criterion.scorePolicy)} · ${criterion.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}`,
         ...((criterion.levels?.length ?? 0) > 0 ? { levels: criterion.levels!.map((level) => ({ id: level.id, score: `${level.minScore === level.maxScore ? level.minScore : `${level.minScore}–${level.maxScore}`} 分`, condition: level.condition })) } : {}),
       })),
     });
@@ -104,15 +104,23 @@ function scorePolicyLabel(policy: "exact-level" | "range" | "continuous"): strin
 }
 
 function rulePreview(
-  rule: { name: string; condition: string; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string; bonus?: number; maxBonus?: number; deduction?: number; maxDeduction?: number },
+  rule: { name: string; condition: string; amountPolicy?: "fixed" | "per-occurrence" | "range"; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string; bonus?: number; maxBonus?: number; deduction?: number; maxDeduction?: number },
   kind: "bonus" | "deduction",
 ): RubricPreviewSection["rows"][number] {
   const amount = kind === "bonus" ? rule.bonus ?? 0 : rule.deduction ?? 0;
   const maximum = kind === "bonus" ? rule.maxBonus ?? amount : rule.maxDeduction ?? amount;
+  const policy = rule.amountPolicy ?? (rule.occurrence === "per-occurrence" ? "per-occurrence" : "fixed");
+  const score = kind === "bonus"
+    ? `+${amount} 分（上限 ${maximum}）`
+    : policy === "range"
+      ? `−1–${maximum} 分（整数区间）`
+      : policy === "per-occurrence"
+        ? `−${amount} 分/次（上限 ${maximum}）`
+        : `−${amount} 分（固定一次）`;
   return {
     title: rule.name,
-    score: `${kind === "bonus" ? "+" : "−"}${amount} 分（上限 ${maximum}）`,
+    score,
     description: rule.condition,
-    detail: `${rule.occurrence === "once" ? "仅一次" : "按次计算"} · ${rule.evidenceRequired ? "需要证据" : "不强制证据"}${rule.overlapGroup ? ` · 重叠组：${rule.overlapGroup}` : ""}`,
+    detail: `${rule.occurrence === "once" ? "仅一次" : "按次计算"} · ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}${rule.overlapGroup ? ` · 重叠组：${rule.overlapGroup}` : ""}`,
   };
 }

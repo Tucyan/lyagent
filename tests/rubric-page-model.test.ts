@@ -92,7 +92,27 @@ describe("rubric page selection", () => {
       partialCreditAllowed: true,
       criteria: [{ id: "analysis", name: "分析质量", description: "论证完整且有证据。", maxScore: 100, scorePolicy: "continuous", evidenceRequired: true }],
     })).toEqual([
-      { title: "评分项目", rows: [{ title: "分析质量", score: "100 分", description: "论证完整且有证据。", detail: "连续评分 · 需要证据" }] },
+      { title: "评分项目", rows: [{ title: "分析质量", score: "100 分", description: "论证完整且有证据。", detail: "连续评分 · 需要评分分析依据" }] },
+    ]);
+  });
+
+  it("describes mixed deduction amount policies", () => {
+    const sections = rubricPreviewSections({
+      schemaVersion: "1.0",
+      mode: "deductive",
+      totalScore: 100,
+      rules: [
+        { name: "Fixed", condition: "Missing", amountPolicy: "fixed", deduction: 20, maxDeduction: 20, occurrence: "once", evidenceRequired: true },
+        { name: "Repeated", condition: "Each error", amountPolicy: "per-occurrence", deduction: 2, maxDeduction: 10, occurrence: "per-occurrence", evidenceRequired: true },
+        { name: "Severity", condition: "Weak quality", amountPolicy: "range", maxDeduction: 20, occurrence: "once", evidenceRequired: true },
+      ],
+      overlapGroups: [],
+    });
+
+    expect(sections[0]!.rows.map((row) => row.score)).toEqual([
+      "−20 分（固定一次）",
+      "−2 分/次（上限 10）",
+      "−1–20 分（整数区间）",
     ]);
   });
 });

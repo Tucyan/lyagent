@@ -50,6 +50,35 @@ describe("rubric schema", () => {
     expect(calculateRubricScore(rubric, { deductions: { "missing-analysis": 20, "weak-analysis": 10 } })).toBe(80);
   });
 
+  it("accepts fixed, per-occurrence, and integer range deduction rules together", () => {
+    const rubric: Rubric = {
+      schemaVersion: "1.0",
+      mode: "deductive",
+      totalScore: 100,
+      rules: [
+        { id: "fixed", name: "Fixed", condition: "Missing", amountPolicy: "fixed", deduction: 20, maxDeduction: 20, occurrence: "once", evidenceRequired: true },
+        { id: "repeated", name: "Repeated", condition: "Each error", amountPolicy: "per-occurrence", deduction: 2, maxDeduction: 10, occurrence: "per-occurrence", evidenceRequired: true },
+        { id: "severity", name: "Severity", condition: "Weak quality", amountPolicy: "range", maxDeduction: 20, occurrence: "once", evidenceRequired: true },
+      ],
+      overlapGroups: [],
+    };
+
+    expect(validateRubric(rubric).errors).toEqual([]);
+    expect(calculateRubricScore(rubric, { deductions: { fixed: 20, repeated: 6, severity: 4 } })).toBe(70);
+  });
+
+  it("rejects range deductions configured as per-occurrence", () => {
+    const rubric = {
+      schemaVersion: "1.0",
+      mode: "deductive",
+      totalScore: 100,
+      rules: [{ id: "severity", name: "Severity", condition: "Weak quality", amountPolicy: "range", maxDeduction: 20, occurrence: "per-occurrence", evidenceRequired: true }],
+      overlapGroups: [],
+    } as const;
+
+    expect(validateRubric(rubric).errors).toContainEqual(expect.objectContaining({ code: "RANGE_DEDUCTION_MUST_BE_ONCE" }));
+  });
+
   it("clamps hybrid criteria plus bonuses minus deductions to the assignment total", () => {
     const rubric: Rubric = {
       schemaVersion: "1.0",

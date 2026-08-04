@@ -197,16 +197,20 @@ function rubricParameterSchema(mode: Rubric["mode"]) {
     id,
     aggregation: Type.Union([Type.Literal("highest-only"), Type.Literal("sum")]),
   }, { additionalProperties: false });
-  const deductionRule = Type.Object({
+  const deductionRuleFields = {
     id,
     name: Type.String({ minLength: 1, maxLength: 160 }),
     condition: Type.String({ minLength: 1, maxLength: 2_000 }),
-    deduction: positiveScore,
     maxDeduction: positiveScore,
-    occurrence: Type.Union([Type.Literal("once"), Type.Literal("per-occurrence")]),
     evidenceRequired: Type.Boolean(),
     overlapGroup: Type.Optional(id),
-  }, { additionalProperties: false });
+  };
+  const deductionRule = Type.Union([
+    Type.Object({ ...deductionRuleFields, deduction: positiveScore, occurrence: Type.Union([Type.Literal("once"), Type.Literal("per-occurrence")]) }, { additionalProperties: false }),
+    Type.Object({ ...deductionRuleFields, amountPolicy: Type.Literal("fixed"), deduction: positiveScore, occurrence: Type.Literal("once") }, { additionalProperties: false }),
+    Type.Object({ ...deductionRuleFields, amountPolicy: Type.Literal("per-occurrence"), deduction: positiveScore, occurrence: Type.Literal("per-occurrence") }, { additionalProperties: false }),
+    Type.Object({ ...deductionRuleFields, amountPolicy: Type.Literal("range"), occurrence: Type.Literal("once") }, { additionalProperties: false }),
+  ]);
   const bonusRule = Type.Object({
     id,
     name: Type.String({ minLength: 1, maxLength: 160 }),

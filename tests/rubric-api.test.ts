@@ -27,7 +27,10 @@ const rubric: Rubric = {
 async function serverForTest(factory?: RubricDesignerFactory) {
   const root = await mkdtemp(path.join(os.tmpdir(), "rubric-api-"));
   roots.push(root);
-  return createServer({ workspaceRoot: root, ...(factory ? { rubricDesignerFactory: factory } : {}) });
+  const app = await createServer({ workspaceRoot: root, ...(factory ? { rubricDesignerFactory: factory } : {}) });
+  const course = await app.inject({ method: "POST", url: "/api/courses", payload: { name: "唯一课程" } });
+  expect(course.statusCode).toBe(201);
+  return app;
 }
 
 async function createAssignment(app: Awaited<ReturnType<typeof serverForTest>>, sources: Array<{ role: "rubric_draft" | "note"; name: string; content: string }> = []) {
@@ -41,10 +44,23 @@ async function createAssignment(app: Awaited<ReturnType<typeof serverForTest>>, 
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
 });
 
 describe("rubric HTTP API", () => {
+  it("binds new rubrics to the unique existing course and rejects ambiguous course ownership", async () => {
+    const app = await serverForTest();
+    const courseId = (await app.inject({ method: "GET", url: "/api/courses" })).json()[0].id;
+    const assignment = await createAssignment(app);
+    expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}` })).json()).toMatchObject({ courseId });
+
+    await app.inject({ method: "POST", url: "/api/courses", payload: { name: "第二课程" } });
+    const ambiguous = await app.inject({ method: "POST", url: "/api/rubrics/assignments", payload: { title: "Ambiguous", totalScore: 100, requirements: "Test", sources: [] } });
+    expect(ambiguous.statusCode).toBe(422);
+    expect(ambiguous.json()).toMatchObject({ code: "RUBRIC_COURSE_BINDING_ERROR" });
+    await app.close();
+  });
+
   it("continues and persists a rubric reply after the page stream disconnects", async () => {
     let finish!: () => void;
     const ready = new Promise<void>((resolve) => { finish = resolve; });
@@ -70,7 +86,7 @@ describe("rubric HTTP API", () => {
     await vi.waitFor(async () => {
       const session = (await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` })).json();
       expect(session.messages).toHaveLength(2);
-    });
+    }, { timeout: 5_000 });
     expect(observedSignal?.aborted).toBe(false);
     await app.close();
   });

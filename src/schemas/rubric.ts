@@ -20,16 +20,21 @@ const criterionSchema = z.object({
   levels: z.array(levelSchema).max(20).optional(),
 });
 
-const deductionRuleSchema = z.object({
+const deductionRuleBase = {
   id: idSchema,
   name: z.string().trim().min(1).max(160),
   condition: z.string().trim().min(1).max(2_000),
-  deduction: scoreSchema.positive(),
   maxDeduction: scoreSchema.positive(),
-  occurrence: z.enum(["once", "per-occurrence"]),
   evidenceRequired: z.boolean(),
   overlapGroup: idSchema.optional(),
-});
+};
+
+const deductionRuleSchema = z.union([
+  z.object({ ...deductionRuleBase, amountPolicy: z.undefined().optional(), deduction: scoreSchema.positive(), occurrence: z.enum(["once", "per-occurrence"]) }),
+  z.object({ ...deductionRuleBase, amountPolicy: z.literal("fixed"), deduction: scoreSchema.positive(), occurrence: z.literal("once") }),
+  z.object({ ...deductionRuleBase, amountPolicy: z.literal("per-occurrence"), deduction: scoreSchema.positive(), occurrence: z.literal("per-occurrence") }),
+  z.object({ ...deductionRuleBase, amountPolicy: z.literal("range"), deduction: z.undefined().optional(), occurrence: z.enum(["once", "per-occurrence"]) }),
+]);
 
 const bonusRuleSchema = z.object({
   id: idSchema,
@@ -77,6 +82,7 @@ export type AdditiveRubric = z.infer<typeof additiveRubricSchema>;
 export type DeductiveRubric = z.infer<typeof deductiveRubricSchema>;
 export type HybridRubric = z.infer<typeof hybridRubricSchema>;
 export type Rubric = AdditiveRubric | DeductiveRubric | HybridRubric;
+export type DeductionRule = DeductiveRubric["rules"][number];
 
 export interface RubricProblem {
   code: string;
@@ -171,7 +177,8 @@ function validateCriteria(criteria: AdditiveRubric["criteria"], totalScore: numb
 
 function validateDeductionRules(rules: DeductiveRubric["rules"], groupIds: Set<string>, errors: RubricProblem[]): void {
   for (const rule of rules) {
-    if (rule.deduction > rule.maxDeduction) errors.push(problem("DEDUCTION_EXCEEDS_MAXIMUM", `${rule.id} deduction exceeds its maximum`, `rules.${rule.id}`));
+    if (rule.amountPolicy === "range" && rule.occurrence !== "once") errors.push(problem("RANGE_DEDUCTION_MUST_BE_ONCE", `${rule.id} range deduction must use once occurrence`, `rules.${rule.id}.occurrence`));
+    if (rule.amountPolicy !== "range" && rule.deduction > rule.maxDeduction) errors.push(problem("DEDUCTION_EXCEEDS_MAXIMUM", `${rule.id} deduction exceeds its maximum`, `rules.${rule.id}`));
     if (rule.overlapGroup && !groupIds.has(rule.overlapGroup)) errors.push(problem("UNKNOWN_OVERLAP_GROUP", `${rule.id} references an unknown overlap group`, `rules.${rule.id}.overlapGroup`));
   }
 }

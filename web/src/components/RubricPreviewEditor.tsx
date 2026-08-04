@@ -5,7 +5,8 @@ export type ScorePolicy = "exact-level" | "range" | "continuous";
 
 export interface RubricLevel { id: string; minScore: number; maxScore: number; condition: string }
 export interface RubricCriterion { id: string; name: string; description: string; maxScore: number; scorePolicy: ScorePolicy; evidenceRequired: boolean; levels?: RubricLevel[] }
-export interface DeductionRule { id: string; name: string; condition: string; deduction: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }
+export type DeductionAmountPolicy = "fixed" | "per-occurrence" | "range";
+export interface DeductionRule { id: string; name: string; condition: string; amountPolicy?: DeductionAmountPolicy; deduction?: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }
 export interface BonusRule { id: string; name: string; condition: string; bonus: number; maxBonus: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }
 export interface OverlapGroup { id: string; aggregation: "highest-only" | "sum" }
 
@@ -57,7 +58,7 @@ function CriteriaEditor({ criteria, onChange }: { criteria: RubricCriterion[]; o
       <div className="rubric-editor-card-heading"><strong>项目 {index + 1}</strong><button type="button" onClick={() => onChange(criteria.filter((_, itemIndex) => itemIndex !== index))}>删除</button></div>
       <div className="rubric-editor-grid"><Field label="ID" value={criterion.id} onChange={(id) => update(index, { ...criterion, id })} /><Field label="名称" value={criterion.name} onChange={(name) => update(index, { ...criterion, name })} /><NumberField label="最高分" value={criterion.maxScore} onChange={(maxScore) => update(index, { ...criterion, maxScore })} /><label>评分方式<select value={criterion.scorePolicy} onChange={(event) => update(index, { ...criterion, scorePolicy: event.target.value as ScorePolicy })}><option value="continuous">连续评分</option><option value="range">区间评分</option><option value="exact-level">等级定分</option></select></label></div>
       <label>评分说明<textarea value={criterion.description} onChange={(event) => update(index, { ...criterion, description: event.target.value })} /></label>
-      <label className="rubric-checkbox"><input type="checkbox" checked={criterion.evidenceRequired} onChange={(event) => update(index, { ...criterion, evidenceRequired: event.target.checked })} />评分时必须提供证据</label>
+      <label className="rubric-checkbox"><input type="checkbox" checked={criterion.evidenceRequired} onChange={(event) => update(index, { ...criterion, evidenceRequired: event.target.checked })} />评分时必须提供分析依据</label>
       {(criterion.levels?.length ?? 0) > 0 && <div className="rubric-levels"><strong>评分等级</strong>{criterion.levels!.map((level, levelIndex) => <div className="rubric-level-row" key={`${level.id}-${levelIndex}`}><Field label="等级" value={level.id} onChange={(id) => updateLevel(criterion, levelIndex, { ...level, id }, (next) => update(index, next))} /><NumberField label="最低分" value={level.minScore} onChange={(minScore) => updateLevel(criterion, levelIndex, { ...level, minScore }, (next) => update(index, next))} /><NumberField label="最高分" value={level.maxScore} onChange={(maxScore) => updateLevel(criterion, levelIndex, { ...level, maxScore }, (next) => update(index, next))} /><Field label="达成条件" value={level.condition} onChange={(condition) => updateLevel(criterion, levelIndex, { ...level, condition }, (next) => update(index, next))} /><button type="button" onClick={() => update(index, { ...criterion, levels: criterion.levels!.filter((_, itemIndex) => itemIndex !== levelIndex) })}>删除等级</button></div>)}</div>}
       {criterion.scorePolicy !== "continuous" && <button type="button" onClick={() => update(index, { ...criterion, levels: [...(criterion.levels ?? []), { id: `level_${(criterion.levels?.length ?? 0) + 1}`, minScore: 0, maxScore: criterion.maxScore, condition: "请填写该等级的可观察条件。" }] })}>＋ 添加评分等级</button>}
     </article>)}
@@ -66,7 +67,10 @@ function CriteriaEditor({ criteria, onChange }: { criteria: RubricCriterion[]; o
 
 function DeductionRulesEditor({ title, rules, onChange }: { title: string; rules: DeductionRule[]; onChange: (rules: DeductionRule[]) => void }) {
   const update = (index: number, value: DeductionRule) => onChange(rules.map((rule, itemIndex) => itemIndex === index ? value : rule));
-  return <section className="rubric-editor-section"><div className="rubric-editor-section-heading"><h4>{title}</h4><button type="button" onClick={() => onChange([...rules, { id: `deduction_${rules.length + 1}`, name: "新扣分规则", condition: "请填写触发条件。", deduction: 1, maxDeduction: 1, occurrence: "once", evidenceRequired: true }])}>＋ 添加规则</button></div>{rules.map((rule, index) => <article className="rubric-editor-card" key={`${rule.id}-${index}`}><div className="rubric-editor-card-heading"><strong>规则 {index + 1}</strong><button type="button" onClick={() => onChange(rules.filter((_, itemIndex) => itemIndex !== index))}>删除</button></div><div className="rubric-editor-grid"><Field label="ID" value={rule.id} onChange={(id) => update(index, { ...rule, id })} /><Field label="名称" value={rule.name} onChange={(name) => update(index, { ...rule, name })} /><NumberField label="每次扣分" value={rule.deduction} onChange={(deduction) => update(index, { ...rule, deduction })} /><NumberField label="扣分上限" value={rule.maxDeduction} onChange={(maxDeduction) => update(index, { ...rule, maxDeduction })} /></div><label>触发条件<textarea value={rule.condition} onChange={(event) => update(index, { ...rule, condition: event.target.value })} /></label><RuleOptions rule={rule} onChange={(next) => update(index, next)} /></article>)}</section>;
+  return <section className="rubric-editor-section"><div className="rubric-editor-section-heading"><h4>{title}</h4><button type="button" onClick={() => onChange([...rules, { id: `deduction_${rules.length + 1}`, name: "新扣分规则", condition: "请填写触发条件。", amountPolicy: "range", maxDeduction: 1, occurrence: "once", evidenceRequired: true }])}>＋ 添加规则</button></div>{rules.map((rule, index) => {
+    const policy = deductionAmountPolicy(rule);
+    return <article className="rubric-editor-card" key={`${rule.id}-${index}`}><div className="rubric-editor-card-heading"><strong>规则 {index + 1}</strong><button type="button" onClick={() => onChange(rules.filter((_, itemIndex) => itemIndex !== index))}>删除</button></div><div className="rubric-editor-grid"><Field label="ID" value={rule.id} onChange={(id) => update(index, { ...rule, id })} /><Field label="名称" value={rule.name} onChange={(name) => update(index, { ...rule, name })} /><label>扣分方式<select value={policy} onChange={(event) => update(index, changeDeductionPolicy(rule, event.target.value as DeductionAmountPolicy))}><option value="fixed">固定一次扣分</option><option value="per-occurrence">按次扣分</option><option value="range">自由区间扣分</option></select></label>{policy !== "range" && <NumberField label={policy === "fixed" ? "固定扣分" : "每次扣分"} value={rule.deduction ?? 1} onChange={(deduction) => update(index, { ...rule, deduction })} />}<NumberField label="扣分上限" value={rule.maxDeduction} step="1" onChange={(maxDeduction) => update(index, { ...rule, maxDeduction })} /></div><label>触发条件<textarea value={rule.condition} onChange={(event) => update(index, { ...rule, condition: event.target.value })} /></label><DeductionRuleOptions rule={rule} onChange={(next) => update(index, next)} /></article>;
+  })}</section>;
 }
 
 function BonusRulesEditor({ rules, onChange }: { rules: BonusRule[]; onChange: (rules: BonusRule[]) => void }) {
@@ -75,7 +79,12 @@ function BonusRulesEditor({ rules, onChange }: { rules: BonusRule[]; onChange: (
 }
 
 function RuleOptions<T extends DeductionRule | BonusRule>({ rule, onChange }: { rule: T; onChange: (rule: T) => void }) {
-  return <div className="rubric-rule-options"><label>计算方式<select value={rule.occurrence} onChange={(event) => onChange({ ...rule, occurrence: event.target.value as T["occurrence"] })}><option value="once">仅一次</option><option value="per-occurrence">按次计算</option></select></label><Field label="重叠组（可选）" value={rule.overlapGroup ?? ""} onChange={(overlapGroup) => onChange(withOverlapGroup(rule, overlapGroup))} /><label className="rubric-checkbox"><input type="checkbox" checked={rule.evidenceRequired} onChange={(event) => onChange({ ...rule, evidenceRequired: event.target.checked })} />必须提供证据</label></div>;
+  return <div className="rubric-rule-options"><label>计算方式<select value={rule.occurrence} onChange={(event) => onChange({ ...rule, occurrence: event.target.value as T["occurrence"] })}><option value="once">仅一次</option><option value="per-occurrence">按次计算</option></select></label><Field label="重叠组（可选）" value={rule.overlapGroup ?? ""} onChange={(overlapGroup) => onChange(withOverlapGroup(rule, overlapGroup))} /><label className="rubric-checkbox"><input type="checkbox" checked={rule.evidenceRequired} onChange={(event) => onChange({ ...rule, evidenceRequired: event.target.checked })} />必须提供评分分析依据</label></div>;
+}
+
+function DeductionRuleOptions({ rule, onChange }: { rule: DeductionRule; onChange: (rule: DeductionRule) => void }) {
+  const policy = deductionAmountPolicy(rule);
+  return <div className="rubric-rule-options">{policy === "range" ? <label>计算方式<input value="按严重程度在整数区间内扣分" readOnly /></label> : <label>计算方式<input value={policy === "fixed" ? "触发时固定扣一次" : "按出现次数累计"} readOnly /></label>}<Field label="重叠组（可选）" value={rule.overlapGroup ?? ""} onChange={(overlapGroup) => onChange(withOverlapGroup(rule, overlapGroup))} /><label className="rubric-checkbox"><input type="checkbox" checked={rule.evidenceRequired} onChange={(event) => onChange({ ...rule, evidenceRequired: event.target.checked })} />必须提供评分分析依据</label></div>;
 }
 
 function OverlapGroupsEditor({ groups, onChange }: { groups: OverlapGroup[]; onChange: (groups: OverlapGroup[]) => void }) {
@@ -86,8 +95,21 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
   return <label>{label}<input value={value} onChange={(event) => onChange(event.target.value)} /></label>;
 }
 
-function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
-  return <label>{label}<input type="number" min="0" step="0.01" value={value} onChange={(event) => onChange(Number(event.target.value))} /></label>;
+function NumberField({ label, value, onChange, step = "0.01" }: { label: string; value: number; onChange: (value: number) => void; step?: string }) {
+  return <label>{label}<input type="number" min="0" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} /></label>;
+}
+
+function deductionAmountPolicy(rule: DeductionRule): DeductionAmountPolicy {
+  return rule.amountPolicy ?? (rule.occurrence === "per-occurrence" ? "per-occurrence" : "fixed");
+}
+
+function changeDeductionPolicy(rule: DeductionRule, amountPolicy: DeductionAmountPolicy): DeductionRule {
+  if (amountPolicy === "range") {
+    const { deduction: _deduction, ...rest } = rule;
+    return { ...rest, amountPolicy, occurrence: "once" };
+  }
+  const deduction = rule.deduction ?? Math.min(1, rule.maxDeduction);
+  return { ...rule, amountPolicy, deduction, occurrence: amountPolicy === "fixed" ? "once" : "per-occurrence" };
 }
 
 function updateLevel(criterion: RubricCriterion, index: number, value: RubricLevel, onChange: (criterion: RubricCriterion) => void): void {

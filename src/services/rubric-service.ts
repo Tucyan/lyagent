@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
-import { rubricSchema, validateRubric, type Rubric, type RubricValidation } from "../schemas/rubric.js";
+import { rubricSchema, validateRubric, type DeductionRule, type Rubric, type RubricValidation } from "../schemas/rubric.js";
 
 export type RubricSourceRole = "rubric_draft" | "note";
 export const RUBRIC_SAFE_PROCESS_SUMMARY = "Agent 正在分析作业要求、参考资料和现有评分表，并准备结构化评分规则。";
@@ -22,6 +22,7 @@ export interface RubricSource {
 
 export interface RubricAssignment {
   id: string;
+  courseId?: string;
   title: string;
   totalScore: number;
   requirements: string;
@@ -108,7 +109,7 @@ export class RubricService {
     this.afterFreezeDraftDelete = options.afterFreezeDraftDelete;
   }
 
-  async createAssignment(input: { title: string; totalScore: number; requirements: string; sources: RubricSourceInput[] }): Promise<RubricAssignment> {
+  async createAssignment(input: { courseId?: string; title: string; totalScore: number; requirements: string; sources: RubricSourceInput[] }): Promise<RubricAssignment> {
     const title = input.title.trim();
     const requirements = input.requirements.trim();
     if (title.length === 0 || title.length > 120) throw new RubricServiceError("Assignment title must be between 1 and 120 characters");
@@ -134,7 +135,7 @@ export class RubricService {
       sources.push(stored);
     }
     const now = new Date().toISOString();
-    const assignment: RubricAssignment = { id: assignmentId, title, totalScore: input.totalScore, requirements, sources, createdAt: now, updatedAt: now };
+    const assignment: RubricAssignment = { id: assignmentId, ...(input.courseId ? { courseId: input.courseId } : {}), title, totalScore: input.totalScore, requirements, sources, createdAt: now, updatedAt: now };
     await this.writeAssignment(assignment);
     return assignment;
   }
@@ -170,6 +171,23 @@ export class RubricService {
       await this.writeAssignment(updated);
       return updated;
     });
+  }
+
+  async bindCourse(assignmentId: string, courseId: string): Promise<RubricAssignment> {
+    return this.mutateAssignment(assignmentId, async () => {
+      const assignment = await this.getAssignment(assignmentId);
+      if (assignment.courseId && assignment.courseId !== courseId) throw new RubricServiceError("Rubric assignment is already bound to another course");
+      if (assignment.courseId === courseId) return assignment;
+      const updated: RubricAssignment = { ...assignment, courseId, updatedAt: new Date().toISOString() };
+      await this.writeAssignment(updated);
+      return updated;
+    });
+  }
+
+  async bindUnboundAssignments(courseId: string): Promise<void> {
+    for (const assignment of await this.listAssignments()) {
+      if (!assignment.courseId) await this.bindCourse(assignment.id, courseId);
+    }
   }
 
   async deleteAssignment(assignmentId: string): Promise<void> {
@@ -450,9 +468,9 @@ export class RubricService {
 export function renderRubricMarkdown(rubric: Rubric): string {
   const lines = [`# 评分表`, "", `- 制度：${modeLabel(rubric.mode)}`, `- 总分：${rubric.totalScore}`, ""];
   if (rubric.mode === "additive" || rubric.mode === "hybrid") {
-    lines.push(`- 允许部分得分：${rubric.partialCreditAllowed ? "是" : "否"}`, "", "## 评分项目", "", "| 项目 | 最高分 | 评分策略 | 证据要求 | 说明 |", "| --- | ---: | --- | --- | --- |");
+    lines.push(`- 允许部分得分：${rubric.partialCreditAllowed ? "是" : "否"}`, "", "## 评分项目", "", "| 项目 | 最高分 | 评分策略 | 分析依据要求 | 说明 |", "| --- | ---: | --- | --- | --- |");
     for (const criterion of rubric.criteria) {
-      lines.push(`| ${markdownCell(criterion.name)} | ${criterion.maxScore} | ${scorePolicyMarkdownLabel(criterion.scorePolicy)} | ${criterion.evidenceRequired ? "需要证据" : "不强制证据"} | ${markdownCell(criterion.description)} |`);
+      lines.push(`| ${markdownCell(criterion.name)} | ${criterion.maxScore} | ${scorePolicyMarkdownLabel(criterion.scorePolicy)} | ${criterion.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${markdownCell(criterion.description)} |`);
     }
     for (const criterion of rubric.criteria.filter((item) => (item.levels?.length ?? 0) > 0)) {
       lines.push("", `### ${markdownCell(criterion.name)}：评分等级`, "", "| 等级 | 分值/区间 | 达成条件 |", "| --- | ---: | --- |");
@@ -461,12 +479,12 @@ export function renderRubricMarkdown(rubric: Rubric): string {
   }
   if (rubric.mode === "deductive" || rubric.mode === "hybrid") {
     const rules = rubric.mode === "deductive" ? rubric.rules : rubric.deductionRules;
-    lines.push("", "## 扣分规则", "", "| 规则 | 单次扣分 | 最大扣分 | 计算方式 | 证据要求 | 重叠组 | 条件 |", "| --- | ---: | ---: | --- | --- | --- | --- |");
-    for (const rule of rules) lines.push(`| ${markdownCell(rule.name)} | ${rule.deduction} | ${rule.maxDeduction} | ${occurrenceLabel(rule.occurrence)} | ${rule.evidenceRequired ? "需要证据" : "不强制证据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
+    lines.push("", "## 扣分规则", "", "| 规则 | 扣分方式 | 最大扣分 | 分析依据要求 | 重叠组 | 条件 |", "| --- | --- | ---: | --- | --- | --- |");
+    for (const rule of rules) lines.push(`| ${markdownCell(rule.name)} | ${deductionRuleLabel(rule)} | ${rule.maxDeduction} | ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
   }
   if (rubric.mode === "hybrid" && rubric.bonusRules.length > 0) {
-    lines.push("", "## 奖励规则", "", "| 规则 | 单次奖励 | 最大奖励 | 计算方式 | 证据要求 | 重叠组 | 条件 |", "| --- | ---: | ---: | --- | --- | --- | --- |");
-    for (const rule of rubric.bonusRules) lines.push(`| ${markdownCell(rule.name)} | ${rule.bonus} | ${rule.maxBonus} | ${occurrenceLabel(rule.occurrence)} | ${rule.evidenceRequired ? "需要证据" : "不强制证据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
+    lines.push("", "## 奖励规则", "", "| 规则 | 单次奖励 | 最大奖励 | 计算方式 | 分析依据要求 | 重叠组 | 条件 |", "| --- | ---: | ---: | --- | --- | --- | --- |");
+    for (const rule of rubric.bonusRules) lines.push(`| ${markdownCell(rule.name)} | ${rule.bonus} | ${rule.maxBonus} | ${occurrenceLabel(rule.occurrence)} | ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
   }
   if (rubric.mode !== "additive" && rubric.overlapGroups.length > 0) {
     lines.push("", "## 重叠规则组", "", "| 组 ID | 聚合方式 |", "| --- | --- |");
@@ -489,6 +507,13 @@ function scorePolicyMarkdownLabel(policy: "exact-level" | "range" | "continuous"
 
 function occurrenceLabel(occurrence: "once" | "per-occurrence"): string {
   return occurrence === "once" ? "仅一次" : "按次计算";
+}
+
+function deductionRuleLabel(rule: DeductionRule): string {
+  const policy = rule.amountPolicy ?? (rule.occurrence === "per-occurrence" ? "per-occurrence" : "fixed");
+  if (policy === "range") return `1–${rule.maxDeduction} 分（整数区间）`;
+  if (policy === "per-occurrence") return `${rule.deduction} 分/次`;
+  return `${rule.deduction} 分（固定一次）`;
 }
 
 function modeLabel(mode: Rubric["mode"]): string {

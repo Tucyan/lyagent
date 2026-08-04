@@ -17,10 +17,24 @@ import {
 import type { PiRubricDesigner, RubricDesignEvent, RubricDesignerOutcome } from "../agents/rubric-designer/agent.js";
 import { rubricSchema, validateRubric, type Rubric } from "../schemas/rubric.js";
 import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricService, RubricServiceError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
+import { registerGradingApi } from "./grading-routes.js";
+import { StudentIdentityError, type StudentIdentityClient } from "../services/student-identity-service.js";
+import type { MineruConversionClient, SubmissionConversionOptions } from "../services/submission-conversion-service.js";
+import type { GradingAgentBuilder } from "./grading-routes.js";
+import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
+import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequiredError } from "../services/grading-result-service.js";
+import { GradingResultValidationError } from "../schemas/grading.js";
 
 export type MaterialPlanner = (sections: SourceSection[]) => Promise<KnowledgePlan>;
 export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeService["forCourse"]>>, web?: WebEvidenceService) => PiCourseQaAgent;
 export type RubricDesignerFactory = (assignmentId: string, rubricService: RubricService) => PiRubricDesigner;
+
+class RubricCourseBindingError extends Error {
+  constructor() {
+    super("Exactly one course is required to create a rubric assignment");
+    this.name = "RubricCourseBindingError";
+  }
+}
 
 export interface ServerOptions {
   workspaceRoot: string;
@@ -28,6 +42,10 @@ export interface ServerOptions {
   courseQaAgentFactory?: CourseQaAgentFactory;
   webEvidenceFactory?: () => WebEvidenceService;
   rubricDesignerFactory?: RubricDesignerFactory;
+  studentIdentityClient?: StudentIdentityClient;
+  mineruConversionClient?: MineruConversionClient;
+  submissionConversionOptions?: SubmissionConversionOptions;
+  gradingAgentFactory?: GradingAgentBuilder;
   modelStatus?: { provider: string; model: string; configured: boolean };
 }
 
@@ -78,20 +96,37 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   const rubrics = new RubricService(options.workspaceRoot);
   const modelStatus = options.modelStatus ?? { provider: "deepseek", model: "deepseek-v4-flash", configured: false };
   const dashboard = new DashboardService(options.workspaceRoot, modelStatus);
+  const gradingApi = registerGradingApi(app, {
+    workspaceRoot: options.workspaceRoot,
+    rubrics,
+    ...(options.studentIdentityClient ? { identityClient: options.studentIdentityClient } : {}),
+    ...(options.mineruConversionClient ? { conversionClient: options.mineruConversionClient } : {}),
+    ...(options.submissionConversionOptions ? { conversionOptions: options.submissionConversionOptions } : {}),
+    ...(options.gradingAgentFactory ? { gradingAgentFactory: options.gradingAgentFactory } : {}),
+  });
   const planner = options.materialPlanner ?? defaultPlanner;
   const activeAgentRuns = new Map<string, AbortController>();
+  const startupCourses = await materials.listCourses();
+  if (startupCourses.length === 1) await rubrics.bindUnboundAssignments(startupCourses[0]!.id);
 
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof ZodError) return reply.code(400).send({ code: "VALIDATION_ERROR", message: "Request validation failed" });
+    if (error instanceof ZodError) return reply.code(400).send({ code: "VALIDATION_ERROR", message: "Request validation failed", issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) });
     if (error instanceof KnowledgeAccessError) return reply.code(error.code === "ACTIVE_RELEASE_NOT_FOUND" ? 409 : 422).send({ code: error.code, message: error.message });
     if (error instanceof SessionNotFoundError) return reply.code(404).send({ code: "SESSION_NOT_FOUND", message: error.message });
     if (error instanceof KnowledgeReleaseError) return reply.code(error.message.includes("changed") ? 409 : 422).send({ code: error.message.includes("changed") ? "CONFLICT" : "KNOWLEDGE_ERROR", message: error.message });
     if (error instanceof RubricConflictError) return reply.code(409).send({ code: "RUBRIC_CONFLICT", message: "The rubric draft has changed; refresh and try again" });
+    if (error instanceof RubricCourseBindingError) return reply.code(422).send({ code: "RUBRIC_COURSE_BINDING_ERROR", message: error.message });
     if (error instanceof RubricValidationError) return reply.code(422).send({ code: "RUBRIC_VALIDATION_FAILED", errors: error.validation.errors, warnings: error.validation.warnings });
     if (error instanceof RubricServiceError) {
       if (error.message.includes("was not found")) return reply.code(404).send({ code: "RUBRIC_NOT_FOUND", message: "The requested rubric session does not exist" });
       return reply.code(422).send({ code: "RUBRIC_STATE_ERROR", message: "The rubric request is not valid for the current session state" });
     }
+    if (error instanceof UnsupportedSubmissionTypeError) return reply.code(415).send({ code: error.code, message: error.message });
+    if (error instanceof StudentIdentityError) return reply.code(422).send({ code: "STUDENT_IDENTITY_ERROR", message: error.message });
+    if (error instanceof GradingSessionNotFoundError) return reply.code(404).send({ code: "GRADING_SESSION_NOT_FOUND", message: error.message });
+    if (error instanceof GradingConflictError || error instanceof GradingDraftConflictError) return reply.code(409).send({ code: "GRADING_CONFLICT", message: error.message });
+    if (error instanceof GradingResultValidationError) return reply.code(422).send({ code: "GRADING_RESULT_INVALID", message: error.message });
+    if (error instanceof GradingReviewRequiredError || error instanceof GradingResultServiceError || error instanceof GradingSessionError) return reply.code(422).send({ code: "GRADING_ERROR", message: error.message });
     const requestError = error as NodeJS.ErrnoException & { statusCode?: unknown };
     if (typeof requestError.statusCode === "number" && requestError.statusCode >= 400 && requestError.statusCode < 500) {
       return reply.code(requestError.statusCode).send({ code: requestError.code ?? "REQUEST_ERROR", message: "Request validation failed" });
@@ -104,14 +139,21 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.post("/api/agent-runs/:runId/cancel", async (request, reply) => {
     const { runId } = z.object({ runId: z.string().uuid() }).parse(request.params);
     const controller = activeAgentRuns.get(runId);
-    if (!controller) return reply.code(404).send({ cancelled: false });
+    if (!controller) {
+      const cancelled = await gradingApi.cancel(runId);
+      return cancelled === undefined ? reply.code(404).send({ cancelled: false }) : { cancelled };
+    }
     controller.abort();
     return { cancelled: true };
   });
   app.get("/api/system/model", async () => modelStatus);
   app.get("/api/dashboard", async () => dashboard.snapshot());
   app.get("/api/rubrics/assignments", async () => rubrics.listAssignments());
-  app.post("/api/rubrics/assignments", async (request, reply) => reply.code(201).send(await rubrics.createAssignment(rubricAssignmentSchema.parse(request.body))));
+  app.post("/api/rubrics/assignments", async (request, reply) => {
+    const courses = await materials.listCourses();
+    if (courses.length !== 1) throw new RubricCourseBindingError();
+    return reply.code(201).send(await rubrics.createAssignment({ ...rubricAssignmentSchema.parse(request.body), courseId: courses[0]!.id }));
+  });
   app.get("/api/rubrics/assignments/:assignmentId", async (request) => rubrics.getAssignment(rubricAssignmentIdSchema.parse(request.params).assignmentId));
   app.get("/api/rubrics/assignments/:assignmentId/session", async (request) => (await rubrics.getDesignSession(rubricAssignmentIdSchema.parse(request.params).assignmentId)) ?? null);
   app.patch("/api/rubrics/assignments/:assignmentId", async (request) => {
@@ -349,6 +391,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     return reply;
   });
 
+  app.addHook("onClose", async () => gradingApi.close());
   return app;
 }
 

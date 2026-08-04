@@ -1,12 +1,13 @@
 import { useState, type ReactNode } from "react";
 
-type ActivePage = "dashboard" | "knowledge" | "rubrics";
+type ActivePage = "dashboard" | "knowledge" | "rubrics" | "grading";
 
-const futureModules = ["作业批改", "批量任务", "系统运维", "企业微信"];
+const futureModules = ["批量任务", "系统运维", "企业微信"];
 
 export function AdminShell({ active, children }: { active: ActivePage; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const navigation = [
+    { id: "grading", href: "/grading", label: "作业批改" },
     { id: "dashboard", href: "/", label: "总览" },
     { id: "knowledge", href: "/knowledge", label: "课程资料库" },
     { id: "rubrics", href: "/rubrics", label: "评分量表" },

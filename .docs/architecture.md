@@ -11,7 +11,7 @@
 - `ToolRegistry`：注册并调用已知工具；
 - 基础类型、启动入口和核心单元测试。
 
-M1已实现SafeFilesystem、资料导入/发布Service、Pi资料规划器、Fastify API和React管理端。M2已实现仅访问 active release 的课程答疑、Pi 只读工具、SSE 流式 API、`/qa`页面及可选 DDGS 网络搜索。SQLite任务队列、Rubric、批改和企业微信仍未实现。开发时必须区分本节的当前状态与`plan.md`中的目标设计。
+M1已实现资料导入与发布，M2已实现课程答疑，M3已实现评分表设计与冻结。M4现已实现单份作业转换、会话式批改、教师Review和JSON/Markdown导出；批量任务与企业微信仍属于后续里程碑。开发时必须区分本节的当前状态与`plan.md`中的目标设计。
 
 ## 目标分层
 
@@ -107,6 +107,8 @@ Web /rubrics
 
 ### 批改发布
 
+评分草稿提交由服务端按会话串行化，并依据冻结评分表校验等级区间、精确等级、是否允许部分分、两位小数精度以及按次扣分/加分步长。文字证据的短引文必须真实出现在锁定提交的对应行段。运行中进程若重启，原运行标记为`INTERRUPTED`且不会自动再次调用模型；尚未领取的排队运行才会继续。正式结果以JSON为事实来源，读取或重复确认会补齐Markdown、确认审计和SQLite终态。
+
 ```text
 领取带租约的job
 →模型生成草稿
@@ -123,7 +125,15 @@ Web /rubrics
 
 根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
 
-Dashboard 只返回课程元数据、active release 元数据、文档/会话计数和截断后的会话摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。评分表入口已启用；批改、批量任务、运维和企业微信仍是后续里程碑，管理端显示禁用入口。
+Dashboard 只返回课程元数据、active release 元数据、文档/会话计数和截断后的会话摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。评分表与单份批改入口已启用；批量任务、运维和企业微信仍是后续里程碑。
+
+## M4单份批改边界
+
+- `GradingSessionService`绑定唯一课程、冻结评分表版本、不可变原文件、转换后Markdown版本与程序生成的内部ID。
+- `SubmissionConversionService`通过仅允许环回地址的MinerU异步API转换DOCX、PDF、PPTX和图片；Markdown直接导入。MinerU任务丢失时从不可变原件重新提交。
+- `PiAssignmentGrader`只获得固定13项工具。冻结评分标准由服务端注入系统提示词；总分、证据、置信度和Review状态由程序在提交草稿时重算。
+- `GradingRunService`以并发1执行后台轮次，把安全处理摘要、模型回复和脱敏工具活动写入可按序号回放的事件表；页面断开不会取消运行。
+- `GradingResultService`负责乐观版本、教师审计、Review确认和不可变JSON/Markdown发布。Agent不能直接发布正式结果。
 
 ## 依赖方向
 

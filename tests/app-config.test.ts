@@ -24,18 +24,23 @@ describe("local app configuration", () => {
   it("loads the DeepSeek key only from workspace/config/app.json", async () => {
     const root = await temporaryWorkspace('{"deepseekApiKey":"test-key"}');
 
-    await expect(loadAppConfig(root)).resolves.toEqual({ deepseekApiKey: "test-key", webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
+    await expect(loadAppConfig(root)).resolves.toEqual({ deepseekApiKey: "test-key", mineru: { baseUrl: "http://127.0.0.1:8000", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 }, webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
   });
 
   it("uses DDGS web-search defaults when the local file is absent", async () => {
     const root = await temporaryWorkspace();
 
-    await expect(loadAppConfig(root)).resolves.toEqual({ webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
+    await expect(loadAppConfig(root)).resolves.toEqual({ mineru: { baseUrl: "http://127.0.0.1:8000", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 }, webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
   });
 
   it("rejects an invalid local key type", async () => {
     const root = await temporaryWorkspace('{"deepseekApiKey":42}');
 
     await expect(loadAppConfig(root)).rejects.toBeInstanceOf(AppConfigError);
+  });
+
+  it("loads bounded loopback MinerU settings", async () => {
+    const root = await temporaryWorkspace('{"mineru":{"baseUrl":"http://localhost:9000","pollIntervalMs":250,"taskTimeoutSeconds":120,"maxAttempts":2}}');
+    await expect(loadAppConfig(root)).resolves.toMatchObject({ mineru: { baseUrl: "http://localhost:9000", pollIntervalMs: 250, taskTimeoutSeconds: 120, maxAttempts: 2 } });
   });
 });

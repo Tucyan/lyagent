@@ -36,6 +36,8 @@ npm run build
 
 M1资料规划和M2课程答疑都从`workspace/config/app.json`读取`deepseekApiKey`；未配置时资料规划使用确定性本地规划，课程答疑 API 返回`MODEL_NOT_CONFIGURED`。M2网络搜索默认使用本机 Python 的`ddgs`包，不需要搜索密钥；`webSearch.enabled`可关闭，`pythonCommand`可指定 Python 路径。该本地文件已被Git忽略，密钥不得写入仓库、日志或文档。
 
+M4额外读取`mineru`配置。MinerU必须由用户单独启动，`baseUrl`只允许`http://127.0.0.1`、`localhost`或环回IPv6；默认轮询1秒、超时3600秒、最多自动提交3次。旧式`.doc`不受支持，需先转换为`.docx`或`.pdf`。
+
 提交前至少执行`npm run check`和`npm run build`。
 
 ## 当前代码布局

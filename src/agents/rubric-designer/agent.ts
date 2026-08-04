@@ -164,7 +164,7 @@ export function createPiRubricDesigner(options: PiRubricDesignerOptions): PiRubr
             sources,
             existingDraft: existingDraft ?? null,
           }));
-          for (let retry = 0; retry < 2 && !rubricTools.capturedQuestion() && !rubricTools.capturedReply() && !rubricTools.updatedDraft() && assistantEndedEmpty(terminalAgent); retry += 1) {
+          for (let retry = 0; retry < 3 && !rubricTools.capturedQuestion() && !rubricTools.capturedReply() && !rubricTools.updatedDraft() && assistantEndedEmpty(terminalAgent); retry += 1) {
             await terminalAgent.prompt(`Choose the correct terminal tool now: reply_to_teacher for a non-mutating answer, ${resultTool} for an explicit change, or ask_rubric_question if blocked. Do not return prose.`);
           }
         } finally {
@@ -209,8 +209,9 @@ function staticModeRecommendation(): RubricModeRecommendation {
 
 function rubricContract(mode: RubricMode): string {
   if (mode === "additive") return "Selected mode: additive. Submit {schemaVersion:'1.0', mode:'additive', totalScore:number, partialCreditAllowed:boolean, criteria:[{id,name,description,maxScore,scorePolicy,evidenceRequired,levels?}]}; criterion maxima must equal totalScore.";
-  if (mode === "deductive") return "Selected mode: deductive. Submit {schemaVersion:'1.0', mode:'deductive', totalScore:number, rules:[{id,name,condition,deduction,maxDeduction,occurrence,evidenceRequired,overlapGroup?}], overlapGroups:[{id,aggregation}]}.";
-  return "Selected mode: hybrid. Submit {schemaVersion:'1.0', mode:'hybrid', totalScore:number, partialCreditAllowed:boolean, criteria:[...], bonusRules:[...], deductionRules:[...], overlapGroups:[...]}; criterion maxima must equal totalScore.";
+  const deductionContract = "Deduction rules independently use one amountPolicy: fixed requires deduction and occurrence:'once'; per-occurrence requires deduction and occurrence:'per-occurrence'; range omits deduction, requires occurrence:'once', and permits any positive integer through maxDeduction. Preserve legacy rules without amountPolicy when editing them. Prefer range when the source says to deduct by severity, discretion, or within an interval.";
+  if (mode === "deductive") return `Selected mode: deductive. Submit {schemaVersion:'1.0', mode:'deductive', totalScore:number, rules:[{id,name,condition,amountPolicy?,deduction?,maxDeduction,occurrence,evidenceRequired,overlapGroup?}], overlapGroups:[{id,aggregation}]}. ${deductionContract}`;
+  return `Selected mode: hybrid. Submit {schemaVersion:'1.0', mode:'hybrid', totalScore:number, partialCreditAllowed:boolean, criteria:[...], bonusRules:[...], deductionRules:[...], overlapGroups:[...]}; criterion maxima must equal totalScore. ${deductionContract}`;
 }
 
 function parseAssistantJson(agent: Agent): unknown {

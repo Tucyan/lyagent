@@ -33,7 +33,17 @@ export class SafeFilesystem {
     return readFile(resolved, "utf8");
   }
 
+  async readBytes(relativePath: string): Promise<Buffer> {
+    const resolved = await this.resolveExisting(relativePath);
+    return readFile(resolved);
+  }
+
   async writeText(relativePath: string, content: string): Promise<void> {
+    const resolved = await this.resolveForWrite(relativePath);
+    await this.atomicWrite(resolved, content);
+  }
+
+  async writeBytes(relativePath: string, content: Uint8Array): Promise<void> {
     const resolved = await this.resolveForWrite(relativePath);
     await this.atomicWrite(resolved, content);
   }
@@ -184,7 +194,7 @@ export class SafeFilesystem {
     }
   }
 
-  private async atomicWrite(target: string, content: string): Promise<void> {
+  private async atomicWrite(target: string, content: string | Uint8Array): Promise<void> {
     const temporary = `${target}.tmp-${randomUUID()}`;
     try {
       await writeFile(temporary, content, "utf8");

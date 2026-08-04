@@ -103,7 +103,7 @@ describe("rubric versioning", () => {
     expect(markdown).toContain("允许部分得分：是");
     expect(markdown).toContain("good");
     expect(markdown).toContain("60–100");
-    expect(markdown).toContain("需要证据");
+    expect(markdown).toContain("需要评分分析依据");
     expect(markdown).toContain("timing");
     expect(markdown).toContain("仅取最高项");
   });

@@ -5,11 +5,17 @@
     "provider": "ddgs",
     "maxResults": 5
   },
+  "mineru": {
+    "baseUrl": "http://127.0.0.1:8000",
+    "pollIntervalMs": 1000,
+    "taskTimeoutSeconds": 3600,
+    "maxAttempts": 3
+  },
   "knowledgeReadMaxLines": 100,
   "sourceReadMaxLines": 200,
   "searchDefaultResults": 5,
   "searchMaxResults": 10,
-  "gradingConcurrency": 4,
+  "gradingConcurrency": 1,
   "highConfidenceThreshold": 0.8,
   "lowConfidenceThreshold": 0.6,
   "overallReviewThreshold": 0.7,

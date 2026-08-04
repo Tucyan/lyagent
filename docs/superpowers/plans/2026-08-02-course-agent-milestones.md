@@ -64,7 +64,7 @@ changes_requested → in_progress
 |M1|课程资料库导入、发布、浏览和回滚|MVP Core|accepted|
 |M2|带原文引用的Web课程答疑|MVP Core|accepted|
 |M3|加分/减分/混合Rubric设计与版本发布|MVP Core|accepted|
-|M4|单份作业批改、Review和导出|MVP Core|planned|
+|M4|单份作业批改、Review和导出|MVP Core|ready_for_user_test|
 |M5|可恢复批量批改和班级汇总|MVP Core|planned|
 |M6|本地备份、恢复和运行诊断|MVP Core|planned|
 |M7|企业微信私聊/群聊课程答疑|MVP Integration|planned|
@@ -256,13 +256,13 @@ changes_requested → in_progress
 
 ### 实施任务
 
-- [ ] 用失败测试定义GradingJobContext隔离、证据校验、总分和Review规则。
-- [ ] 实现单份submission浏览、搜索、分段读取和图片读取工具。
-- [ ] 实现批改草稿、程序校验、原子结果发布和来源哈希。
-- [ ] 实现单份job所需的最小SQLite Schema和启动协调。
-- [ ] 实现教师Patch、确认状态和追加写审计事件。
-- [ ] 实现上传、启动批改、证据查看、Review和JSON/Markdown导出页面。
-- [ ] 创建`docs/acceptance/M4-single-grading.md`并交付用户测试。
+- [x] 用失败测试定义GradingJobContext隔离、证据校验、总分和Review规则。
+- [x] 实现单份submission浏览、搜索、分段读取和图片读取工具。
+- [x] 实现批改草稿、程序校验、原子结果发布和来源哈希。
+- [x] 实现单份job所需的最小SQLite Schema和启动协调。
+- [x] 实现教师Patch、确认状态和追加写审计事件。
+- [x] 实现上传、启动批改、证据查看、Review和JSON/Markdown导出页面。
+- [x] 创建`docs/acceptance/M4-single-grading.md`并交付用户测试。
 
 ### 用户验收步骤
 

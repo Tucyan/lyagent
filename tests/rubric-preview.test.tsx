@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { RubricDocument } from "../web/src/components/RubricPreviewEditor.js";
+import { RubricDocument, RubricEditor } from "../web/src/components/RubricPreviewEditor.js";
 
 describe("rubric teacher preview", () => {
   it("renders a human-readable scorecard instead of raw JSON", () => {
@@ -36,5 +36,20 @@ describe("rubric teacher preview", () => {
     expect(html).toContain("80–100 分");
     expect(html).toContain("重叠组：evidence");
     expect(html).toContain("仅取最高项");
+  });
+
+  it("offers all three deduction strategies per rule", () => {
+    const html = renderToStaticMarkup(<RubricEditor onChange={() => undefined} rubric={{
+      schemaVersion: "1.0",
+      mode: "deductive",
+      totalScore: 100,
+      rules: [{ id: "severity", name: "Severity", condition: "By severity", amountPolicy: "range", maxDeduction: 20, occurrence: "once", evidenceRequired: true }],
+      overlapGroups: [],
+    }} />);
+
+    expect(html).toContain("固定一次扣分");
+    expect(html).toContain("按次扣分");
+    expect(html).toContain("自由区间扣分");
+    expect(html).toContain("按严重程度在整数区间内扣分");
   });
 });

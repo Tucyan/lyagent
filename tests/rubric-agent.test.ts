@@ -91,6 +91,26 @@ describe("rubric designer tools", () => {
     await expect(createTool!.execute("test", { rubric: deductiveRubric })).rejects.toThrow("does not match the selected scoring mode");
   });
 
+  it("accepts all deduction amount policies in the agent tool contract", async () => {
+    const { service, assignment } = await fixture();
+    await service.selectMode(assignment.id, "deductive");
+    const tools = createRubricDesignerTools(service, assignment.id, "deductive");
+    const createTool = tools.tools.find((tool) => tool.name === "create_rubric_draft");
+    const rubric = {
+      schemaVersion: "1.0",
+      mode: "deductive",
+      totalScore: 100,
+      rules: [
+        { id: "fixed", name: "Fixed", condition: "Triggered once", amountPolicy: "fixed", deduction: 20, maxDeduction: 20, occurrence: "once", evidenceRequired: true },
+        { id: "repeat", name: "Repeat", condition: "Each occurrence", amountPolicy: "per-occurrence", deduction: 2, maxDeduction: 10, occurrence: "per-occurrence", evidenceRequired: true },
+        { id: "severity", name: "Severity", condition: "By severity", amountPolicy: "range", maxDeduction: 20, occurrence: "once", evidenceRequired: true },
+      ],
+      overlapGroups: [],
+    };
+
+    expect(Value.Check(createTool!.parameters, { rubric })).toBe(true);
+  });
+
   it("returns a bounded labelled untrusted excerpt for a malicious rubric source", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "rubric-source-"));
     roots.push(root);
@@ -145,6 +165,30 @@ describe("rubric designer agent", () => {
     expect(events.filter((event) => event.type === "reply_delta").map((event) => event.delta).join(""))
       .toBe("建议补充评分等级的可观察证据，并检查边界情况。");
     await expect(service.getDraft(assignment.id)).resolves.toEqual(existing);
+  });
+
+  it("continues after an empty model turn and creates the requested first draft", async () => {
+    const { service, assignment } = await fixture();
+    const faux = fauxProvider({ tokensPerSecond: 10_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("read_assignment_context", {}),
+        fauxToolCall("read_rubric_draft", {}),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage([]),
+      fauxAssistantMessage([]),
+      fauxAssistantMessage([]),
+      fauxAssistantMessage([]),
+      fauxAssistantMessage([fauxToolCall("create_rubric_draft", { rubric: additiveRubric })], { stopReason: "toolUse" }),
+    ]);
+
+    const outcome = await createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id })
+      .design("Create a first rubric draft.");
+
+    expect(outcome.kind).toBe("draft");
+    await expect(service.getDraft(assignment.id)).resolves.toMatchObject({ rubric: additiveRubric });
   });
 
   it("returns a strict three-option mode recommendation", async () => {

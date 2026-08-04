@@ -9,4 +9,9 @@ export const dashboardQuickActions = [
     label: "创建评分量表",
     description: "新建评分会话，和 AI 一起制定可冻结的评分标准。",
   },
+  {
+    href: "/grading",
+    label: "批改单份作业",
+    description: "上传学生报告，使用冻结评分表开始可复核的会话式批改。",
+  },
 ] as const;

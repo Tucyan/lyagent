@@ -89,12 +89,39 @@ M1已由资料导入服务安全创建`inbox/materials`和`knowledge/{courseId}`
 - 删除评分会话必须先由前端二次确认；服务端删除整个受控Assignment目录，因此参考资料、`design-session.json`聊天记录、当前草稿和全部冻结正式版本会一并永久删除，不提供回退。
 - 冻结的JSON是评分规则事实来源；Markdown是包含评分等级、证据要求、部分得分与重叠组语义的可读导出。嵌套规则不使用CSV作为事实来源。
 - 加分制支持`exact-level`、`range`和`continuous`评分策略。
+- 每条扣分规则独立选择`fixed`（触发时固定一次）、`per-occurrence`（按固定单位累计至上限）或`range`（在1到上限之间取任意整数）；同一减分制或混合制评分表可同时包含三种策略。未声明`amountPolicy`的历史规则按原`occurrence`语义读取，冻结版本不迁移、不改写。
+- 批改Agent默认在冻结规则允许时按证据和严重程度使用区间内具体分值，不把区间规则简化成`0/上限`二选一；满分只用于有充分证据证明完整达到最高标准的项目。固定一次与按次规则仍必须严格使用冻结金额或增量。
 - `range`结果必须保存`selectedLevelId`，得分位于等级闭区间。
 - 减分制显式记录每条规则是否触发、实际扣分、证据和置信度。
+- 新批改草稿的默认证据是结构化评分分析论据，包括作业表现观察、冻结标准对应关系和具体分值理由；它是面向教师的简明可审计结论，不是模型隐藏思维链。原文行号、短引文和图片只作为可选佐证；历史结果继续兼容原有文本与图片证据。
 - 同一`overlapGroup`默认只触发一条规则，除非冻结Rubric明确允许累计。
 - 总分、重复扣分和置信度聚合由程序计算。
 
-评分表精确Schema以`src/schemas/rubric.ts`为事实来源；批改Schema在M4实现后由`src/schemas/grading.ts`维护。本文件只维护不变量。
+评分表精确Schema以`src/schemas/rubric.ts`为事实来源；批改Schema以`src/schemas/grading.ts`为事实来源。本文件只维护不变量。
+
+## M4单份批改存储
+
+一个批改会话绑定唯一课程、一个评分表Assignment的冻结版本、一名学生、一份不可变原文件和一个当前Markdown提交版本。`batchId`、`studentKey`与会话ID均由程序生成，姓名和学号不参与路径拼接。
+
+```text
+assignments/{assignmentId}/
+├─ submissions/{batchId}/{studentKey}/
+│  ├─ metadata.json
+│  ├─ original/submission.{ext}
+│  └─ converted/submission-vN.md + assets/*
+└─ results/{batchId}/
+   ├─ {studentKey}.draft.json
+   ├─ {studentKey}.json
+   ├─ {studentKey}.md
+   ├─ sessions/{studentKey}.json
+   └─ audit/{studentKey}.jsonl
+```
+
+`grading.sqlite`中的`grading_sessions`、`grading_jobs`、`agent_runs`和`agent_run_events`只保存控制状态与可恢复事件。学生正文、草稿正文、正式结果和审计正文保存在受控Workspace文件中。正式JSON是事实来源，Markdown可重建。
+
+已开始批改的提交与已确认结果不原地覆盖；教师选择“创建提交修订”或“创建结果修订”时，系统从当前锁定Markdown及其受控图片资源创建新的单份批改会话，原会话及正式JSON保持只读。`submissionHash`始终包含原件、当前Markdown和资源路径/内容哈希。相同会话同一时刻只允许一个排队或运行中的Agent run，grade与chat运行都会持久化`activeRunId`供页面恢复。
+
+批改失败、显式取消或服务重启中断后，原锁定提交可在同一会话重新排队；已有草稿的修订轮次仍可再次进入`waiting_for_teacher`。重启恢复会清理中断run的活动索引，尚未执行的queued run保留活动索引并继续单线程执行。
 
 ## Job状态机
 
