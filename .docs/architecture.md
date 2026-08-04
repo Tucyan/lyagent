@@ -89,6 +89,22 @@ Web /qa
 
 流式事件只传递文本增量和安全的工具活动摘要；页面将`final`前的文本以“处理过程（非最终回答）”独立展示且不写入会话，正式回答只取`final.answer`。不得向浏览器传递思维链、Prompt、原文、完整工具参数、绝对路径或密钥。工具活动默认显示最近五项，可展开查看其余安全摘要。`final`事件发送前，程序验证课程引用属于当前 active release 且已被读取；网络引用必须来自本会话已搜索并已读取的受控网页结果。
 
+### 评分表设计
+
+```text
+Web /rubrics
+→ 创建Assignment并保存受控参考资料
+→ 选择并持久化加分制、减分制或混合制
+→ Rubric Designer Agent（固定工具白名单）
+→ RubricService校验并保存可编辑草稿
+→ 教师人工编辑、校验并确认冻结
+→ 不可变rubric-vN.json
+```
+
+评分制度选择、草稿版本、冻结版本和会话历史由程序控制。Agent只能读取当前Assignment的受控上下文和来源，并通过结构化工具提出澄清问题、给出不写入草稿的教师回复或提交草稿；咨询、审阅和解释类请求在没有明确改稿指令时只回复，不改变草稿版本。Agent不能冻结版本、选择其他Assignment或访问任意路径。评分表SSE只展示程序生成的固定处理阶段文案、本地化工具摘要，以及`reply_to_teacher`结构化参数中经过长度限制的最终回复增量；不转发其他Provider原始文本增量。完整Prompt、来源原文、其他工具参数、路径和密钥不进入浏览器或普通日志。会话重进只读取已保存状态，不调用模型；AI只在教师选择制度或发送消息时运行。模型未配置时，程序创建同制度的最小合法草稿，教师仍可从结构化编辑器完成全部流程。
+
+答疑和评分表的流式HTTP连接只负责实时展示，不拥有Agent任务生命周期。页面切换或网络断连后，服务端继续完成当前任务并在成功后持久化；显式停止使用服务端运行ID调用取消接口，中止轮次不写入会话。
+
 ### 批改发布
 
 ```text
@@ -105,9 +121,9 @@ Web /qa
 
 ## 教师工作台
 
-根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
+根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
 
-Dashboard 只返回课程元数据、active release 元数据、文档/会话计数和截断后的会话摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。评分、批改、批量任务、运维和企业微信仍是后续里程碑，管理端仅显示禁用入口。
+Dashboard 只返回课程元数据、active release 元数据、文档/会话计数和截断后的会话摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。评分表入口已启用；批改、批量任务、运维和企业微信仍是后续里程碑，管理端显示禁用入口。
 
 ## 依赖方向
 

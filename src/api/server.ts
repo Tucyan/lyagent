@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import { randomUUID } from "node:crypto";
 import { ZodError, z } from "zod";
 import { sseComment, sseFrame } from "./streaming/sse.js";
 import type { PiCourseQaAgent } from "../agents/course-qa/agent.js";
@@ -13,9 +14,9 @@ import {
   type KnowledgePlan,
   type SourceSection,
 } from "../services/material-service.js";
-import type { PiRubricDesigner, RubricDesignerOutcome } from "../agents/rubric-designer/agent.js";
-import { rubricSchema, validateRubric } from "../schemas/rubric.js";
-import { RubricConflictError, RubricService, RubricServiceError, RubricValidationError } from "../services/rubric-service.js";
+import type { PiRubricDesigner, RubricDesignEvent, RubricDesignerOutcome } from "../agents/rubric-designer/agent.js";
+import { rubricSchema, validateRubric, type Rubric } from "../schemas/rubric.js";
+import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricService, RubricServiceError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
 
 export type MaterialPlanner = (sections: SourceSection[]) => Promise<KnowledgePlan>;
 export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeService["forCourse"]>>, web?: WebEvidenceService) => PiCourseQaAgent;
@@ -57,7 +58,7 @@ const contentEditSchema = z.object({
 const rubricAssignmentSchema = z.object({
   title: z.string().trim().min(1).max(120),
   totalScore: z.number().positive(),
-  requirements: z.string().trim().min(1).max(100_000),
+  requirements: z.string().trim().max(100_000).default(""),
   sources: z.array(z.object({ role: z.enum(["rubric_draft", "note"]), name: z.string().trim().min(1).max(160), content: z.string().max(1024 * 1024) })).max(10).default([]),
 });
 const rubricAssignmentIdSchema = z.object({ assignmentId: z.string().uuid() });
@@ -78,6 +79,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   const modelStatus = options.modelStatus ?? { provider: "deepseek", model: "deepseek-v4-flash", configured: false };
   const dashboard = new DashboardService(options.workspaceRoot, modelStatus);
   const planner = options.materialPlanner ?? defaultPlanner;
+  const activeAgentRuns = new Map<string, AbortController>();
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) return reply.code(400).send({ code: "VALIDATION_ERROR", message: "Request validation failed" });
@@ -99,11 +101,19 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   });
 
   app.get("/api/health", async () => ({ ok: true }));
+  app.post("/api/agent-runs/:runId/cancel", async (request, reply) => {
+    const { runId } = z.object({ runId: z.string().uuid() }).parse(request.params);
+    const controller = activeAgentRuns.get(runId);
+    if (!controller) return reply.code(404).send({ cancelled: false });
+    controller.abort();
+    return { cancelled: true };
+  });
   app.get("/api/system/model", async () => modelStatus);
   app.get("/api/dashboard", async () => dashboard.snapshot());
   app.get("/api/rubrics/assignments", async () => rubrics.listAssignments());
   app.post("/api/rubrics/assignments", async (request, reply) => reply.code(201).send(await rubrics.createAssignment(rubricAssignmentSchema.parse(request.body))));
   app.get("/api/rubrics/assignments/:assignmentId", async (request) => rubrics.getAssignment(rubricAssignmentIdSchema.parse(request.params).assignmentId));
+  app.get("/api/rubrics/assignments/:assignmentId/session", async (request) => (await rubrics.getDesignSession(rubricAssignmentIdSchema.parse(request.params).assignmentId)) ?? null);
   app.patch("/api/rubrics/assignments/:assignmentId", async (request) => {
     const { assignmentId } = rubricAssignmentIdSchema.parse(request.params);
     return rubrics.renameAssignment(assignmentId, rubricTitleSchema.parse(request.body).title);
@@ -133,8 +143,12 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     const { mode } = rubricModeSchema.parse(request.body);
     await assertRubricCanOpenDraft(rubrics, assignmentId);
     await rubrics.selectMode(assignmentId, mode);
-    if (!options.rubricDesignerFactory) return { selectedMode: mode, state: "manual" };
-    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), "Create the first rubric draft for this assignment.", (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome));
+    if (!options.rubricDesignerFactory) {
+      const assignment = await rubrics.getAssignment(assignmentId);
+      const draft = (await rubrics.getDraft(assignmentId)) ?? await rubrics.createDraft(assignmentId, manualRubric(mode, assignment.totalScore));
+      return { selectedMode: mode, state: "manual", draft };
+    }
+    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), "请根据当前作业要求和参考资料生成第一版评分表。", (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome), (user, assistant) => rubrics.appendConversationTurn(assignmentId, user, assistant), activeAgentRuns);
   });
   app.get("/api/rubrics/assignments/:assignmentId/draft", async (request) => (await rubrics.getDraft(rubricAssignmentIdSchema.parse(request.params).assignmentId)) ?? null);
   app.put("/api/rubrics/assignments/:assignmentId/draft", async (request) => {
@@ -180,7 +194,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (!await rubrics.getDesignSession(assignmentId)) throw new RubricServiceError("Select a scoring mode before starting rubric design");
     await assertRubricCanOpenDraft(rubrics, assignmentId);
     if (!options.rubricDesignerFactory) return reply.code(200).send({ state: "manual", message: "Manual rubric editing is available while the model is not configured." });
-    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), message, (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome));
+    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), message, (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome), (user, assistant) => rubrics.appendConversationTurn(assignmentId, user, assistant), activeAgentRuns);
   });
   app.get("/api/courses", async () => materials.listCourses());
   app.post("/api/courses", async (request, reply) => {
@@ -306,17 +320,18 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (!options.courseQaAgentFactory) return reply.code(503).send({ code: "MODEL_NOT_CONFIGURED", message: "The course QA model is not configured" });
 
     reply.hijack();
+    const controller = new AbortController();
+    const runId = randomUUID();
+    activeAgentRuns.set(runId, controller);
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
+      "x-agent-run-id": runId,
     });
     reply.raw.write(sseComment("course-qa"));
-    const controller = new AbortController();
-    const abortOnClose = () => { if (!reply.raw.writableEnded) controller.abort(); };
-    request.raw.once("close", abortOnClose);
-    const keepAlive = setInterval(() => { if (!reply.raw.writableEnded) reply.raw.write(sseComment("keep-alive")); }, 15_000);
-    const emit = (event: CourseQaEvent) => { if (!controller.signal.aborted && !reply.raw.writableEnded) reply.raw.write(sseFrame(event.type, event)); };
+    const keepAlive = setInterval(() => { if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseComment("keep-alive")); }, 15_000);
+    const emit = (event: CourseQaEvent) => { if (!controller.signal.aborted && !reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseFrame(event.type, event)); };
     try {
       const web = allowWebSearch ? options.webEvidenceFactory?.() : undefined;
       const answer = await options.courseQaAgentFactory(courseKnowledge, web).answer(question, emit, controller.signal);
@@ -328,8 +343,8 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
       if (!controller.signal.aborted) emit({ type: "error", code: "QA_FAILED", message: "The course answer could not be completed" });
     } finally {
       clearInterval(keepAlive);
-      request.raw.removeListener("close", abortOnClose);
-      if (!reply.raw.writableEnded) reply.raw.end();
+      activeAgentRuns.delete(runId);
+      if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.end();
     }
     return reply;
   });
@@ -340,42 +355,93 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
 function staticRubricRecommendation() {
   return {
     options: [
-      { mode: "additive" as const, recommended: false, benefit: "Makes criterion weights and awarded points easy to review." },
-      { mode: "deductive" as const, recommended: true, reason: "Without source material, a clear baseline with explicit deductions is the safest starting point." },
-      { mode: "hybrid" as const, recommended: false, benefit: "Can combine required criteria with transparent bonuses and deductions." },
+      { mode: "additive" as const, recommended: false, benefit: "各评分项的权重与得分清晰，适合按完成质量逐项给分。" },
+      { mode: "deductive" as const, recommended: true, reason: "尚无参考资料时，以满分为基准并列明扣分规则，最便于教师快速建立可执行标准。" },
+      { mode: "hybrid" as const, recommended: false, benefit: "可同时表达基础评分项、奖励表现与明确扣分。" },
     ],
   };
 }
 
-async function streamRubricDesign(request: FastifyRequest, reply: FastifyReply, designer: PiRubricDesigner, message: string, persistOutcome: (outcome: RubricDesignerOutcome) => Promise<void>): Promise<FastifyReply> {
+function manualRubric(mode: Rubric["mode"], totalScore: number): Rubric {
+  const criterion = {
+    id: "overall_quality",
+    name: "整体完成质量",
+    description: "请将本项拆分为适合当前作业的可观察评分维度。",
+    maxScore: totalScore,
+    scorePolicy: "continuous" as const,
+    evidenceRequired: true,
+  };
+  if (mode === "additive") return { schemaVersion: "1.0", mode, totalScore, partialCreditAllowed: true, criteria: [criterion] };
+  if (mode === "deductive") return {
+    schemaVersion: "1.0",
+    mode,
+    totalScore,
+    rules: [{ id: "general_issue", name: "通用问题", condition: "请填写明确、可观察的扣分触发条件。", deduction: Math.min(1, totalScore), maxDeduction: totalScore, occurrence: "once", evidenceRequired: true }],
+    overlapGroups: [],
+  };
+  return { schemaVersion: "1.0", mode, totalScore, partialCreditAllowed: true, criteria: [criterion], bonusRules: [], deductionRules: [], overlapGroups: [] };
+}
+
+async function streamRubricDesign(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  designer: PiRubricDesigner,
+  message: string,
+  persistOutcome: (outcome: RubricDesignerOutcome) => Promise<void>,
+  persistTurn: (user: { role: "user"; content: string }, assistant: { role: "assistant"; content: string; process?: string; tools?: RubricConversationTool[]; options?: string[] }) => Promise<unknown>,
+  activeAgentRuns: Map<string, AbortController>,
+): Promise<FastifyReply> {
   reply.hijack();
+  const controller = new AbortController();
+  const runId = randomUUID();
+  activeAgentRuns.set(runId, controller);
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive",
+    "x-agent-run-id": runId,
   });
   reply.raw.write(sseComment("rubric-designer"));
-  const controller = new AbortController();
-  const abortOnClose = () => { if (!reply.raw.writableEnded) controller.abort(); };
-  request.raw.once("close", abortOnClose);
-  const keepAlive = setInterval(() => { if (!reply.raw.writableEnded) reply.raw.write(sseComment("keep-alive")); }, 15_000);
+  const keepAlive = setInterval(() => { if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseComment("keep-alive")); }, 15_000);
   const emit = (event: string, value: unknown) => {
-    if (!controller.signal.aborted && !reply.raw.writableEnded) reply.raw.write(sseFrame(event, value));
+    if (!controller.signal.aborted && !reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseFrame(event, value));
+  };
+  let process = "";
+  const tools = new Map<string, RubricConversationTool>();
+  const onEvent = (event: RubricDesignEvent) => {
+    if (event.type === "process_delta") return;
+    emit(event.type, event);
+    if (event.type === "status" && !process) {
+      process = RUBRIC_SAFE_PROCESS_SUMMARY;
+      emit("process_delta", { type: "process_delta", delta: process });
+    }
+    if (event.type === "tool_start") tools.set(event.id, { id: event.id, name: event.name, label: event.label, summary: event.summary, status: "completed" });
+    if (event.type === "tool_end") tools.set(event.id, { id: event.id, name: event.name, label: event.label, summary: event.summary, status: event.status });
   };
   try {
-    const outcome = await designer.design(message, controller.signal);
+    const outcome = await designer.design(message, onEvent, controller.signal);
     if (!controller.signal.aborted) {
       await persistOutcome(outcome);
+      const content = outcome.kind === "question"
+        ? outcome.question.question
+        : outcome.kind === "reply"
+          ? outcome.reply
+          : "评分表草稿已更新，可以在右侧预览并继续修改。";
+      await persistTurn(
+        { role: "user", content: message },
+        { role: "assistant", content, ...(process ? { process } : {}), ...(tools.size > 0 ? { tools: [...tools.values()] } : {}), ...(outcome.kind === "question" && outcome.question.options ? { options: outcome.question.options } : {}) },
+      );
       if (outcome.kind === "question") emit("question", { question: outcome.question });
+      else if (outcome.kind === "reply") emit("reply", { reply: outcome.reply });
       else emit("draft", { version: outcome.draft.version, updatedAt: outcome.draft.updatedAt });
       emit("final", { kind: outcome.kind, message: outcome.message });
     }
   } catch {
-    if (!controller.signal.aborted) emit("error", { code: "RUBRIC_DESIGN_FAILED", message: "The rubric design request could not be completed" });
+    if (!controller.signal.aborted) emit("error", { code: "RUBRIC_DESIGN_FAILED", message: "评分表设计未能完成，请稍后重试或先使用人工编辑。" });
   } finally {
     clearInterval(keepAlive);
-    request.raw.removeListener("close", abortOnClose);
-    if (!reply.raw.writableEnded) reply.raw.end();
+    activeAgentRuns.delete(runId);
+    if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.end();
   }
   return reply;
 }

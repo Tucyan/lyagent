@@ -202,12 +202,12 @@ changes_requested → in_progress
 
 ### 实施任务
 
-- [ ] 用失败测试定义加分区间、精确等级、连续得分、减分上限和重叠组。
-- [ ] 实现Rubric Schema、确定性总分/冲突校验和结构化Patch。
-- [ ] 实现服务端AssignmentContext、乐观版本和不可变发布版本。
-- [ ] 实现只在关键歧义时提问的评分表设计Agent。
-- [ ] 实现创建、问答、编辑、校验、发布和复制新版本页面。
-- [ ] 创建`docs/acceptance/M3-rubric-design.md`并交付用户测试。
+- [x] 用失败测试定义加分区间、精确等级、连续得分、减分上限和重叠组。
+- [x] 实现Rubric Schema、确定性总分/冲突校验和结构化Patch。
+- [x] 实现服务端AssignmentContext、乐观版本和不可变发布版本。
+- [x] 实现只在关键歧义时提问的评分表设计Agent。
+- [x] 实现创建、问答、编辑、校验、发布和复制新版本页面。
+- [x] 创建`docs/acceptance/M3-rubric-design.md`并交付用户测试。
 
 ### 用户验收步骤
 

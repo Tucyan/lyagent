@@ -12,7 +12,7 @@
 
 这些测试只证明脚手架行为，不代表目标系统的安全边界已经完成。
 
-M1新增路径安全、知识发布、Pi资料规划器和资料导入API测试。M2新增 active release 检索、Pi 课程答疑工具/引用契约、会话/SSE API、前端 SSE 分帧，以及 DDGS 结果归一化、进程协议、网页证据和受控网页读取测试；普通测试使用Pi faux provider，不调用DeepSeek或公网。
+M1新增路径安全、知识发布、Pi资料规划器和资料导入API测试。M2新增 active release 检索、Pi 课程答疑工具/引用契约、会话/SSE API、前端 SSE 分帧，以及 DDGS 结果归一化、进程协议、网页证据和受控网页读取测试。M3新增三种评分制度Schema、草稿并发与冻结恢复、受控Agent工具、SSE与会话恢复、教师可读预览和页面状态测试；普通测试使用Pi faux provider，不调用DeepSeek或公网。
 
 ## 测试分层
 
@@ -27,6 +27,8 @@ M1新增路径安全、知识发布、Pi资料规划器和资料导入API测试�
 普通`npm test`不得要求模型密钥、企业微信账户或公网连接。
 
 课程答疑测试必须断言：staging 与跨课程内容不可读、引用已读取且落在 active release 内、资料不足不带引用、网络引用来自本会话已搜索且已读取的结果、以及 SSE 工具活动不包含推理、Prompt、原文、绝对路径或密钥。网页读取测试还必须覆盖私网地址与重定向拦截。
+
+评分表测试必须断言：作业要求或非空参考资料至少存在一项、无来源推荐不调用模型、已选制度和完成轮次会话可恢复、重进不自动请求推荐、咨询类消息产生流式且可持久化的回复并保持草稿内容与版本不变、非回复类Provider原始文本不进入SSE或持久化记录、Agent只能使用当前Assignment的固定工具、无模型时可创建人工首版草稿、草稿写入有版本冲突保护、冻结崩溃可恢复、冻结版本不可变且可创建修订、预览与Markdown包含等级和重叠规则，以及删除会话会同时移除参考资料、聊天记录、当前草稿和全部冻结正式版本。答疑和评分表都必须覆盖页面流断开后后台继续完成并持久化；显式停止必须通过运行ID取消且不保存未完成轮次。`tests/rubric-real-provider.test.ts`只在显式设置`RUN_REAL_AI=1`时使用当前本地配置运行真实Provider验收。
 
 ## 必须覆盖的风险
 
@@ -92,6 +94,12 @@ npm test -- --run tests/core.test.ts
 ```powershell
 npm run check
 npm run build
+```
+
+显式真实评分表Agent验收：
+
+```powershell
+$env:RUN_REAL_AI='1'; npm test -- --run tests/rubric-real-provider.test.ts
 ```
 
 文档变更额外检查Markdown链接、JSON/SQL示例和代码围栏。原生依赖ABI错误属于环境失败，先修复环境再判断测试结果。

@@ -3,14 +3,35 @@ import { Type } from "@earendil-works/pi-ai";
 import { rubricSchema, validateRubric, type Rubric } from "../../schemas/rubric.js";
 import type { RubricDraft, RubricService } from "../../services/rubric-service.js";
 
+export type RubricToolName = "read_assignment_context" | "read_rubric_source" | "read_rubric_draft" | "create_rubric_draft" | "replace_rubric_draft" | "validate_rubric" | "ask_rubric_question" | "reply_to_teacher";
+
 export interface RubricQuestion {
   question: string;
   options?: string[];
 }
 
+export function isRubricToolName(value: string): value is RubricToolName {
+  return ["read_assignment_context", "read_rubric_source", "read_rubric_draft", "create_rubric_draft", "replace_rubric_draft", "validate_rubric", "ask_rubric_question", "reply_to_teacher"].includes(value);
+}
+
+export function rubricToolActivity(name: RubricToolName): { label: string; summary: string } {
+  const activities: Record<RubricToolName, { label: string; summary: string }> = {
+    read_assignment_context: { label: "读取作业信息", summary: "查看当前作业的名称、总分、要求和参考资料" },
+    read_rubric_source: { label: "读取参考资料", summary: "查看当前评分会话中的一份受控参考资料" },
+    read_rubric_draft: { label: "读取评分表草稿", summary: "查看当前可编辑草稿及其版本" },
+    create_rubric_draft: { label: "创建评分表草稿", summary: "创建当前评分会话的第一版草稿" },
+    replace_rubric_draft: { label: "更新评分表草稿", summary: "使用版本校验更新当前草稿" },
+    validate_rubric: { label: "校验评分表", summary: "检查结构、总分和评分规则是否有效" },
+    ask_rubric_question: { label: "提出澄清问题", summary: "请求教师补充影响评分标准的关键信息" },
+    reply_to_teacher: { label: "回复教师", summary: "针对当前评分表提供建议或说明，不修改草稿" },
+  };
+  return activities[name];
+}
+
 export interface RubricDesignerTools {
   tools: AgentTool<any>[];
   capturedQuestion(): RubricQuestion | undefined;
+  capturedReply(): string | undefined;
   updatedDraft(): RubricDraft | undefined;
 }
 
@@ -22,6 +43,7 @@ const SOURCE_EXCERPT_LIMIT = 12_000;
  */
 export function createRubricDesignerTools(rubricService: RubricService, assignmentId: string, selectedMode: Rubric["mode"]): RubricDesignerTools {
   let question: RubricQuestion | undefined;
+  let reply: string | undefined;
   let updatedDraft: RubricDraft | undefined;
   const emptySchema = Type.Object({}, { additionalProperties: false });
   const rubricValue = rubricParameterSchema(selectedMode);
@@ -124,9 +146,26 @@ export function createRubricDesignerTools(rubricService: RubricService, assignme
     },
   };
 
+  const replySchema = Type.Object({
+    reply: Type.String({ minLength: 1, maxLength: 8_000 }),
+  }, { additionalProperties: false });
+  const replyToTeacher: AgentTool<typeof replySchema> = {
+    name: "reply_to_teacher",
+    label: "Reply to teacher",
+    description: "Reply with advice, review findings, or an explanation when the teacher did not explicitly request a draft change. This terminates the turn without modifying the rubric draft.",
+    parameters: replySchema,
+    executionMode: "sequential",
+    execute: async (_toolCallId, parameters) => {
+      if (reply) throw new Error("A teacher reply has already been captured");
+      reply = parameters.reply.trim();
+      return { content: [{ type: "text", text: "Reply captured without changing the rubric draft." }], details: {}, terminate: true };
+    },
+  };
+
   return {
-    tools: [readAssignmentContext, readRubricSource, readRubricDraft, createRubricDraft, replaceRubricDraft, validateRubricTool, askRubricQuestion],
+    tools: [readAssignmentContext, readRubricSource, readRubricDraft, createRubricDraft, replaceRubricDraft, validateRubricTool, askRubricQuestion, replyToTeacher],
     capturedQuestion: () => question,
+    capturedReply: () => reply,
     updatedDraft: () => updatedDraft,
   };
 }

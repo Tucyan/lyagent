@@ -39,6 +39,7 @@ export function CourseQaPage() {
   const [sessionToDelete, setSessionToDelete] = useState<QaSessionSummary>();
   const [sessionActionError, setSessionActionError] = useState("");
   const controller = useRef<AbortController | undefined>(undefined);
+  const agentRunId = useRef<string | undefined>(undefined);
   const [streamingMessageId, setStreamingMessageId] = useState<string>();
   const streaming = Boolean(streamingMessageId);
   const currentCourse = courses.find((course) => course.id === courseId);
@@ -97,6 +98,7 @@ export function CourseQaPage() {
       controller.current = aborter;
       const response = await fetch(`/api/courses/${courseId}/qa/sessions/${nextSessionId}/messages/stream`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, allowWebSearch }), signal: aborter.signal });
       if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "答疑请求失败");
+      agentRunId.current = response.headers.get("x-agent-run-id") ?? undefined;
       await consumeSse(response, (_event, raw) => {
         const event = raw as StreamEvent;
         setMessages((items) => items.map((message) => {
@@ -113,7 +115,15 @@ export function CourseQaPage() {
     } catch (error) {
       setMessages((items) => items.map((message) => message.role === "assistant" && !message.citations && !message.insufficient ? { ...message, stopped: error instanceof DOMException && error.name === "AbortError" } : message));
       if (!(error instanceof DOMException && error.name === "AbortError") && !receivedFinal) setNotice((error as Error).message);
-    } finally { controller.current = undefined; setStreamingMessageId(undefined); }
+    } finally { controller.current = undefined; agentRunId.current = undefined; setStreamingMessageId(undefined); }
+  };
+  const stopCurrentRun = async () => {
+    const runId = agentRunId.current;
+    try {
+      if (runId) await fetch(`/api/agent-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+    } finally {
+      controller.current?.abort();
+    }
   };
   const openCitation = async (citation: Citation) => {
     if (citation.type === "web") { window.open(citation.url, "_blank", "noopener,noreferrer"); return; }
@@ -130,7 +140,7 @@ export function CourseQaPage() {
       <header className="qa-header"><span>{currentCourse?.name ?? "课程答疑"}</span><small>{notice}</small></header>
       <section className="message-list" aria-live="polite">
         {messages.length === 0 ? <div className="qa-welcome"><h1>{currentCourse ? `你好，准备学习 ${currentCourse.name}` : "选择一门课程开始答疑"}</h1><p>我会优先依据当前已发布的课程资料作答，并附上可核查的引用。</p>{examples.map((example) => <button key={example} onClick={() => setInput(example)}>{example}</button>)}</div> : messages.map((message) => <article className={`chat-message ${message.role}`} key={message.id}>{message.role === "assistant" && <><ToolActivity steps={message.steps ?? []} streaming={isCurrentAssistantMessage(message)} />{message.process && <details className="assistant-process" open={shouldOpenProcess(isCurrentAssistantMessage(message))}><summary>模型处理过程 <small>非最终回答</small></summary><p>{message.process}</p></details>}</>}{message.content && (message.role === "assistant" ? <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown> : <p>{message.content}</p>)}{message.insufficient && <p className="insufficient">资料不足：当前可用资料无法支持这个问题。</p>}{message.citations?.map((citation) => <button className="citation" key={citation.type === "knowledge" ? `${citation.path}-${citation.startLine}` : `${citation.sourceId}-${citation.startLine}`} onClick={() => void openCitation(citation)}>{citation.type === "knowledge" ? `${citation.path.split("/").at(-1)} · L${citation.startLine}–L${citation.endLine}` : `${citation.title || new URL(citation.url).hostname} · 网络来源`}</button>)}{message.stopped && <p className="stopped">已停止，未保存本轮回答。</p>}</article>)}</section>
-      <ChatComposer value={input} onChange={setInput} onSend={() => void send()} onStop={() => controller.current?.abort()} allowWebSearch={allowWebSearch} onAllowWebSearchChange={setAllowWebSearch} disabled={!courseId || !active || !modelReady} streaming={streaming} />
+      <ChatComposer value={input} onChange={setInput} onSend={() => void send()} onStop={() => void stopCurrentRun()} allowWebSearch={allowWebSearch} onAllowWebSearchChange={setAllowWebSearch} disabled={!courseId || !active || !modelReady} streaming={streaming} />
     </main>
     {sessionToRename && <div className="modal-backdrop"><section className="session-modal" role="dialog" aria-modal="true" aria-labelledby="rename-session-title"><form onSubmit={(event) => { event.preventDefault(); void renameSession(); }}><h2 id="rename-session-title">重命名会话</h2><label>会话名称<input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} maxLength={80} autoFocus /></label>{sessionActionError && <p className="modal-error">{sessionActionError}</p>}<div className="modal-actions"><button type="button" onClick={() => { setSessionToRename(undefined); setSessionActionError(""); }}>取消</button><button type="submit">保存</button></div></form></section></div>}
     {sessionToDelete && <div className="modal-backdrop"><section className="session-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-title"><h2 id="delete-session-title">删除会话？</h2><p>“{sessionToDelete.summary}”及其历史消息将从本机删除，无法恢复。</p>{sessionActionError && <p className="modal-error">{sessionActionError}</p>}<div className="modal-actions"><button type="button" onClick={() => { setSessionToDelete(undefined); setSessionActionError(""); }}>取消</button><button className="danger-button" type="button" onClick={() => void deleteSession()}>删除</button></div></section></div>}

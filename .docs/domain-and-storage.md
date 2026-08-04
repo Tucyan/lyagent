@@ -29,8 +29,12 @@ workspace/
 │  ├─staging/{importId}/
 │  └─releases/{releaseId}/
 ├─assignments/{assignmentId}/
-│  ├─assignment.md
+│  ├─assignment.json
+│  ├─design-session.json
+│  ├─sources/{sourceId}.txt
 │  ├─rubrics/
+│  │  ├─draft.json
+│  │  └─rubric-vN.json
 │  ├─submissions/{batchId}/{studentId}/
 │  └─results/{batchId}/
 │     ├─{studentId}.json
@@ -76,13 +80,21 @@ M1已由资料导入服务安全创建`inbox/materials`和`knowledge/{courseId}`
 
 ## Rubric规则
 
+- Assignment的作业要求与参考资料至少存在一项；仅有参考资料时允许要求为空。
+- `design-session.json`保存已选评分制度和最近40条用户/助手消息。助手消息只保存完成轮次的最终文案、程序生成的固定处理阶段摘要、工具活动摘要和可选问题选项；Provider原始文本、失败或中止轮次不保存。
+- 咨询、审阅或解释类轮次保存教师问题和Agent最终回复，但不写入评分表草稿，也不递增草稿版本；只有明确的创建或修改请求才允许产生新草稿。
+- 已选评分制度在存在草稿或冻结版本后不可改变；重进会话只恢复本地状态，不触发模型调用。
+- 草稿写入使用`expectedVersion`乐观并发；冻结后删除可编辑草稿并写入带哈希的不可变`rubric-vN.json`。
+- 从冻结版本创建修订会复制为新的草稿并记录`baseRubricVersion`，不会覆盖历史版本。
+- 删除评分会话必须先由前端二次确认；服务端删除整个受控Assignment目录，因此参考资料、`design-session.json`聊天记录、当前草稿和全部冻结正式版本会一并永久删除，不提供回退。
+- 冻结的JSON是评分规则事实来源；Markdown是包含评分等级、证据要求、部分得分与重叠组语义的可读导出。嵌套规则不使用CSV作为事实来源。
 - 加分制支持`exact-level`、`range`和`continuous`评分策略。
 - `range`结果必须保存`selectedLevelId`，得分位于等级闭区间。
 - 减分制显式记录每条规则是否触发、实际扣分、证据和置信度。
 - 同一`overlapGroup`默认只触发一条规则，除非冻结Rubric明确允许累计。
 - 总分、重复扣分和置信度聚合由程序计算。
 
-精确Schema以未来的`src/schemas/rubric.ts`和`src/schemas/grading.ts`为事实来源；本文件只维护不变量。
+评分表精确Schema以`src/schemas/rubric.ts`为事实来源；批改Schema在M4实现后由`src/schemas/grading.ts`维护。本文件只维护不变量。
 
 ## Job状态机
 

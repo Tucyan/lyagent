@@ -1,8 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { RubricConflictError, RubricService, RubricValidationError } from "../src/services/rubric-service.js";
+import { renderRubricMarkdown, RubricConflictError, RubricService, RubricValidationError } from "../src/services/rubric-service.js";
 import type { Rubric } from "../src/schemas/rubric.js";
 
 const roots: string[] = [];
@@ -45,6 +45,95 @@ afterEach(async () => {
 });
 
 describe("rubric versioning", () => {
+  it("deletes the conversation, sources, editable draft, and every frozen formal file with the session", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({
+      title: "待删除评分表",
+      totalScore: 100,
+      requirements: "评价报告。",
+      sources: [{ role: "note", name: "设计备注.txt", content: "关注论证质量。" }],
+    });
+    await service.selectMode(assignment.id, "additive");
+    await service.appendConversationTurn(
+      assignment.id,
+      { role: "user", content: "生成评分表。" },
+      { role: "assistant", content: "已生成。" },
+    );
+    const firstDraft = await service.createDraft(assignment.id, rubric);
+    await service.freeze(assignment.id, firstDraft.version, []);
+    await service.createRevision(assignment.id, 1);
+    const assignmentDirectory = path.join(service.root, "assignments", assignment.id);
+    await expect(access(assignmentDirectory)).resolves.toBeUndefined();
+
+    await service.deleteAssignment(assignment.id);
+
+    await expect(access(assignmentDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(service.getAssignment(assignment.id)).rejects.toThrow("Assignment was not found");
+    await expect(service.listAssignments()).resolves.not.toEqual(expect.arrayContaining([expect.objectContaining({ id: assignment.id })]));
+  });
+
+  it("allows source-only assignments while rejecting assignments with no requirements or sources", async () => {
+    const service = await serviceForTest();
+
+    const assignment = await service.createAssignment({
+      title: "Source-led rubric",
+      totalScore: 100,
+      requirements: "   ",
+      sources: [{ role: "note", name: "teacher-note.txt", content: "Assess the submitted report." }],
+    });
+
+    expect(assignment.requirements).toBe("");
+    expect(assignment.sources).toHaveLength(1);
+    await expect(service.createAssignment({ title: "Empty", totalScore: 100, requirements: "", sources: [] })).rejects.toThrow("non-empty source");
+    await expect(service.createAssignment({ title: "Blank source", totalScore: 100, requirements: "", sources: [{ role: "note", name: "blank.txt", content: "  \n " }] })).rejects.toThrow("non-empty source");
+  });
+
+  it("exports levels, evidence, partial-credit, and overlap semantics to Markdown", () => {
+    const markdown = renderRubricMarkdown({
+      schemaVersion: "1.0",
+      mode: "hybrid",
+      totalScore: 100,
+      partialCreditAllowed: true,
+      criteria: rubric.criteria,
+      bonusRules: [],
+      deductionRules: [{ ...deductiveRubric.rules[0]!, overlapGroup: "timing" }],
+      overlapGroups: [{ id: "timing", aggregation: "highest-only" }],
+    });
+
+    expect(markdown).toContain("允许部分得分：是");
+    expect(markdown).toContain("good");
+    expect(markdown).toContain("60–100");
+    expect(markdown).toContain("需要证据");
+    expect(markdown).toContain("timing");
+    expect(markdown).toContain("仅取最高项");
+  });
+
+  it("persists completed rubric conversation turns with safe process and tool summaries", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "Conversation", totalScore: 100, requirements: "Assess it", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+
+    await service.appendConversationTurn(
+      assignment.id,
+      { role: "user", content: "Create the first rubric." },
+      {
+        role: "assistant",
+        content: "The rubric draft is ready for review.",
+        process: "I am reading the assignment context.",
+        tools: [{ id: "tool-1", name: "read_assignment_context", label: "Read assignment context", summary: "Read the current assignment", status: "completed" }],
+      },
+    );
+
+    const reopened = new RubricService(service.root);
+    await expect(reopened.getDesignSession(assignment.id)).resolves.toMatchObject({
+      selectedMode: "additive",
+      messages: [
+        { role: "user", content: "Create the first rubric." },
+        { role: "assistant", content: "The rubric draft is ready for review.", process: expect.stringContaining("正在分析"), tools: [{ name: "read_assignment_context", status: "completed" }] },
+      ],
+    });
+  });
+
   it("stores controlled source text and freezes a validated immutable v1", async () => {
     const service = await serviceForTest();
     const assignment = await service.createAssignment({

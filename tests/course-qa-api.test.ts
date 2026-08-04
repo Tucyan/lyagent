@@ -38,6 +38,69 @@ afterEach(async () => {
 });
 
 describe("course QA API", () => {
+  it("continues and persists an answer after the page stream disconnects", async () => {
+    let finish!: () => void;
+    const ready = new Promise<void>((resolve) => { finish = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    const root = await mkdtemp(path.join(os.tmpdir(), "course-agent-qa-api-"));
+    roots.push(root);
+    const app = await createServer({
+      workspaceRoot: root,
+      materialPlanner: async (sections) => ({ documents: [{ path: "第一章/进程.md", title: "进程", sectionIds: sections.map((section) => section.id) }] }),
+      courseQaAgentFactory: () => ({ answer: async (_question, _onEvent, signal) => {
+        observedSignal = signal;
+        await ready;
+        return { answer: "切换页面后仍然完成。", citations: [], insufficient: false };
+      } }),
+    });
+    const course = await publishedCourse(app);
+    const session = (await app.inject({ method: "POST", url: `/api/courses/${course.id}/qa/sessions` })).json() as { id: string };
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const response = await fetch(`${address}/api/courses/${course.id}/qa/sessions/${session.id}/messages/stream`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: "页面切换测试" }),
+    });
+
+    await response.body!.cancel();
+    finish();
+    await vi.waitFor(async () => {
+      const saved = (await app.inject({ method: "GET", url: `/api/courses/${course.id}/qa/sessions/${session.id}` })).json();
+      expect(saved.messages).toHaveLength(2);
+    });
+    expect(observedSignal?.aborted).toBe(false);
+    await app.close();
+  });
+
+  it("cancels a running answer only through the explicit stop endpoint", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const root = await mkdtemp(path.join(os.tmpdir(), "course-agent-qa-api-"));
+    roots.push(root);
+    const app = await createServer({
+      workspaceRoot: root,
+      materialPlanner: async (sections) => ({ documents: [{ path: "第一章/进程.md", title: "进程", sectionIds: sections.map((section) => section.id) }] }),
+      courseQaAgentFactory: () => ({ answer: async (_question, _onEvent, signal) => {
+        observedSignal = signal;
+        await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("Stopped", "AbortError")), { once: true }));
+        throw new Error("unreachable");
+      } }),
+    });
+    const course = await publishedCourse(app);
+    const session = (await app.inject({ method: "POST", url: `/api/courses/${course.id}/qa/sessions` })).json() as { id: string };
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const response = await fetch(`${address}/api/courses/${course.id}/qa/sessions/${session.id}/messages/stream`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: "停止测试" }),
+    });
+    const runId = response.headers.get("x-agent-run-id");
+
+    expect(runId).toBeTruthy();
+    const stopped = await fetch(`${address}/api/agent-runs/${runId}/cancel`, { method: "POST" });
+    expect(stopped.status).toBe(200);
+    expect(await stopped.json()).toEqual({ cancelled: true });
+    await response.text();
+    expect(observedSignal?.aborted).toBe(true);
+    expect((await app.inject({ method: "GET", url: `/api/courses/${course.id}/qa/sessions/${session.id}` })).json().messages).toEqual([]);
+    await app.close();
+  });
+
   it("renames and deletes a course-bound QA session", async () => {
     const app = await serverForTest();
     const course = await publishedCourse(app);

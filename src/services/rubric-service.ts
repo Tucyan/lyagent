@@ -5,6 +5,7 @@ import { SafeFilesystem } from "../core/safe-filesystem.js";
 import { rubricSchema, validateRubric, type Rubric, type RubricValidation } from "../schemas/rubric.js";
 
 export type RubricSourceRole = "rubric_draft" | "note";
+export const RUBRIC_SAFE_PROCESS_SUMMARY = "Agent 正在分析作业要求、参考资料和现有评分表，并准备结构化评分规则。";
 
 export interface RubricSourceInput {
   role: RubricSourceRole;
@@ -40,7 +41,20 @@ export interface RubricDesignSession {
   assignmentId: string;
   selectedMode: Rubric["mode"];
   updatedAt: string;
+  messages: RubricConversationMessage[];
 }
+
+export interface RubricConversationTool {
+  id: string;
+  name: string;
+  label: string;
+  summary: string;
+  status: "completed" | "failed";
+}
+
+export type RubricConversationMessage =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; process?: string; tools?: RubricConversationTool[]; options?: string[] };
 
 export interface RubricServiceOptions {
   afterFreezeVersionWrite?: (assignmentId: string, version: number) => void | Promise<void>;
@@ -99,7 +113,10 @@ export class RubricService {
     const requirements = input.requirements.trim();
     if (title.length === 0 || title.length > 120) throw new RubricServiceError("Assignment title must be between 1 and 120 characters");
     if (!isScore(input.totalScore) || input.totalScore === 0) throw new RubricServiceError("Assignment total score must be a positive score with at most two decimal places");
-    if (requirements.length === 0 || requirements.length > 100_000) throw new RubricServiceError("Assignment requirements must be between 1 and 100000 characters");
+    if (requirements.length > 100_000) throw new RubricServiceError("Assignment requirements must contain at most 100000 characters");
+    if (requirements.length === 0 && !input.sources.some((source) => source.content.trim().length > 0)) {
+      throw new RubricServiceError("Assignment requirements or at least one non-empty source is required");
+    }
     if (input.sources.length > 10) throw new RubricServiceError("An assignment can contain at most 10 source files");
     const totalBytes = input.sources.reduce((total, source) => total + Buffer.byteLength(source.content), 0);
     if (totalBytes > 5 * 1024 * 1024) throw new RubricServiceError("Rubric sources exceed the 5 MiB limit");
@@ -176,7 +193,7 @@ export class RubricService {
       if (existing?.selectedMode === selectedMode) return existing;
       if (await this.getDraftUnlocked(assignmentId)) throw new RubricServiceError("The scoring mode cannot change after a rubric draft exists");
       if ((await this.listVersions(assignmentId)).length > 0) throw new RubricServiceError("The scoring mode cannot change after a rubric version is frozen");
-      const session: RubricDesignSession = { assignmentId, selectedMode, updatedAt: new Date().toISOString() };
+      const session: RubricDesignSession = { assignmentId, selectedMode, updatedAt: new Date().toISOString(), messages: [] };
       await this.writeDesignSession(assignmentId, session);
       return session;
     });
@@ -187,11 +204,32 @@ export class RubricService {
     try {
       const session = await this.readJson<RubricDesignSession>(this.designSessionFile(assignmentId));
       if (session.assignmentId !== assignmentId) throw new RubricServiceError("Rubric design session was not found");
-      return session;
+      return { ...session, messages: sanitizeConversationMessages(session.messages ?? []) };
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
+  }
+
+  async appendConversationTurn(
+    assignmentId: string,
+    user: Extract<RubricConversationMessage, { role: "user" }>,
+    assistant: Extract<RubricConversationMessage, { role: "assistant" }>,
+  ): Promise<RubricDesignSession> {
+    return this.mutateAssignment(assignmentId, async () => {
+      const assignment = await this.getAssignment(assignmentId);
+      const session = await this.getDesignSession(assignmentId);
+      if (!session) throw new RubricServiceError("Select a scoring mode before starting rubric design");
+      const updatedAt = new Date().toISOString();
+      const updated: RubricDesignSession = {
+        ...session,
+        updatedAt,
+        messages: [...session.messages, user, sanitizeAssistantMessage(assistant)].slice(-40),
+      };
+      await this.writeDesignSession(assignmentId, updated);
+      await this.writeAssignment({ ...assignment, updatedAt });
+      return updated;
+    });
   }
 
   async createDraft(assignmentId: string, rubric: Rubric, baseRubricVersion?: number): Promise<RubricDraft> {
@@ -412,19 +450,45 @@ export class RubricService {
 export function renderRubricMarkdown(rubric: Rubric): string {
   const lines = [`# 评分表`, "", `- 制度：${modeLabel(rubric.mode)}`, `- 总分：${rubric.totalScore}`, ""];
   if (rubric.mode === "additive" || rubric.mode === "hybrid") {
-    lines.push("## 评分项目", "", "| 项目 | 最高分 | 评分策略 | 说明 |", "| --- | ---: | --- | --- |");
-    for (const criterion of rubric.criteria) lines.push(`| ${criterion.name} | ${criterion.maxScore} | ${criterion.scorePolicy} | ${criterion.description} |`);
+    lines.push(`- 允许部分得分：${rubric.partialCreditAllowed ? "是" : "否"}`, "", "## 评分项目", "", "| 项目 | 最高分 | 评分策略 | 证据要求 | 说明 |", "| --- | ---: | --- | --- | --- |");
+    for (const criterion of rubric.criteria) {
+      lines.push(`| ${markdownCell(criterion.name)} | ${criterion.maxScore} | ${scorePolicyMarkdownLabel(criterion.scorePolicy)} | ${criterion.evidenceRequired ? "需要证据" : "不强制证据"} | ${markdownCell(criterion.description)} |`);
+    }
+    for (const criterion of rubric.criteria.filter((item) => (item.levels?.length ?? 0) > 0)) {
+      lines.push("", `### ${markdownCell(criterion.name)}：评分等级`, "", "| 等级 | 分值/区间 | 达成条件 |", "| --- | ---: | --- |");
+      for (const level of criterion.levels!) lines.push(`| ${markdownCell(level.id)} | ${scoreRange(level.minScore, level.maxScore)} | ${markdownCell(level.condition)} |`);
+    }
   }
   if (rubric.mode === "deductive" || rubric.mode === "hybrid") {
     const rules = rubric.mode === "deductive" ? rubric.rules : rubric.deductionRules;
-    lines.push("", "## 扣分规则", "", "| 规则 | 单次扣分 | 最大扣分 | 条件 |", "| --- | ---: | ---: | --- |");
-    for (const rule of rules) lines.push(`| ${rule.name} | ${rule.deduction} | ${rule.maxDeduction} | ${rule.condition} |`);
+    lines.push("", "## 扣分规则", "", "| 规则 | 单次扣分 | 最大扣分 | 计算方式 | 证据要求 | 重叠组 | 条件 |", "| --- | ---: | ---: | --- | --- | --- | --- |");
+    for (const rule of rules) lines.push(`| ${markdownCell(rule.name)} | ${rule.deduction} | ${rule.maxDeduction} | ${occurrenceLabel(rule.occurrence)} | ${rule.evidenceRequired ? "需要证据" : "不强制证据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
   }
   if (rubric.mode === "hybrid" && rubric.bonusRules.length > 0) {
-    lines.push("", "## 奖励规则", "", "| 规则 | 单次奖励 | 最大奖励 | 条件 |", "| --- | ---: | ---: | --- |");
-    for (const rule of rubric.bonusRules) lines.push(`| ${rule.name} | ${rule.bonus} | ${rule.maxBonus} | ${rule.condition} |`);
+    lines.push("", "## 奖励规则", "", "| 规则 | 单次奖励 | 最大奖励 | 计算方式 | 证据要求 | 重叠组 | 条件 |", "| --- | ---: | ---: | --- | --- | --- | --- |");
+    for (const rule of rubric.bonusRules) lines.push(`| ${markdownCell(rule.name)} | ${rule.bonus} | ${rule.maxBonus} | ${occurrenceLabel(rule.occurrence)} | ${rule.evidenceRequired ? "需要证据" : "不强制证据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
+  }
+  if (rubric.mode !== "additive" && rubric.overlapGroups.length > 0) {
+    lines.push("", "## 重叠规则组", "", "| 组 ID | 聚合方式 |", "| --- | --- |");
+    for (const group of rubric.overlapGroups) lines.push(`| ${markdownCell(group.id)} | ${group.aggregation === "highest-only" ? "仅取最高项" : "累计"} |`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function markdownCell(value: string): string {
+  return value.replaceAll("|", "\\|").replace(/\r?\n/g, "<br>");
+}
+
+function scoreRange(minimum: number, maximum: number): string {
+  return minimum === maximum ? String(minimum) : `${minimum}–${maximum}`;
+}
+
+function scorePolicyMarkdownLabel(policy: "exact-level" | "range" | "continuous"): string {
+  return policy === "exact-level" ? "等级定分" : policy === "range" ? "区间评分" : "连续评分";
+}
+
+function occurrenceLabel(occurrence: "once" | "per-occurrence"): string {
+  return occurrence === "once" ? "仅一次" : "按次计算";
 }
 
 function modeLabel(mode: Rubric["mode"]): string {
@@ -437,6 +501,14 @@ function isScore(value: number): boolean {
 
 function stringify(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function sanitizeConversationMessages(messages: RubricConversationMessage[]): RubricConversationMessage[] {
+  return messages.map((message) => message.role === "assistant" ? sanitizeAssistantMessage(message) : message);
+}
+
+function sanitizeAssistantMessage(message: Extract<RubricConversationMessage, { role: "assistant" }>): Extract<RubricConversationMessage, { role: "assistant" }> {
+  return message.process ? { ...message, process: RUBRIC_SAFE_PROCESS_SUMMARY } : message;
 }
 
 function hashJson(value: unknown): string {

@@ -45,6 +45,36 @@ afterEach(async () => {
 });
 
 describe("rubric HTTP API", () => {
+  it("continues and persists a rubric reply after the page stream disconnects", async () => {
+    let finish!: () => void;
+    const ready = new Promise<void>((resolve) => { finish = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    const designer: PiRubricDesigner = {
+      recommendModes: async () => ({ options: [] }),
+      design: async (_request, _onEvent, signal) => {
+        observedSignal = signal;
+        await ready;
+        return { kind: "reply", reply: "切换页面后仍然完成。", message: "切换页面后仍然完成。" };
+      },
+    };
+    const app = await serverForTest(() => designer);
+    const assignment = await createAssignment(app);
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const response = await fetch(`${address}/api/rubrics/assignments/${assignment.id}/messages/stream`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "页面切换测试" }),
+    });
+
+    await response.body!.cancel();
+    finish();
+    await vi.waitFor(async () => {
+      const session = (await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` })).json();
+      expect(session.messages).toHaveLength(2);
+    });
+    expect(observedSignal?.aborted).toBe(false);
+    await app.close();
+  });
+
   it("creates, lists, reads, renames, and deletes rubric sessions", async () => {
     const app = await serverForTest();
     const assignment = await createAssignment(app);
@@ -64,11 +94,15 @@ describe("rubric HTTP API", () => {
 
     const recommendation = await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/recommendations` });
     expect(recommendation.statusCode).toBe(200);
-    expect(recommendation.json()).toMatchObject({ source: "static", options: expect.arrayContaining([expect.objectContaining({ mode: "deductive", recommended: true, reason: expect.any(String) })]) });
+    expect(recommendation.json()).toMatchObject({ source: "static", options: expect.arrayContaining([expect.objectContaining({ mode: "deductive", recommended: true, reason: expect.stringContaining("扣分") })]) });
 
     const selected = await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
     expect(selected.statusCode).toBe(200);
     expect(selected.json()).toMatchObject({ selectedMode: "additive", state: "manual" });
+
+    const started = await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode/stream`, payload: { mode: "additive" } });
+    expect(started.json()).toMatchObject({ selectedMode: "additive", state: "manual", draft: { version: 1, rubric: { mode: "additive", totalScore: 100 } } });
+    expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` })).json()).toMatchObject({ version: 1 });
     await app.close();
   });
 
@@ -119,6 +153,103 @@ describe("rubric HTTP API", () => {
     expect(selected.body).toContain("rubric draft has been updated");
     expect(selected.body).not.toContain("Secret draft source text");
     expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` })).json()).toMatchObject({ version: 1, rubric });
+    expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` })).json()).toMatchObject({
+      selectedMode: "additive",
+      messages: [
+        expect.objectContaining({ role: "user", content: expect.stringContaining("第一版评分表") }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("已更新") }),
+      ],
+    });
+    await app.close();
+  });
+
+  it("restores an existing rubric session without invoking scoring-mode recommendations", async () => {
+    const designer: PiRubricDesigner = {
+      recommendModes: vi.fn(async () => ({ options: [] })),
+      design: vi.fn(async () => ({ kind: "question" as const, question: { question: "Unused" }, message: "A clarification is needed before the rubric can be updated." as const })),
+    };
+    const app = await serverForTest(() => designer);
+    const assignment = await createAssignment(app, [{ role: "note", name: "notes.txt", content: "Use weighted criteria." }]);
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "hybrid" } });
+
+    const reopened = await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` });
+
+    expect(reopened.statusCode).toBe(200);
+    expect(reopened.json()).toMatchObject({ selectedMode: "hybrid", messages: [] });
+    expect(designer.recommendModes).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("streams and persists safe rubric processing and tool activity", async () => {
+    const designer: PiRubricDesigner = {
+      recommendModes: async () => ({ options: [] }),
+      design: vi.fn(async (_request, onEvent) => {
+        onEvent?.({ type: "status", phase: "thinking" });
+        onEvent?.({ type: "process_delta", delta: "UNTRUSTED SOURCE CONTENT MUST NOT LEAK" });
+        onEvent?.({ type: "tool_start", id: "context-1", name: "read_assignment_context", label: "Read assignment context", summary: "Read the current assignment" });
+        onEvent?.({ type: "tool_end", id: "context-1", name: "read_assignment_context", label: "Read assignment context", summary: "Read the current assignment", status: "completed" });
+        return { kind: "draft" as const, draft: { version: 1, rubric, updatedAt: "2026-08-03T00:00:00.000Z" }, message: "The rubric draft has been updated and is ready for review." as const };
+      }),
+    };
+    const app = await serverForTest(() => designer);
+    const assignment = await createAssignment(app);
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+
+    const response = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/messages/stream`, payload: { message: "Create it." } });
+    const history = (await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` })).json();
+
+    expect(response.body).toContain("event: tool_start");
+    expect(response.body).toContain("event: process_delta");
+    expect(response.body).not.toContain("UNTRUSTED SOURCE CONTENT MUST NOT LEAK");
+    expect(history.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "Create it." }),
+      expect.objectContaining({ role: "assistant", process: expect.stringContaining("正在分析"), tools: [expect.objectContaining({ id: "context-1", status: "completed" })] }),
+    ]);
+    await app.close();
+  });
+
+  it("persists a conversational recommendation without changing or emitting a draft", async () => {
+    const recommendation = "建议补充优秀、合格和待改进三个等级的可观察证据，并说明边界情况。";
+    const designer: PiRubricDesigner = {
+      recommendModes: async () => ({ options: [] }),
+      design: vi.fn(async (_request, onEvent) => {
+        onEvent?.({ type: "reply_delta", delta: "建议补充优秀、合格和" });
+        onEvent?.({ type: "reply_delta", delta: "待改进三个等级的可观察证据，并说明边界情况。" });
+        return { kind: "reply" as const, reply: recommendation, message: recommendation };
+      }),
+    };
+    const app = await serverForTest(() => designer);
+    const assignment = await createAssignment(app);
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+    const existing = await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/draft`, payload: { expectedVersion: 0, rubric } });
+
+    const response = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/messages/stream`, payload: { message: "现在的评分标准有进一步改进的建议吗？" } });
+    const draft = await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` });
+    const session = (await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` })).json();
+
+    expect(response.body).toContain("event: reply");
+    expect(response.body.match(/event: reply_delta/g)).toHaveLength(2);
+    expect(response.body).toContain(recommendation);
+    expect(response.body).not.toContain("event: draft");
+    expect(draft.json()).toEqual(existing.json());
+    expect(session.messages.at(-1)).toMatchObject({ role: "assistant", content: recommendation });
+    await app.close();
+  });
+
+  it("returns a localized stream error and does not persist a failed turn", async () => {
+    const designer: PiRubricDesigner = {
+      recommendModes: async () => ({ options: [] }),
+      design: async () => { throw new Error("provider failure"); },
+    };
+    const app = await serverForTest(() => designer);
+    const assignment = await createAssignment(app);
+    await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+
+    const response = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/messages/stream`, payload: { message: "Create it." } });
+    const session = (await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` })).json();
+
+    expect(response.body).toContain("评分表设计未能完成");
+    expect(session.messages).toEqual([]);
     await app.close();
   });
 
