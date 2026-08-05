@@ -17,19 +17,19 @@
 - Modify: `tests/model-config-transaction.test.ts`
 - Modify: `.docs/testing.md`
 
-- [ ] **Step 1: 记录当前失败证据**
+- [x] **Step 1: 记录当前失败证据**
 
   运行 `npm run check`，确认高并发下出现跨模块 5 秒超时和 SQLite `EBUSY`；运行 `npm test -- tests/credential-store.test.ts --run --reporter=verbose`，确认相同测试单独通过。
 
-- [ ] **Step 2: 验证单一根因假设**
+- [x] **Step 2: 验证单一根因假设**
 
   运行 `npm test -- --run --maxWorkers=4`，确认失败数量显著下降；锁测试只应断言临界区不重叠，不应断言两个独立 OS helper 的获取顺序。
 
-- [ ] **Step 3: 写入最小稳定配置与正确断言**
+- [x] **Step 3: 写入最小稳定配置与正确断言**
 
   在 Vitest 配置中将 Windows 文件 worker 限制为适合 SQLite/PowerShell 集成测试的固定上限；将锁测试改为记录 active 临界区数量并断言最大值为 1，同时断言两个操作均完成。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
   运行 `npm run check` 两次，均须 0 failure；更新 `.docs/testing.md` 后提交 `test: stabilize Windows integration concurrency`。
 
