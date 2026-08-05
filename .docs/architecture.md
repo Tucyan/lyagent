@@ -59,7 +59,7 @@ Safe Filesystem / SQLite / External Providers
 5. 每个批改job只写自己的JSON和Markdown；批次CSV由单写者聚合。
 6. 外部Provider通过接口注入，核心领域逻辑不依赖具体模型或企业微信SDK。
 7. 所有现有Agent、作业命名和身份识别从统一`models.primary`构造OpenAI-compatible运行时；可选`models.vision`仅注册能力，视觉切换由后续阶段实现。模型元数据、Provider地址和凭据查找由程序控制，Agent不能选择Provider或读取密钥。
-8. 模型配置写入在跨进程锁内执行两阶段本地事务：`prepared`日志提供崩溃回滚，配置提交后写`committed`再清理。日志不保存明文密钥；并发进程不能交错提交Provider密钥和模型元数据。
+8. 模型配置写入在跨进程锁内执行两阶段本地事务：`prepared`日志提供崩溃回滚，配置提交后写`committed`再清理。规范Workspace身份同时界定事务日志、Windows全局Mutex和Workspace隔离的DPAPI凭据命名空间；日志不保存明文密钥，并发进程或不同Workspace不能交错/混用Provider密钥和模型元数据。
 
 ## 关键流程
 

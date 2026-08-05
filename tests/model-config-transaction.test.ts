@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadAppConfig, saveAppConfig, type AppConfig } from "../src/config/app-config.js";
-import { FileCredentialStore, type SecretProtector } from "../src/config/credential-store.js";
+import { defaultSecretRoot, FileCredentialStore, type SecretProtector } from "../src/config/credential-store.js";
 import { ModelConfigService } from "../src/services/model-config-service.js";
-import { withModelConfigLock } from "../src/config/model-config-lock.js";
+import { modelConfigMutexName, withModelConfigLock } from "../src/config/model-config-lock.js";
+import { resolveWorkspaceIdentity } from "../src/config/workspace-identity.js";
 
 const roots: string[] = [];
 const protector: SecretProtector = {
@@ -101,6 +102,34 @@ it("serializes model transactions across two service instances", async () => {
   expect(maxActiveCommits).toBe(1);
   const finalConfig = await loadAppConfig(workspaceRoot);
   expect(await credentials.getApiKey("shared")).toBe(finalConfig.models.primary.modelId === "model-a" ? "key-a" : "key-b");
+});
+
+it("keeps endpoint and key snapshots paired across different workspaces", async () => {
+  const localAppData = await mkdtemp(path.join(os.tmpdir(), "course-agent-local-app-data-"));
+  const workspaceA = await mkdtemp(path.join(os.tmpdir(), "course-agent-workspace-a-"));
+  const workspaceB = await mkdtemp(path.join(os.tmpdir(), "course-agent-workspace-b-"));
+  roots.push(localAppData, workspaceA, workspaceB);
+  const create = async (workspaceRoot: string) => {
+    const identity = await resolveWorkspaceIdentity(workspaceRoot);
+    const credentials = new FileCredentialStore(defaultSecretRoot(identity.hash, localAppData), protector);
+    return new ModelConfigService({ workspaceRoot: identity.canonicalRoot, credentials, fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok" } }] } }] }), { status: 200 }) });
+  };
+  const serviceA = await create(workspaceA);
+  const serviceB = await create(workspaceB);
+  await Promise.all([
+    serviceA.save({ primary: { providerId: "shared", modelId: "model-a", baseUrl: "https://a.example/v1", apiKey: "key-a" } }),
+    serviceB.save({ primary: { providerId: "shared", modelId: "model-b", baseUrl: "https://b.example/v1", apiKey: "key-b" } }),
+  ]);
+  await expect(serviceA.loadRuntimeConfig()).resolves.toMatchObject({ config: { models: { primary: { modelId: "model-a" } } }, apiKeys: { shared: "key-a" } });
+  await expect(serviceB.loadRuntimeConfig()).resolves.toMatchObject({ config: { models: { primary: { modelId: "model-b" } } }, apiKeys: { shared: "key-b" } });
+});
+
+it("derives a machine-global mutex name from the canonical workspace identity", async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "course-agent-lock-"));
+  roots.push(workspaceRoot);
+  const identity = await resolveWorkspaceIdentity(workspaceRoot);
+  await expect(modelConfigMutexName(workspaceRoot)).resolves.toBe(`Global\\CourseAgent.ModelConfig.${identity.hash}`);
+  await expect(modelConfigMutexName(workspaceRoot)).resolves.toMatch(/^Global\\CourseAgent\.ModelConfig\.[a-f0-9]{64}$/u);
 });
 
 it("returns startup config and primary credential from one locked snapshot", async () => {

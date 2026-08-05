@@ -89,9 +89,10 @@ export class WindowsDpapiProtector implements SecretProtector {
   unprotect(ciphertext: Buffer): Promise<Buffer> { return runDpapi("unprotect", ciphertext); }
 }
 
-export function defaultSecretRoot(localAppData = process.env.LOCALAPPDATA): string {
+export function defaultSecretRoot(workspaceIdentityHash: string, localAppData = process.env.LOCALAPPDATA): string {
   if (!localAppData) throw new Error("LOCALAPPDATA is required for secure credential storage");
-  return path.join(localAppData, "CourseAgent", "secrets");
+  if (!/^[a-f0-9]{64}$/u.test(workspaceIdentityHash)) throw new Error("A canonical workspace identity hash is required for secure credential storage");
+  return path.join(localAppData, "CourseAgent", "secrets", workspaceIdentityHash);
 }
 
 function runDpapi(operation: "protect" | "unprotect", input: Buffer): Promise<Buffer> {

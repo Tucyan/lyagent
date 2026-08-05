@@ -21,7 +21,7 @@
 
 ## 密钥和敏感数据
 
-- 模型密钥按Provider ID经Windows当前用户DPAPI保护，保存在Workspace外的`%LOCALAPPDATA%\CourseAgent\secrets`；普通JSON、日志、命令行和API响应不得包含密钥。旧`workspace/config/app.json`中的`deepseekApiKey`只读兼容，模型设置验证及凭据保存成功后原子改写非敏感配置并移除明文。DDGS搜索不需要API key；未来WeCom Secret、Token和EncodingAESKey使用同类本地凭据存储。
+- 模型密钥按Provider ID经Windows当前用户DPAPI保护，保存在Workspace外的`%LOCALAPPDATA%\CourseAgent\secrets\<workspace-sha256>`；哈希来自`realpath`规范化（Windows忽略大小写）后的Workspace绝对路径，不同Workspace不得共享凭据目录。普通JSON、日志、命令行和API响应不得包含密钥。旧`workspace/config/app.json`中的`deepseekApiKey`只读兼容，模型设置验证及凭据保存成功后原子改写非敏感配置并移除明文。DDGS搜索不需要API key；未来WeCom Secret、Token和EncodingAESKey使用同类本地凭据存储。
 - 示例配置只包含非敏感默认值和占位字段名，不包含可用凭据。
 - 学生作业、课程资料、会话和批改结果属于敏感业务数据。
 - M4上传先写入受控临时文件，再保存不可变原件；Agent永远看不到绝对路径。上传内容必须匹配文件扩展名，DOCX/PPTX还必须包含对应OOXML入口。MinerU响应体、ZIP条目数、目录深度、单条目和总解压大小均有限额；转换结果只接受Markdown和通过图片魔数校验的受支持图片，并拒绝绝对路径、`..`、伪造扩展名、跨目录或远程图片引用。
@@ -32,7 +32,7 @@
 - API错误、普通日志和审计索引不得包含完整正文。
 - `POST /api/system/models/test`只临时验证连接而不保存；`PUT /api/system/models`验证后保存并要求重启。两者必须同时通过环回来源、精确Origin和CSRF Token检查；同源页面先从`GET /api/system/models`响应头取得本进程Token，跨源页面受浏览器同源策略限制不能读取。Provider错误只返回安全摘要。
 - 模型Provider远程地址必须使用HTTPS；HTTP仅允许`127.0.0.1`、`localhost`或`::1`，且地址不得包含用户名、密码、查询参数或片段。合法路径（如`/v1`）会保留。
-- 模型配置保存由名称基于Workspace绝对路径哈希的Windows内核Mutex串行化；独立helper持锁，父进程退出或管道关闭即释放，并由内核处理崩溃遗留所有权。helper若在临界区意外退出，主进程立即中止，由supervisor重启后按事务日志恢复，不能在失锁后继续写入。覆盖DPAPI密文前先原子写入`prepared`事务日志；日志只含旧非敏感配置及旧DPAPI密文/缺失标记。配置原子提交后日志标记为`committed`并清理；首次配置操作会恢复遗留`prepared`事务或清理遗留`committed`日志。启动时在同一锁内读取配置及主模型/视觉模型凭据快照，运行期持续使用该一致快照直至重启。
+- 模型配置保存由`Global\CourseAgent.ModelConfig.<workspace-sha256>` Windows内核Mutex串行化，可覆盖同一机器的不同登录Session；Mutex、Workspace内事务日志和Workspace外凭据目录使用同一个规范Workspace身份。独立helper持锁，父进程退出或管道关闭即释放，并由内核处理崩溃遗留所有权。helper若在临界区意外退出，主进程立即中止，由supervisor重启后按事务日志恢复，不能在失锁后继续写入。覆盖DPAPI密文前先原子写入`prepared`事务日志；日志只含旧非敏感配置及旧DPAPI密文/缺失标记。配置原子提交后日志标记为`committed`并清理；首次配置操作会恢复遗留`prepared`事务或清理遗留`committed`日志。启动时在同一锁内读取配置及主模型/视觉模型凭据快照，运行期持续使用该一致快照直至重启。
 - 调试时如需内容片段，使用合成或脱敏数据并限制长度。
 
 ## 日志与审计

@@ -13,11 +13,13 @@ import { WebEvidenceService } from "./services/web-evidence-service.js";
 import { OpenAICompatibleStudentIdentityClient } from "./services/student-identity-service.js";
 import { MineruClient } from "./services/mineru-client.js";
 import { ModelConfigService } from "./services/model-config-service.js";
+import { resolveWorkspaceIdentity } from "./config/workspace-identity.js";
 
-const workspaceRoot = path.resolve(process.env.COURSE_AGENT_WORKSPACE ?? "workspace");
+const workspaceIdentity = await resolveWorkspaceIdentity(path.resolve(process.env.COURSE_AGENT_WORKSPACE ?? "workspace"));
+const workspaceRoot = workspaceIdentity.canonicalRoot;
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const logger = pino({ name: "course-agent", level: process.env.LOG_LEVEL ?? "info" });
-const credentialStore = new FileCredentialStore(defaultSecretRoot(), new WindowsDpapiProtector());
+const credentialStore = new FileCredentialStore(defaultSecretRoot(workspaceIdentity.hash), new WindowsDpapiProtector());
 const modelConfigService = new ModelConfigService({ workspaceRoot, credentials: credentialStore });
 const { config, apiKeys } = await modelConfigService.loadRuntimeConfig();
 const primaryApiKey = apiKeys[config.models.primary.providerId];

@@ -2,7 +2,8 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { FileCredentialStore, WindowsDpapiProtector, type SecretProtector } from "../src/config/credential-store.js";
+import { defaultSecretRoot, FileCredentialStore, WindowsDpapiProtector, type SecretProtector } from "../src/config/credential-store.js";
+import { resolveWorkspaceIdentity } from "../src/config/workspace-identity.js";
 
 const roots: string[] = [];
 const fakeProtector: SecretProtector = {
@@ -32,6 +33,22 @@ it("supports deleting a provider key", async () => {
   await store.setApiKey("vision", "vision-secret");
   await store.deleteApiKey("vision");
   await expect(store.getApiKey("vision")).resolves.toBeUndefined();
+});
+
+it("isolates credential directories by canonical workspace identity", async () => {
+  const localAppData = await mkdtemp(path.join(os.tmpdir(), "course-agent-local-app-data-"));
+  const workspaceA = await mkdtemp(path.join(os.tmpdir(), "course-agent-workspace-a-"));
+  const workspaceB = await mkdtemp(path.join(os.tmpdir(), "course-agent-workspace-b-"));
+  roots.push(localAppData, workspaceA, workspaceB);
+  const identityA = await resolveWorkspaceIdentity(workspaceA);
+  const identityB = await resolveWorkspaceIdentity(workspaceB);
+  const storeA = new FileCredentialStore(defaultSecretRoot(identityA.hash, localAppData), fakeProtector);
+  const storeB = new FileCredentialStore(defaultSecretRoot(identityB.hash, localAppData), fakeProtector);
+  await storeA.setApiKey("shared", "workspace-a-key");
+  await storeB.setApiKey("shared", "workspace-b-key");
+  await expect(storeA.getApiKey("shared")).resolves.toBe("workspace-a-key");
+  await expect(storeB.getApiKey("shared")).resolves.toBe("workspace-b-key");
+  expect(defaultSecretRoot(identityA.hash, localAppData)).not.toBe(defaultSecretRoot(identityB.hash, localAppData));
 });
 
 it.runIf(process.platform === "win32")("round-trips a value with Windows CurrentUser DPAPI", async () => {

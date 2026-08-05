@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import { resolveWorkspaceIdentity } from "./workspace-identity.js";
 
 interface LockOptions { timeoutMs?: number; pollMs?: number; fatalHandler?: (error: Error) => never; helperAcquired?: (pid: number) => void }
 interface HelperExit { code: number | null; signal: NodeJS.Signals | null; error?: Error }
@@ -12,8 +12,7 @@ export async function withModelConfigLock<T>(workspaceRoot: string, action: () =
 }
 
 async function withWindowsMutex<T>(workspaceRoot: string, action: () => Promise<T>, timeoutMs: number, fatalHandler: (error: Error) => never, helperAcquired?: (pid: number) => void): Promise<T> {
-  const digest = createHash("sha256").update(path.resolve(workspaceRoot).toLowerCase()).digest("hex");
-  const mutexName = `Local\\CourseAgent.ModelConfig.${digest}`;
+  const mutexName = await modelConfigMutexName(workspaceRoot);
   const helper = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsMutexScript], {
     env: { ...process.env, COURSE_AGENT_MUTEX_NAME: mutexName, COURSE_AGENT_MUTEX_TIMEOUT_MS: String(timeoutMs) },
     stdio: ["pipe", "pipe", "pipe"],
@@ -35,6 +34,10 @@ async function withWindowsMutex<T>(workspaceRoot: string, action: () => Promise<
     if (!helper.stdin.destroyed) helper.stdin.end("release\n");
     await exited;
   }
+}
+
+export async function modelConfigMutexName(workspaceRoot: string): Promise<string> {
+  return `Global\\CourseAgent.ModelConfig.${(await resolveWorkspaceIdentity(workspaceRoot)).hash}`;
 }
 
 function waitUntilReady(helper: ChildProcessWithoutNullStreams, exited: Promise<HelperExit>, outerTimeoutMs: number): Promise<void> {
