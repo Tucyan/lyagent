@@ -54,6 +54,7 @@ describe("DoclingClient", () => {
     expect(form.get("do_ocr")).toBe("true");
     expect(form.get("force_ocr")).toBe("false");
     expect(form.get("ocr_preset")).toBe("auto");
+    expect(form.get("table_mode")).toBe("accurate");
     expect(form.has("ocr")).toBe(false);
     expect(form.has("ocr_engine")).toBe(false);
   });
@@ -119,6 +120,82 @@ describe("DoclingClient", () => {
     ];
     for (const client of clients)
       await expect(client.health()).rejects.toBeInstanceOf(ConversionUnavailableError);
+  });
+
+  it.each([
+    new Error("private response stream failure"),
+    new TypeError("private response network failure"),
+    new DOMException("private response abort", "AbortError"),
+  ])("maps an interrupted status response body to a retryable unavailable error", async (failure) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"task_id":"task-1",'));
+        controller.error(failure);
+      },
+    });
+    const client = new DoclingClient({
+      baseUrl: "http://127.0.0.1:5001",
+      fetchImpl: async () => new Response(body, {
+        headers: { "content-type": "application/json" },
+      }),
+    });
+
+    const error = await client.status("task-1").catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "ConversionUnavailableError", retryable: true, code: "CONVERTER_UNAVAILABLE",
+    });
+    expect(String(error)).not.toContain(failure.message);
+  });
+
+  it("maps a status body timeout after successful headers to unavailable", async () => {
+    const body = new ReadableStream<Uint8Array>({ pull: async () => new Promise(() => {}) });
+    const client = new DoclingClient({
+      baseUrl: "http://127.0.0.1:5001",
+      timeoutMs: 5,
+      fetchImpl: async () => new Response(body, {
+        headers: { "content-type": "application/json" },
+      }),
+    });
+
+    await expect(client.status("task-1")).rejects.toBeInstanceOf(ConversionUnavailableError);
+  });
+
+  it("maps a result body timeout after successful headers to unavailable", async () => {
+    const body = new ReadableStream<Uint8Array>({ pull: async () => new Promise(() => {}) });
+    const client = new DoclingClient({
+      baseUrl: "http://127.0.0.1:5001",
+      timeoutMs: 5,
+      fetchImpl: async () => new Response(body, {
+        headers: { "content-type": "application/zip" },
+      }),
+    });
+
+    await expect(client.result("task-1")).rejects.toMatchObject({
+      name: "ConversionUnavailableError", retryable: true, code: "CONVERTER_UNAVAILABLE",
+    });
+  });
+
+  it.each([
+    new Error("private result stream failure"),
+    new TypeError("private result network failure"),
+    new DOMException("private result abort", "AbortError"),
+  ])("maps an interrupted result body to a retryable unavailable error", async (failure) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([0x50, 0x4b]));
+        controller.error(failure);
+      },
+    });
+    const client = new DoclingClient({
+      baseUrl: "http://127.0.0.1:5001",
+      fetchImpl: async () => new Response(body, {
+        headers: { "content-type": "application/zip" },
+      }),
+    });
+
+    const error = await client.result("task-1").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ConversionUnavailableError);
+    expect(String(error)).not.toContain(failure.message);
   });
 
   it("streams ZIP results with declared and actual byte limits", async () => {

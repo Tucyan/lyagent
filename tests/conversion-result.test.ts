@@ -58,6 +58,22 @@ describe("conversion result import", () => {
     })).toThrow(ConversionResultError);
   });
 
+  it.each([
+    "![remote](<https://example.com/a b.png>)",
+    '<img src="assets/local.png" srcset="assets/local.png 1x, https://example.com/remote.png 2x">',
+    '<source srcset="https://example.com/remote-small.png 480w, assets/local.png 800w">',
+    "<img srcset=https://example.com/remote.png>",
+    "<source srcset=https://example.com/remote.png>",
+  ])("classifies CommonMark and srcset remote references as unsafe: %s", (markdown) => {
+    expect(() => importConversionResult({
+      kind: "archive",
+      bytes: zipSync({
+        "result/report.md": strToU8(markdown),
+        "result/assets/local.png": png,
+      }),
+    })).toThrow(/unsafe image reference/i);
+  });
+
   it("enforces entry, total, count, and depth limits", () => {
     expect(() => importConversionResult(
       { kind: "archive", bytes: zipSync({ "report.md": strToU8("x".repeat(30)) }) },

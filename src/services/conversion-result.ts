@@ -127,7 +127,18 @@ function rewriteMarkdownImages(
   };
 
   let result = markdown.replace(
-    /(!\[[^\]]*\]\(\s*)(<?[^\s)>]+>?)([^)]*\))/g,
+    /(!\[[^\]]*\]\(\s*)(?:<([^>\r\n]+)>|([^\s)>]+))([^)]*\))/g,
+    (_match, prefix: string, angledTarget: string | undefined,
+      bareTarget: string | undefined, suffix: string) =>
+      `${prefix}${rewrite(angledTarget ?? bareTarget ?? "")}${suffix}`,
+  );
+  result = result.replace(
+    /(<(?:img|source)\b[^>]*\bsrcset\s*=\s*["'])([^"']+)(["'][^>]*>)/gi,
+    (_match, prefix: string, candidates: string, suffix: string) =>
+      `${prefix}${rewriteSrcset(candidates, rewrite)}${suffix}`,
+  );
+  result = result.replace(
+    /(<(?:img|source)\b[^>]*\bsrcset\s*=\s*)([^"'\s>]+)([^>]*>)/gi,
     (_match, prefix: string, target: string, suffix: string) =>
       `${prefix}${rewrite(target)}${suffix}`,
   );
@@ -152,6 +163,21 @@ function rewriteMarkdownImages(
     );
   }
   return result;
+}
+
+function rewriteSrcset(
+  value: string,
+  rewrite: (target: string) => string,
+): string {
+  return value.split(",").map((candidate) => {
+    const leading = candidate.match(/^\s*/)?.[0] ?? "";
+    const trailing = candidate.match(/\s*$/)?.[0] ?? "";
+    const content = candidate.trim();
+    const separator = content.search(/\s/);
+    const target = separator < 0 ? content : content.slice(0, separator);
+    const descriptor = separator < 0 ? "" : content.slice(separator);
+    return `${leading}${rewrite(target)}${descriptor}${trailing}`;
+  }).join(",");
 }
 
 function markdownImageReferenceLabels(markdown: string): Set<string> {

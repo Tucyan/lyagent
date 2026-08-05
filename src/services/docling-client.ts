@@ -69,10 +69,13 @@ export class DoclingClient implements DocumentConversionClient {
   }
 
   async health(signal?: AbortSignal): Promise<{ version?: string }> {
-    await this.request("/health", undefined, signal);
+    await this.request("/health", undefined, this.operationSignal(signal));
     try {
-      const response = await this.request("/version", undefined, signal);
-      const payload = await response.json() as Record<string, unknown>;
+      const operationSignal = this.operationSignal(signal);
+      const response = await this.request("/version", undefined, operationSignal);
+      const payload = await this.readJson(
+        response, operationSignal, "Document converter returned an invalid version response",
+      ) as Record<string, unknown>;
       const version = [payload.version, payload.docling_serve, payload["docling-serve"]]
         .find((value): value is string => typeof value === "string" && value.length > 0);
       return version ? { version } : {};
@@ -94,13 +97,18 @@ export class DoclingClient implements DocumentConversionClient {
     form.append("do_ocr", "true");
     form.append("force_ocr", "false");
     form.append("ocr_preset", "auto");
+    form.append("table_mode", "accurate");
+    const operationSignal = this.operationSignal(signal);
     const response = await this.request(
       "/v1/convert/file/async",
       { method: "POST", body: form },
-      signal,
+      operationSignal,
     );
     let payload: z.infer<typeof taskResponseSchema>;
-    try { payload = taskResponseSchema.parse(await response.json()); }
+    const rawPayload = await this.readJson(
+      response, operationSignal, "Document converter returned an invalid submit response",
+    );
+    try { payload = taskResponseSchema.parse(rawPayload); }
     catch { throw new ConversionError("Document converter returned an invalid submit response"); }
     return {
       taskId: payload.task_id,
@@ -111,9 +119,15 @@ export class DoclingClient implements DocumentConversionClient {
 
   async status(taskId: string, signal?: AbortSignal): Promise<ConversionTaskStatus> {
     const safeTaskId = encodeURIComponent(parseTaskId(taskId));
-    const response = await this.request(`/v1/status/poll/${safeTaskId}`, undefined, signal, true);
+    const operationSignal = this.operationSignal(signal);
+    const response = await this.request(
+      `/v1/status/poll/${safeTaskId}`, undefined, operationSignal, true,
+    );
     let payload: z.infer<typeof taskResponseSchema>;
-    try { payload = taskResponseSchema.parse(await response.json()); }
+    const rawPayload = await this.readJson(
+      response, operationSignal, "Document converter returned an invalid status response",
+    );
+    try { payload = taskResponseSchema.parse(rawPayload); }
     catch { throw new ConversionError("Document converter returned an invalid status response"); }
     const statuses = {
       pending: "queued", started: "running", success: "completed", failure: "failed",
@@ -127,8 +141,11 @@ export class DoclingClient implements DocumentConversionClient {
 
   async result(taskId: string, signal?: AbortSignal): Promise<DocumentConversionResult> {
     const safeTaskId = encodeURIComponent(parseTaskId(taskId));
-    const response = await this.request(`/v1/result/${safeTaskId}`, undefined, signal, true);
-    const bytes = await this.readBounded(response);
+    const operationSignal = this.operationSignal(signal);
+    const response = await this.request(
+      `/v1/result/${safeTaskId}`, undefined, operationSignal, true,
+    );
+    const bytes = await this.readBounded(response, operationSignal);
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (contentType.includes("json")) {
       let payload: z.infer<typeof inlineResultSchema>;
@@ -146,7 +163,7 @@ export class DoclingClient implements DocumentConversionClient {
     return { kind: "archive", bytes };
   }
 
-  private async readBounded(response: Response): Promise<Uint8Array> {
+  private async readBounded(response: Response, signal: AbortSignal): Promise<Uint8Array> {
     const rawLength = response.headers.get("content-length");
     if (rawLength !== null) {
       const declaredLength = Number(rawLength);
@@ -158,8 +175,14 @@ export class DoclingClient implements DocumentConversionClient {
     const chunks: Uint8Array[] = [];
     let size = 0;
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      let chunk;
+      try { chunk = await waitWithSignal(reader.read(), signal); }
+      catch {
+        void reader.cancel().catch(() => undefined);
+        throw new ConversionUnavailableError();
+      }
+      if (chunk.done) break;
+      const value = chunk.value;
       size += value.byteLength;
       if (size > this.maxResultBytes) {
         await reader.cancel();
@@ -175,20 +198,15 @@ export class DoclingClient implements DocumentConversionClient {
 
   private async request(
     relativePath: string,
-    init?: RequestInit,
-    signal?: AbortSignal,
+    init: RequestInit | undefined,
+    signal: AbortSignal,
     missingTask = false,
   ): Promise<Response> {
-    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-    const signals = [this.signal, signal, timeoutSignal]
-      .filter((candidate): candidate is AbortSignal => candidate !== undefined);
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${relativePath}`, {
         ...init,
-        ...(signals.length === 0 ? {} : {
-          signal: signals.length === 1 ? signals[0]! : AbortSignal.any(signals),
-        }),
+        signal,
       });
     } catch {
       throw new ConversionUnavailableError();
@@ -199,6 +217,41 @@ export class DoclingClient implements DocumentConversionClient {
     if (!response.ok) throw new ConversionError(`Document converter request failed with status ${response.status}`);
     return response;
   }
+
+  private operationSignal(signal?: AbortSignal): AbortSignal {
+    const signals = [this.signal, signal, AbortSignal.timeout(this.timeoutMs)]
+      .filter((candidate): candidate is AbortSignal => candidate !== undefined);
+    return signals.length === 1 ? signals[0]! : AbortSignal.any(signals);
+  }
+
+  private async readJson(
+    response: Response,
+    signal: AbortSignal,
+    invalidResponseMessage: string,
+  ): Promise<unknown> {
+    try { return await waitWithSignal(response.json(), signal); }
+    catch (error: unknown) {
+      if (error instanceof SyntaxError)
+        throw new ConversionError(invalidResponseMessage);
+      throw new ConversionUnavailableError();
+    }
+  }
+}
+
+function waitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason);
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { cleanup(); resolve(value); },
+      (error: unknown) => { cleanup(); reject(error); },
+    );
+  });
 }
 
 function parseTaskId(taskId: string): string {
