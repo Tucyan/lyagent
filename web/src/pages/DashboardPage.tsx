@@ -49,14 +49,14 @@ const statusLabel: Record<DashboardCourse["knowledgeStatus"], string> = {
 
 export function DashboardPage() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>();
-  const [runtime, setRuntime] = useState<{ mineru: { status: "starting" | "ready" | "unavailable"; backend: "hybrid-engine" | "pipeline" } }>();
+  const [runtime, setRuntime] = useState<{ converter: { provider: "docling"; status: "starting" | "ready" | "unavailable"; device: "auto" | "cpu" } }>();
   const [notice, setNotice] = useState("正在加载工作台…");
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = async () => {
     setRefreshing(true);
     try {
-      const [next, nextRuntime] = await Promise.all([api<DashboardSnapshot>("/api/dashboard"), api<{ mineru: { status: "starting" | "ready" | "unavailable"; backend: "hybrid-engine" | "pipeline" } }>("/api/system/runtime")]);
+      const [next, nextRuntime] = await Promise.all([api<DashboardSnapshot>("/api/dashboard"), api<{ converter: { provider: "docling"; status: "starting" | "ready" | "unavailable"; device: "auto" | "cpu" } }>("/api/system/runtime")]);
       setSnapshot(next);
       setRuntime(nextRuntime);
       setNotice(`数据更新于 ${dateTime(next.generatedAt)}`);
@@ -73,7 +73,7 @@ export function DashboardPage() {
     <header className="workspace-header"><div><p className="eyebrow">教师工作台</p><h1>课程总览</h1><p>{notice}</p></div><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? "刷新中…" : "刷新数据"}</button></header>
     {snapshot && <>
       <section className="model-status" aria-label="模型配置状态"><span>模型配置</span><strong>{snapshot.model.provider} / {snapshot.model.model}</strong><span className={snapshot.model.configured ? "status published" : "status unpublished"}>{snapshot.model.configured ? "已配置" : "未配置"}</span></section>
-      {runtime && <section className="model-status" aria-label="文档转换器状态"><span>文档转换器</span><strong>{converterStatusLabel(runtime.mineru)}</strong></section>}
+      {runtime && <section className="model-status" aria-label="文档转换器状态"><span>文档转换器</span><strong>{converterStatusLabel(runtime.converter)}</strong></section>}
       <section className="metric-grid" aria-label="课程数据概览">
         <div><span>课程</span><strong>{snapshot.totals.courses}</strong><small>{snapshot.totals.publishedCourses} 门已发布</small></div>
         <div><span>已发布资料</span><strong>{snapshot.totals.activeDocuments}</strong><small>当前 active release 文档</small></div>

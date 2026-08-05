@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildModelSettingsPayload,
@@ -64,4 +66,10 @@ describe("model settings page model", () => {
       expect(new Headers(request.headers).get("content-type")).toBe("application/json");
     }
   });
+});
+
+it("presents Docling converter status and attribution without legacy MinerU wording", async () => {
+  const source = await readFile(path.resolve("web", "src", "pages", "ModelSettingsPage.tsx"), "utf8");
+  expect(source).toMatch(/Docling/);
+  expect(source).not.toMatch(/MinerU|mineru|backend/);
 });

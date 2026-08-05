@@ -16,7 +16,7 @@ export const dashboardQuickActions = [
   },
 ] as const;
 
-export function converterStatusLabel(value: { status: "starting" | "ready" | "unavailable"; backend: "hybrid-engine" | "pipeline" }): string {
-  const status = value.status === "ready" ? "转换器就绪" : value.status === "starting" ? "转换器启动中" : "转换器不可用";
-  return `${status} · ${value.backend}`;
+export function converterStatusLabel(value: { provider: "docling"; status: "starting" | "ready" | "unavailable"; device: "auto" | "cpu" }): string {
+  const status = value.status === "ready" ? "就绪" : value.status === "starting" ? "启动中" : "不可用";
+  return `Docling ${status} · ${value.device}`;
 }

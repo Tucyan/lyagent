@@ -353,8 +353,8 @@ export function registerGradingApi(
             return reply
               .code(503)
               .send({
-                code: "MINERU_NOT_CONFIGURED",
-                message: "MinerU is required for this file type",
+                code: "CONVERTER_NOT_CONFIGURED",
+                message: "A document converter is required for this file type",
               });
           void conversions
             .process(session.id)
@@ -481,8 +481,8 @@ export function registerGradingApi(
           return reply
             .code(503)
             .send({
-              code: "MINERU_NOT_CONFIGURED",
-              message: "MinerU is not configured",
+              code: "CONVERTER_NOT_CONFIGURED",
+              message: "The document converter is not configured",
             });
         await sessions.retryConversion(id);
         void conversions

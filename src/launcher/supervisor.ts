@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
 export const APP_RESTART_EXIT_CODE = 42;
-export type MineruBackend = "hybrid-engine" | "pipeline";
+export type DoclingDevice = "auto" | "cpu";
 
 export class PortReservation {
   private constructor(public readonly port: number, private readonly server: Server) {}
@@ -28,8 +28,8 @@ export class PortReservation {
 
 const descriptorSchema = z.object({
   schemaVersion: z.literal(1), workspaceHash: z.string().regex(/^[a-f0-9]{64}$/), ownerToken: z.string().uuid(),
-  pid: z.number().int().positive(), appPort: z.number().int().min(1).max(65535), mineruPort: z.number().int().min(1).max(65535),
-  backend: z.enum(["hybrid-engine", "pipeline"]), appUrl: z.string().url(), startedAt: z.string().datetime(), processStartedAt: z.number().int().positive(), supervisorPid: z.number().int().positive(), supervisorStartedAt: z.number().int().positive(),
+  pid: z.number().int().positive(), appPort: z.number().int().min(1).max(65535), converterPort: z.number().int().min(1).max(65535),
+  device: z.enum(["auto", "cpu"]), appUrl: z.string().url(), startedAt: z.string().datetime(), processStartedAt: z.number().int().positive(), supervisorPid: z.number().int().positive(), supervisorStartedAt: z.number().int().positive(),
 }).strict();
 export type RuntimeDescriptor = z.infer<typeof descriptorSchema>;
 
@@ -55,55 +55,38 @@ export async function readHealthyDescriptor(filename: string, options: {
   } catch { return undefined; }
 }
 
-export interface HardwareProbe { torch: boolean; lmdeploy: boolean; cuda: boolean; vramBytes: number }
-export async function chooseBackend(options: { forceCpu: boolean; probe(): Promise<HardwareProbe> }): Promise<MineruBackend> {
-  if (options.forceCpu) return "pipeline";
-  try {
-    const result = await options.probe();
-    return result.torch && result.lmdeploy && result.cuda && result.vramBytes >= 8 * 1024 ** 3 ? "hybrid-engine" : "pipeline";
-  } catch { return "pipeline"; }
+export function chooseDoclingDevice(environment: NodeJS.ProcessEnv): DoclingDevice {
+  return environment.COURSE_AGENT_DOCLING_DEVICE?.toLowerCase() === "cpu" ? "cpu" : "auto";
 }
 
 export interface LauncherChild { pid: number; startedAt?: number; wait(): Promise<number | null> }
 export async function runSupervisor(options: {
-  initialBackend: MineruBackend; maxUnexpectedRestarts: number; maxRequestedRestarts?: number;
-  startMineru(backend: MineruBackend): Promise<LauncherChild>; smoke(backend: MineruBackend, signal?: AbortSignal): Promise<boolean>;
-  startApp(backend: MineruBackend): Promise<LauncherChild>; isMineruHealthy(): Promise<boolean>; terminateTree(pid: number, startedAt?: number): Promise<void>; shutdown?: Promise<void>; shutdownSignal?: AbortSignal;
-}): Promise<{ exitCode: number; backend: MineruBackend; fallbackReason?: string }> {
-  const owned = new Set<number>(); let mineru: LauncherChild | undefined; let app: LauncherChild | undefined;
-  let backend = options.initialBackend; let fallbackReason: string | undefined; let mineruExit: Promise<number | null> | undefined;
+  device: DoclingDevice; maxUnexpectedRestarts: number; maxRequestedRestarts?: number;
+  startConverter(): Promise<LauncherChild>; startApp(device: DoclingDevice): Promise<LauncherChild>;
+  isConverterHealthy(): Promise<boolean>; terminateTree(pid: number, startedAt?: number): Promise<void>; shutdown?: Promise<void>;
+}): Promise<{ exitCode: number; device: DoclingDevice }> {
+  const owned = new Set<number>(); let converter: LauncherChild | undefined; let app: LauncherChild | undefined;
   const stop = async (child: LauncherChild | undefined) => { if (child && owned.has(child.pid)) { owned.delete(child.pid); await options.terminateTree(child.pid, child.startedAt); } };
   try {
-    mineru = await options.startMineru(backend); owned.add(mineru.pid); mineruExit = mineru.wait();
-    const initialSmoke = await raceShutdown(options.smoke(backend, options.shutdownSignal), options.shutdown);
-    if (initialSmoke === "shutdown") return { exitCode: 0, backend };
-    if (!initialSmoke) {
-      if (backend !== "hybrid-engine") return { exitCode: 1, backend };
-      await stop(mineru); backend = "pipeline"; fallbackReason = "GPU 后端自检未通过，已安全回退到 CPU。";
-      mineru = await options.startMineru(backend); owned.add(mineru.pid); mineruExit = mineru.wait();
-      const fallbackSmoke = await raceShutdown(options.smoke(backend, options.shutdownSignal), options.shutdown);
-      if (fallbackSmoke === "shutdown") return { exitCode: 0, backend, fallbackReason };
-      if (!fallbackSmoke) return { exitCode: 1, backend, fallbackReason };
-    }
+    converter = await options.startConverter();
+    owned.add(converter.pid);
+    const converterExit = converter.wait();
     let failures = 0; let requestedRestarts = 0;
     for (;;) {
-      app = await options.startApp(backend); owned.add(app.pid);
+      app = await options.startApp(options.device); owned.add(app.pid);
       const outcome = await Promise.race([
         app.wait().then((code) => ({ kind: "app" as const, code })),
-        mineruExit!.then((code) => ({ kind: "mineru" as const, code })),
+        converterExit.then((code) => ({ kind: "converter" as const, code })),
         ...(options.shutdown ? [options.shutdown.then(() => ({ kind: "shutdown" as const, code: 0 }))] : []),
       ]);
-      if (outcome.kind === "mineru") { owned.delete(mineru!.pid); mineru = undefined; return { exitCode: 1, backend, ...(fallbackReason ? { fallbackReason } : {}) }; }
-      if (outcome.kind === "shutdown") return { exitCode: 0, backend, ...(fallbackReason ? { fallbackReason } : {}) };
+      if (outcome.kind === "converter") { owned.delete(converter.pid); converter = undefined; return { exitCode: 1, device: options.device }; }
+      if (outcome.kind === "shutdown") return { exitCode: 0, device: options.device };
       const code = outcome.code; owned.delete(app.pid); app = undefined;
-      if (code === 0) return { exitCode: 0, backend, ...(fallbackReason ? { fallbackReason } : {}) };
-      if (!(await options.isMineruHealthy())) return { exitCode: 1, backend, ...(fallbackReason ? { fallbackReason } : {}) };
-      if (code === APP_RESTART_EXIT_CODE) { if (requestedRestarts++ >= (options.maxRequestedRestarts ?? 5)) return { exitCode: 1, backend, ...(fallbackReason ? { fallbackReason } : {}) }; }
-      else if (failures++ >= options.maxUnexpectedRestarts) return { exitCode: 1, backend, ...(fallbackReason ? { fallbackReason } : {}) };
+      if (code === 0) return { exitCode: 0, device: options.device };
+      if (!(await options.isConverterHealthy())) return { exitCode: 1, device: options.device };
+      if (code === APP_RESTART_EXIT_CODE) {
+        if (requestedRestarts++ >= (options.maxRequestedRestarts ?? 5)) return { exitCode: 1, device: options.device };
+      } else if (failures++ >= options.maxUnexpectedRestarts) return { exitCode: 1, device: options.device };
     }
-  } finally { await stop(app); await stop(mineru); }
-}
-
-async function raceShutdown<T>(operation: Promise<T>, shutdown?: Promise<void>): Promise<T | "shutdown"> {
-  return shutdown ? Promise.race([operation, shutdown.then(() => "shutdown" as const)]) : operation;
+  } finally { await stop(app); await stop(converter); }
 }

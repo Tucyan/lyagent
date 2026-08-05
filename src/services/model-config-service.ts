@@ -238,7 +238,7 @@ function parseJournal(value: unknown): TransactionJournal {
 }
 
 function safeConfig(config: AppConfig): AppConfig {
-  return { models: config.models, mineru: config.mineru, webSearch: config.webSearch };
+  return { models: config.models, converter: config.converter, webSearch: config.webSearch };
 }
 
 function submittedKeyMap(input: ModelSettingsInput): Map<string, string> {

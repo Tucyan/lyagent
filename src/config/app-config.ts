@@ -12,18 +12,22 @@ const modelConfigSchema = z.object({
   baseUrl: modelBaseUrlSchema,
 }).strict();
 
+const converterConfigSchema = z.object({
+  baseUrl: z.string().url().refine(isSafeConverterBaseUrl).default("http://127.0.0.1:5001"),
+  pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
+  taskTimeoutSeconds: z.number().int().min(10).max(86_400).default(3_600),
+  maxAttempts: z.number().int().min(1).max(10).default(3),
+});
+
 const appConfigSchema = z.object({
   deepseekApiKey: z.string().trim().min(1).optional(),
   models: z.object({
     primary: modelConfigSchema.default({ providerId: "deepseek", modelId: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com" }),
     vision: modelConfigSchema.optional(),
   }).optional(),
-  mineru: z.object({
-    baseUrl: z.string().url().default("http://127.0.0.1:8000"),
-    pollIntervalMs: z.number().int().min(100).max(60_000).default(1_000),
-    taskTimeoutSeconds: z.number().int().min(10).max(86_400).default(3_600),
-    maxAttempts: z.number().int().min(1).max(10).default(3),
-  }).optional(),
+  converter: converterConfigSchema.optional(),
+  /** Read-only compatibility. Saving always writes converter instead. */
+  mineru: converterConfigSchema.optional(),
   webSearch: z.object({
     enabled: z.boolean().default(true),
     provider: z.literal("ddgs").default("ddgs"),
@@ -36,7 +40,7 @@ export interface AppConfig {
   /** Read-only compatibility for legacy workspace config. Never written. */
   deepseekApiKey?: string;
   models: ModelSettings;
-  mineru: { baseUrl: string; pollIntervalMs: number; taskTimeoutSeconds: number; maxAttempts: number };
+  converter: { baseUrl: string; pollIntervalMs: number; taskTimeoutSeconds: number; maxAttempts: number };
   webSearch: { enabled: boolean; provider: "ddgs"; maxResults: number; pythonCommand?: string };
 }
 
@@ -64,7 +68,7 @@ export async function loadAppConfig(workspaceRoot: string): Promise<AppConfig> {
   try {
     raw = await readFile(filename, "utf8");
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { models: defaultModels(), mineru: defaultMineru(), webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { models: defaultModels(), converter: defaultConverter(), webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } };
     throw error;
   }
   try {
@@ -79,7 +83,7 @@ export function parseAppConfigValue(value: unknown): AppConfig {
   return {
     ...(parsed.deepseekApiKey ? { deepseekApiKey: parsed.deepseekApiKey } : {}),
     models: parsed.models ?? defaultModels(),
-    mineru: parsed.mineru ?? defaultMineru(),
+    converter: parsed.converter ?? parsed.mineru ?? defaultConverter(),
     webSearch: parsed.webSearch ? {
       enabled: parsed.webSearch.enabled,
       provider: parsed.webSearch.provider,
@@ -97,17 +101,26 @@ export async function saveAppConfig(workspaceRoot: string, config: AppConfig): P
   const validated = parseAppConfigValue(config);
   const safe = {
     models: validated.models,
-    mineru: validated.mineru,
+    converter: validated.converter,
     webSearch: validated.webSearch,
   };
   await writeFile(temporary, `${JSON.stringify(safe, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   await rename(temporary, filename);
 }
 
-function defaultMineru(): AppConfig["mineru"] {
-  return { baseUrl: "http://127.0.0.1:8000", pollIntervalMs: 1_000, taskTimeoutSeconds: 3_600, maxAttempts: 3 };
+function defaultConverter(): AppConfig["converter"] {
+  return { baseUrl: "http://127.0.0.1:5001", pollIntervalMs: 1_000, taskTimeoutSeconds: 3_600, maxAttempts: 3 };
 }
 
 function defaultModels(): ModelSettings {
   return { primary: { providerId: "deepseek", modelId: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com" } };
+}
+
+function isSafeConverterBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:"
+      && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname.toLowerCase())
+      && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
 }

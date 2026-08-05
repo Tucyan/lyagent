@@ -11,6 +11,6 @@ describe("dashboard quick actions", () => {
 });
 
 it("formats a safe converter runtime status", () => {
-  expect(converterStatusLabel({ status: "ready", backend: "hybrid-engine" })).toBe("转换器就绪 · hybrid-engine");
-  expect(converterStatusLabel({ status: "unavailable", backend: "pipeline" })).toBe("转换器不可用 · pipeline");
+  expect(converterStatusLabel({ provider: "docling", status: "ready", device: "auto" })).toBe("Docling 就绪 · auto");
+  expect(converterStatusLabel({ provider: "docling", status: "unavailable", device: "cpu" })).toBe("Docling 不可用 · cpu");
 });

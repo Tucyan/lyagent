@@ -48,7 +48,7 @@ export interface ServerOptions {
   webEvidenceFactory?: () => WebEvidenceService;
   rubricDesignerFactory?: RubricDesignerFactory;
   studentIdentityClient?: StudentIdentityClient;
-  mineruConversionClient?: DocumentConversionClient;
+  conversionClient?: DocumentConversionClient;
   submissionConversionOptions?: SubmissionConversionOptions;
   gradingAgentFactory?: GradingAgentBuilder;
   submissionTitleAgentFactory?: GradingAgentBuilder;
@@ -61,7 +61,7 @@ export interface ServerOptions {
   };
   runtimeStatus?: {
     appVersion: string; appPort: number; workspaceConfigured: boolean;
-    mineru: { status: "starting" | "ready" | "unavailable"; version?: string; backend: "hybrid-engine" | "pipeline"; port: number };
+    converter: { provider: "docling"; status: "starting" | "ready" | "unavailable"; version: string; device: "auto" | "cpu"; port: number };
   };
   requestRestart?: () => void;
   scheduleRestart?: (restart: () => void) => void;
@@ -128,7 +128,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     workspaceRoot: options.workspaceRoot,
     rubrics,
     ...(options.studentIdentityClient ? { identityClient: options.studentIdentityClient } : {}),
-    ...(options.mineruConversionClient ? { conversionClient: options.mineruConversionClient } : {}),
+    ...(options.conversionClient ? { conversionClient: options.conversionClient } : {}),
     ...(options.submissionConversionOptions ? { conversionOptions: options.submissionConversionOptions } : {}),
     ...(options.gradingAgentFactory ? { gradingAgentFactory: options.gradingAgentFactory } : {}),
     ...(options.submissionTitleAgentFactory ? { submissionTitleAgentFactory: options.submissionTitleAgentFactory } : {}),
@@ -173,10 +173,10 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
 
   app.get("/api/health", async (_request, reply) => {
     if (options.runtimeOwnerToken) reply.header("x-course-agent-owner", options.runtimeOwnerToken);
-    return { ok: true, ...(options.runtimeStatus ? { ready: options.runtimeStatus.mineru.status === "ready" } : {}), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
+    return { ok: true, ...(options.runtimeStatus ? { ready: options.runtimeStatus.converter.status === "ready" } : {}), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
   });
   app.get("/api/system/runtime", async () => options.runtimeStatus ?? ({
-    appVersion: "0.1.0", appPort: 0, mineru: { status: "unavailable", backend: "pipeline", port: 0 }, workspaceConfigured: false,
+    appVersion: "0.1.0", appPort: 0, converter: { provider: "docling", status: "unavailable", version: "development", device: "auto", port: 0 }, workspaceConfigured: false,
   }));
   app.post("/api/agent-runs/:runId/cancel", async (request, reply) => {
     const { runId } = z.object({ runId: z.string().uuid() }).parse(request.params);

@@ -19,7 +19,7 @@ afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recur
 function config(modelId: string): AppConfig {
   return {
     models: { primary: { providerId: "shared", modelId, baseUrl: "https://api.example/v1" } },
-    mineru: { baseUrl: "http://127.0.0.1:8000", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 },
+    converter: { baseUrl: "http://127.0.0.1:5001", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 },
     webSearch: { enabled: true, provider: "ddgs", maxResults: 5 },
   };
 }

@@ -14,7 +14,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
   const [busy, setBusy] = useState<"test" | "save">();
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [converter, setConverter] = useState<{ status: string; backend: string }>();
+  const [converter, setConverter] = useState<{ provider: "docling"; status: string; device: "auto" | "cpu" }>();
 
   useEffect(() => {
     void fetch("/api/system/models", { cache: "no-store" }).then(async (response) => {
@@ -23,7 +23,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
       setForm(modelSettingsStateFromStatus(await response.json() as ModelSettingsStatus));
     }).catch(() => setError("无法读取模型设置，请确认本地服务正在运行。"));
   }, []);
-  useEffect(() => { void fetch("/api/system/runtime", { cache: "no-store" }).then((response) => response.ok ? response.json() : undefined).then((value: { mineru?: { status: string; backend: string } } | undefined) => setConverter(value?.mineru)).catch(() => undefined); }, []);
+  useEffect(() => { void fetch("/api/system/runtime", { cache: "no-store" }).then((response) => response.ok ? response.json() : undefined).then((value: { converter?: { provider: "docling"; status: string; device: "auto" | "cpu" } } | undefined) => setConverter(value?.converter)).catch(() => undefined); }, []);
 
   const submit = async (action: "test" | "save") => {
     if (!form || !csrfToken) return;
@@ -57,7 +57,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
   return <main className="model-settings-page">
     <header><div><p className="eyebrow">Course Agent</p><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1></div>{mode === "settings" && <a href="/">返回工作台</a>}</header>
     <section className="model-settings-card">
-      {converter && <p className="model-routing-note">文档转换器：{converter.status} · {converter.backend}</p>}
+      {converter && <p className="model-routing-note">Docling 文档转换器：{converter.status} · {converter.device}</p>}
       <p className="model-routing-note">主模型不处理图片；批改工具成功读取图片后，本次运行会从下一轮起切换至视觉模型，并在该次运行余下轮次保持使用视觉模型。</p>
       <form onSubmit={handleSubmit}>
         <fieldset><legend>主模型（必填）</legend>
@@ -81,6 +81,6 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
         <div className="model-actions"><button type="button" disabled={Boolean(busy)} onClick={() => void submit("test")}>{busy === "test" ? "测试中…" : "测试连接"}</button><button type="submit" disabled={Boolean(busy)}>{busy === "save" ? "保存中…" : "保存设置"}</button></div>
       </form>
     </section>
-    <aside className="model-about" aria-label="关于与第三方组件"><strong>关于与第三方组件</strong><p>文档解析能力由 MinerU 提供；完整第三方许可证随发布包提供。</p></aside>
+    <aside className="model-about" aria-label="关于与第三方组件"><strong>关于与第三方组件</strong><p>文档解析能力由 Docling 提供；完整第三方许可证随发布包提供。</p></aside>
   </main>;
 }

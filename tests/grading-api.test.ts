@@ -210,6 +210,26 @@ describe("grading API", () => {
     await app.close();
   });
 
+  it("reports a provider-neutral error when a convertible upload has no converter", async () => {
+    const { app, assignmentId } = await setup();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=x" },
+      payload: multipart("x", {
+        assignmentId,
+        rubricVersion: "1",
+        studentName: "Student",
+        studentNumber: "20260003",
+        submissionTitle: "Report",
+      }, "report.pdf", "%PDF-1.7 synthetic"),
+    });
+    expect(response.statusCode, response.body).toBe(503);
+    expect(response.json()).toMatchObject({ code: "CONVERTER_NOT_CONFIGURED" });
+    expect(response.body).not.toMatch(/mineru/i);
+    await app.close();
+  });
+
   it("returns 422 for incomplete student identity instead of an internal error", async () => {
     const { app, assignmentId } = await setup();
     const response = await app.inject({
@@ -703,7 +723,7 @@ async function setup(
     workspaceRoot: root,
     submissionTitleAgentFactory,
     ...(graderFactory ? { gradingAgentFactory: graderFactory } : {}),
-    ...(conversionClient ? { mineruConversionClient: conversionClient } : {}),
+    ...(conversionClient ? { conversionClient } : {}),
     ...(conversionOptions
       ? { submissionConversionOptions: conversionOptions }
       : {}),

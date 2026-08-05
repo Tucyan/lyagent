@@ -24,13 +24,13 @@ describe("local app configuration", () => {
   it("loads the DeepSeek key only from workspace/config/app.json", async () => {
     const root = await temporaryWorkspace('{"deepseekApiKey":"test-key"}');
 
-    await expect(loadAppConfig(root)).resolves.toEqual({ deepseekApiKey: "test-key", models: { primary: { providerId: "deepseek", modelId: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com" } }, mineru: { baseUrl: "http://127.0.0.1:8000", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 }, webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
+    await expect(loadAppConfig(root)).resolves.toEqual({ deepseekApiKey: "test-key", models: { primary: { providerId: "deepseek", modelId: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com" } }, converter: { baseUrl: "http://127.0.0.1:5001", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 }, webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
   });
 
   it("uses DDGS web-search defaults when the local file is absent", async () => {
     const root = await temporaryWorkspace();
 
-    await expect(loadAppConfig(root)).resolves.toEqual({ models: { primary: { providerId: "deepseek", modelId: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com" } }, mineru: { baseUrl: "http://127.0.0.1:8000", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 }, webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
+    await expect(loadAppConfig(root)).resolves.toEqual({ models: { primary: { providerId: "deepseek", modelId: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com" } }, converter: { baseUrl: "http://127.0.0.1:5001", pollIntervalMs: 1000, taskTimeoutSeconds: 3600, maxAttempts: 3 }, webSearch: { enabled: true, provider: "ddgs", maxResults: 5 } });
   });
 
   it("rejects an invalid local key type", async () => {
@@ -39,9 +39,36 @@ describe("local app configuration", () => {
     await expect(loadAppConfig(root)).rejects.toBeInstanceOf(AppConfigError);
   });
 
-  it("loads bounded loopback MinerU settings", async () => {
-    const root = await temporaryWorkspace('{"mineru":{"baseUrl":"http://localhost:9000","pollIntervalMs":250,"taskTimeoutSeconds":120,"maxAttempts":2}}');
-    await expect(loadAppConfig(root)).resolves.toMatchObject({ mineru: { baseUrl: "http://localhost:9000", pollIntervalMs: 250, taskTimeoutSeconds: 120, maxAttempts: 2 } });
+  it("loads bounded loopback converter settings", async () => {
+    const root = await temporaryWorkspace('{"converter":{"baseUrl":"http://localhost:9000","pollIntervalMs":250,"taskTimeoutSeconds":120,"maxAttempts":2}}');
+    await expect(loadAppConfig(root)).resolves.toMatchObject({ converter: { baseUrl: "http://localhost:9000", pollIntervalMs: 250, taskTimeoutSeconds: 120, maxAttempts: 2 } });
+  });
+
+  it.each(["https://converter.example", "http://192.168.1.10:5001", "http://user:secret@127.0.0.1:5001", "http://127.0.0.1:5001?token=value"]) (
+    "rejects an unsafe converter base URL: %s",
+    async (baseUrl) => {
+      const root = await temporaryWorkspace(JSON.stringify({ converter: { baseUrl } }));
+      await expect(loadAppConfig(root)).rejects.toBeInstanceOf(AppConfigError);
+    },
+  );
+
+  it("reads legacy mineru settings once but saves only the converter field", async () => {
+    const root = await temporaryWorkspace('{"mineru":{"baseUrl":"http://localhost:9001","pollIntervalMs":500,"taskTimeoutSeconds":240,"maxAttempts":2}}');
+    const config = await loadAppConfig(root);
+    expect(config.converter).toEqual({ baseUrl: "http://localhost:9001", pollIntervalMs: 500, taskTimeoutSeconds: 240, maxAttempts: 2 });
+
+    await saveAppConfig(root, config);
+    const saved = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(path.join(root, "config", "app.json"), "utf8")));
+    expect(saved.converter).toEqual(config.converter);
+    expect(saved).not.toHaveProperty("mineru");
+  });
+
+  it("prefers converter settings when legacy mineru settings are also present", async () => {
+    const root = await temporaryWorkspace(JSON.stringify({
+      converter: { baseUrl: "http://127.0.0.1:5002" },
+      mineru: { baseUrl: "http://127.0.0.1:9002" },
+    }));
+    await expect(loadAppConfig(root)).resolves.toMatchObject({ converter: { baseUrl: "http://127.0.0.1:5002" } });
   });
 
   it("loads independent primary and vision OpenAI-compatible settings", async () => {

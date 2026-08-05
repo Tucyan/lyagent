@@ -11,8 +11,8 @@
     "provider": "ddgs",
     "maxResults": 5
   },
-  "mineru": {
-    "baseUrl": "http://127.0.0.1:8000",
+  "converter": {
+    "baseUrl": "http://127.0.0.1:5001",
     "pollIntervalMs": 1000,
     "taskTimeoutSeconds": 3600,
     "maxAttempts": 3
