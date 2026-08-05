@@ -1,40 +1,191 @@
-# Windows 一键发布包与多模态模型路由实施计划
+# Windows Docling 一键发布包实施计划
 
-**目标：** 交付 Windows x64 Slim/Full 两种可复现发布包；双击 BAT 后由本地监督进程完成首次模型设置、MinerU 启停、端口选择和浏览器打开，并在批改读取图片后按需切换到可选视觉模型。
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**边界：** 数据写入 `%LOCALAPPDATA%\CourseAgent`；发布包不含 Workspace、学生材料或密钥；本工作不实现 M6 备份恢复、安装器或自动更新。
+**Goal:** 交付以 Docling 为唯一内置文档转换引擎的 Windows x64 Slim/Full 发布包，解压后双击 BAT 即可完成首次设置、转换作业并运行 M4/M5。
 
-## Task 1：统一模型配置与密钥
+**Architecture:** 将现有 MinerU 专用协议提炼为供应商无关的 `DocumentConversionClient`，保留转换状态机和受控 Workspace 不变，以 Docling Serve 稳定 v1 异步 API 实现上传、轮询与结果读取。Windows 监督进程只拥有 Docling 和应用两个子进程；发布构建固定 Node、Python、Docling 与 Docling Serve，Slim 首次使用下载模型，Full 预置离线 artifacts。
 
-- [x] 先写配置兼容、OpenAI-compatible 模型构建、DPAPI 抽象和系统 API 的失败测试。
-- [x] 建立主模型及可选视觉模型配置；默认主模型为 `deepseek-v4-flash` / `https://api.deepseek.com`。
-- [x] 使用 Windows 当前用户 DPAPI 保存密钥，并保持旧 `deepseekApiKey` 只读兼容及一次性迁移。
-- [x] 所有 Agent 与身份识别复用统一主模型；系统 API 不暴露密钥。
+**Tech Stack:** TypeScript ESM、Vitest、Fastify、Node.js 24.11.1、Python 3.12.10、Docling 2.118.0、Docling Serve 1.28.0、PowerShell、Windows BAT。
 
-## Task 2：视觉切换与设置界面
+---
 
-- [ ] 先写读取图片后的下一轮模型切换、无视觉模型受控降级和流事件测试。
-- [ ] 每次 Agent 运行从主模型开始；成功读取图片后，本次运行剩余轮次使用视觉模型。
-- [ ] 无视觉模型时返回 `VISION_MODEL_NOT_CONFIGURED`，要求证据不足或教师确认。
-- [ ] 增加 `/setup`、`/settings/models`、设置导航、连接测试及 `model_switch` 会话展示。
+### Task 0：稳定 Windows 测试基线
 
-## Task 3：监督进程与 MinerU
+**Files:**
+- Modify: `vitest.config.ts`
+- Modify: `tests/model-config-transaction.test.ts`
+- Modify: `.docs/testing.md`
 
-- [x] 先写端口选择、单实例、子进程回收、硬件检测和 MinerU backend 请求测试。
-- [x] `start-course-agent.bat` 仅启动内置 Node 监督进程；默认 3001，冲突时选择 3002–3010。
-- [x] GPU/LMDeploy 自检通过时选择 `hybrid-engine`，否则选择 `pipeline`，并随 `/tasks` 显式提交。
-- [x] 暴露脱敏的运行状态；所有服务只监听环回地址。
+- [ ] **Step 1: 记录当前失败证据**
 
-## Task 4：发布构建与文档
+  运行 `npm run check`，确认高并发下出现跨模块 5 秒超时和 SQLite `EBUSY`；运行 `npm test -- tests/credential-store.test.ts --run --reporter=verbose`，确认相同测试单独通过。
 
-- [ ] 新增 `scripts/build-release.ps1` 与 `npm run release:win`，支持 `slim|full|all`。
-- [ ] 固定并校验 Node 24.11.1、Python 3.12.10、MinerU 3.2.1 及下载 SHA-256。
-- [ ] 生成发布 manifest、SHA256SUMS、第三方声明和 MinerU 许可证；扫描并拒绝敏感/开发数据。
-- [ ] 更新架构、存储、开发、测试、运维和里程碑文档，只描述已交付事实。
+- [ ] **Step 2: 验证单一根因假设**
 
-## Task 5：验收
+  运行 `npm test -- --run --maxWorkers=4`，确认失败数量显著下降；锁测试只应断言临界区不重叠，不应断言两个独立 OS helper 的获取顺序。
 
-- [ ] 运行 `npm run check`、`npm run build`，从干净树构建 Slim/Full 包并检查 ABI、清单和敏感数据。
-- [ ] 在中文及空格路径解压，验证首次设置、端口回退、单实例、退出回收、设置重启和数据持久化。
-- [ ] 使用真实 DeepSeek 验证主模型；使用真实 MinerU 验证 DOCX/PDF、GPU 与强制 CPU；验证 Full 本地模型和 Slim 下载缓存。
-- [ ] 验证视觉模型切换或未配置时的受控证据不足，并回归 M4/M5 与真实浏览器交互。
+- [ ] **Step 3: 写入最小稳定配置与正确断言**
+
+  在 Vitest 配置中将 Windows 文件 worker 限制为适合 SQLite/PowerShell 集成测试的固定上限；将锁测试改为记录 active 临界区数量并断言最大值为 1，同时断言两个操作均完成。
+
+- [ ] **Step 4: 验证并提交**
+
+  运行 `npm run check` 两次，均须 0 failure；更新 `.docs/testing.md` 后提交 `test: stabilize Windows integration concurrency`。
+
+### Task 1：供应商无关转换协议与 Docling 客户端
+
+**Files:**
+- Create: `src/services/document-conversion-client.ts`
+- Create: `src/services/docling-client.ts`
+- Create: `src/services/conversion-result.ts`
+- Modify: `src/services/submission-conversion-service.ts`
+- Delete: `src/services/mineru-client.ts`
+- Create: `tests/docling-client.test.ts`
+- Create: `tests/conversion-result.test.ts`
+- Modify: `tests/submission-conversion.test.ts`
+- Delete: `tests/mineru-client.test.ts`
+
+- [ ] **Step 1: 先写失败测试**
+
+  覆盖严格环回 URL 校验、`/health`、`POST /v1/convert/file/async` multipart 参数、任务状态映射、404 任务丢失、408/429/5xx 可重试、结果大小上限、JSON/ZIP 输出、Markdown 与引用图片规范化、ZIP slip/炸弹/伪造图片拒绝。
+
+- [ ] **Step 2: 验证 RED**
+
+  运行 `npm test -- tests/docling-client.test.ts tests/conversion-result.test.ts tests/submission-conversion.test.ts --run`，预期因 Docling API 尚未实现而失败。
+
+- [ ] **Step 3: 实现最小通用协议**
+
+  定义 `DocumentConversionClient` 的 `health/submit/status/result`，以及与供应商无关的 `ConversionUnavailableError`、`ConversionTaskMissingError`、`ConversionResultError`。Docling 提交请求只上传当前不可变原件，要求 Markdown、referenced images、OCR auto、accurate table mode；所有网络错误对外转换为固定安全错误类型。
+
+- [ ] **Step 4: 复用原状态机**
+
+  `SubmissionConversionService` 只依赖通用协议和通用结果导入器；保持既有重试、恢复、任务丢失重提、不可变原件和安全错误码语义不变。
+
+- [ ] **Step 5: 验证并提交**
+
+  定向测试和 `npm run typecheck` 通过后提交 `feat: replace MinerU protocol with Docling conversion`。
+
+### Task 2：配置、运行状态与 Windows 监督进程切换至 Docling
+
+**Files:**
+- Modify: `src/config/app-config.ts`
+- Modify: `config.example.json`
+- Modify: `src/main.ts`
+- Modify: `src/api/server.ts`
+- Modify: `src/api/grading-routes.ts`
+- Modify: `src/launcher.ts`
+- Modify: `src/launcher/runtime.ts`
+- Modify: `src/launcher/supervisor.ts`
+- Modify: `web/src/pages/DashboardPage.tsx`
+- Modify: `web/src/pages/ModelSettingsPage.tsx`
+- Modify: `web/src/pages/dashboard-model.ts`
+- Modify: `web/src/pages/model-settings-page-model.ts`
+- Modify: `tests/app-config.test.ts`
+- Modify: `tests/launcher.test.ts`
+- Modify: `tests/launcher-entry.test.ts`
+- Modify: `tests/runtime-api.test.ts`
+- Modify: `tests/grading-api.test.ts`
+
+- [ ] **Step 1: 先写失败测试**
+
+  配置从 `mineru` 迁移为 `converter`，旧 `mineru` 仅作为一次性只读兼容；runtime API 返回 `converter: { provider: "docling", version, status, port, device }`；上传错误和页面不得再声称需要 MinerU；启动命令必须使用内置 `docling-serve.exe run` 并通过环境变量绑定 `127.0.0.1`、端口、单 worker、artifacts 路径和 CPU/auto device。
+
+- [ ] **Step 2: 验证 RED**
+
+  运行相关配置、启动器、API和页面模型测试，确认当前 MinerU 命名与命令导致预期失败。
+
+- [ ] **Step 3: 实现配置迁移和运行监督**
+
+  默认开发地址为 `http://127.0.0.1:5001`。监督进程在8000–8009选择 Docling 端口，等待带实例所有权的应用健康检查；Docling 异常退出时回收应用，应用42仅重启应用；退出时只回收经进程开始时间确认的子进程树。发布默认 `DOCLING_DEVICE=auto`，允许 `COURSE_AGENT_DOCLING_DEVICE=cpu` 强制 CPU。
+
+- [ ] **Step 4: 更新界面用语**
+
+  设置页、关于页、运行状态和上传提示统一显示 Docling；不得遗留 MinerU backend、显存门槛或许可证标识。
+
+- [ ] **Step 5: 验证并提交**
+
+  定向测试、`npm run check` 和 `npm run build` 通过后提交 `feat: supervise Docling in Windows runtime`。
+
+### Task 3：可复现 Windows Slim/Full 构建
+
+**Files:**
+- Create: `release-lock.json`
+- Create: `scripts/build-release.ps1`
+- Create: `scripts/verify-release.ps1`
+- Create: `THIRD_PARTY_NOTICES.md`
+- Modify: `package.json`
+- Modify: `start-course-agent.bat`
+- Create: `tests/release-build.test.ts`
+
+- [ ] **Step 1: 先写失败测试**
+
+  测试 lock schema、版本与 SHA-256 必填、stage 白名单、Workspace/日志/API Key/开发依赖拒绝、manifest/hash生成、BAT中文空格路径、内置 Node ABI 与 `better-sqlite3` 校验、Slim/Full 模式差异。
+
+- [ ] **Step 2: 验证 RED**
+
+  运行 `npm test -- tests/release-build.test.ts --run`，预期因发布构建器尚不存在而失败。
+
+- [ ] **Step 3: 实现发布构建**
+
+  `npm run release:win -- -Mode slim|full|all` 调用 PowerShell：固定下载并校验 Node 24.11.1 x64 ZIP、Python 3.12.10 x64、Docling 2.118.0、Docling Serve 1.28.0；构建 Web/Server，安装生产 Node 依赖和 Python 依赖，拒绝 devDependencies、Workspace、日志和秘密，生成 `release-manifest.json`、`SHA256SUMS.txt`、`THIRD_PARTY_NOTICES.md`。
+
+- [ ] **Step 4: 实现模型模式**
+
+  Slim 不携带 Docling artifacts，首个转换前由 Docling 下载到 `%LOCALAPPDATA%\\CourseAgent\\models\\docling` 并在设置页显示准备状态；Full 在构建期运行 `docling-tools models download --output-dir` 并强制 `DOCLING_SERVE_ARTIFACTS_PATH` 指向包内只读模型目录。
+
+- [ ] **Step 5: 验证并提交**
+
+  发布构建单测、`npm run check`、`npm run build` 通过后提交 `build: add reproducible Docling Windows releases`。
+
+### Task 4：同步长期文档
+
+**Files:**
+- Modify: `.docs/architecture.md`
+- Modify: `.docs/domain-and-storage.md`
+- Modify: `.docs/development.md`
+- Modify: `.docs/testing.md`
+- Modify: `.docs/operations-and-security.md`
+- Modify: `docs/acceptance/M4-single-grading.md`
+- Modify: `docs/superpowers/plans/2026-08-02-course-agent-milestones.md`
+- Modify: `plan.md`
+
+- [ ] **Step 1: 清理过时事实**
+
+  全仓搜索 `MinerU|mineru|hybrid-engine|pipeline backend`，除历史计划或迁移说明外不得把 MinerU描述为当前依赖。
+
+- [ ] **Step 2: 写入 Docling 当前事实**
+
+  文档明确通用转换边界、Docling v1 API、Slim/Full 模型策略、环回限制、失败恢复、`.doc` 初版仍拒绝（不内置 LibreOffice）、发布命令和真实验收门槛。
+
+- [ ] **Step 3: 验证并提交**
+
+  检查 Markdown 链接、围栏和示例命令，运行 `git diff --check` 后提交 `docs: document Docling release runtime`。
+
+### Task 5：实际构建与端到端验收
+
+**Files:**
+- Generated: `release/course-agent-v0.1.0-win-x64-slim.zip`
+- Generated: `release/course-agent-v0.1.0-win-x64-full.zip`
+- Generated: `release/SHA256SUMS.txt`
+- Test fixtures: `tests/fixtures/single-grading/ai-life-report/`
+
+- [ ] **Step 1: 最终静态门槛**
+
+  从干净工作树运行 `npm ci`、`npm run check`、`npm run build`、`git diff --check`，全部必须退出0。
+
+- [ ] **Step 2: 实际构建两个包**
+
+  运行 `npm run release:win -- -Mode all`，随后执行 `scripts/verify-release.ps1` 校验版本、SHA、ABI、许可证、模型模式及敏感内容扫描。
+
+- [ ] **Step 3: 解压运行验收**
+
+  将 Slim 和 Full 分别解压到含中文与空格的新目录；双击 BAT 等价启动，验证3001冲突回退、重复启动单实例、关闭后 Node/Docling 回收、设置保存安全重启、Workspace持久化。
+
+- [ ] **Step 4: 真实转换与浏览器验收**
+
+  使用合成 Markdown、DOCX、PDF和含图报告，经真实 Docling 完成上传、转换、图片清单、单份批改与批量队列；强制 CPU 验证回退；Full 在阻断模型下载网络时仍可转换，Slim 首次下载后第二次不重复下载。通过浏览器验证设置、运行状态、M4/M5 review和CSV导出。
+
+- [ ] **Step 5: 最终审查与提交**
+
+  独立审查完整分支，修复所有 Critical/Important；重新运行完整门槛，提交验收记录和最终改动。
