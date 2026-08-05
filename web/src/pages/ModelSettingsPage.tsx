@@ -3,6 +3,7 @@ import {
   buildModelSettingsPayload,
   modelSettingsRequest,
   modelSettingsStateFromStatus,
+  waitForRestartHealth,
   type ModelSettingsFormState,
   type ModelSettingsStatus,
 } from "./model-settings-page-model";
@@ -13,6 +14,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
   const [busy, setBusy] = useState<"test" | "save">();
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [converter, setConverter] = useState<{ status: string; backend: string }>();
 
   useEffect(() => {
     void fetch("/api/system/models", { cache: "no-store" }).then(async (response) => {
@@ -21,6 +23,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
       setForm(modelSettingsStateFromStatus(await response.json() as ModelSettingsStatus));
     }).catch(() => setError("无法读取模型设置，请确认本地服务正在运行。"));
   }, []);
+  useEffect(() => { void fetch("/api/system/runtime", { cache: "no-store" }).then((response) => response.ok ? response.json() : undefined).then((value: { mineru?: { status: string; backend: string } } | undefined) => setConverter(value?.mineru)).catch(() => undefined); }, []);
 
   const submit = async (action: "test" | "save") => {
     if (!form || !csrfToken) return;
@@ -29,10 +32,19 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
       const payload = buildModelSettingsPayload(form);
       const response = await fetch(action === "test" ? "/api/system/models/test" : "/api/system/models", modelSettingsRequest(action === "test" ? "POST" : "PUT", csrfToken, payload));
       if (!response.ok) throw new Error();
-      setNotice(action === "test" ? "连接测试成功。" : "设置已安全保存。请重启 Course Agent 以应用新的运行时模型。");
+      setNotice(action === "test" ? "连接测试成功。" : "设置已安全保存。");
       if (action === "save") {
-        const saved = await response.json() as ModelSettingsStatus;
+        const saved = await response.json() as ModelSettingsStatus & { restartRequired?: boolean; restartScheduled?: boolean; instanceId?: string };
         setForm(modelSettingsStateFromStatus(saved));
+        if (saved.restartScheduled) {
+          setNotice("设置已安全保存，Course Agent 正在重启。");
+          const ready = await waitForRestartHealth({
+            health: async () => { const health = await fetch("/api/health", { cache: "no-store" }); const state = await health.json() as { ok?: boolean; instanceId?: string }; return health.ok && state.ok === true && Boolean(state.instanceId) && state.instanceId !== saved.instanceId; },
+            sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+          });
+          if (!ready) throw new Error("restart-timeout");
+          window.location.assign(mode === "setup" ? "/" : "/settings/models");
+        }
       }
     } catch (caught) {
       setError(caught instanceof Error && caught.message.includes("必填") ? caught.message : "模型连接或保存失败，请检查模型 ID、Base URL 和 API Key。当前表单与已保存设置均未被覆盖。");
@@ -45,6 +57,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
   return <main className="model-settings-page">
     <header><div><p className="eyebrow">Course Agent</p><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1></div>{mode === "settings" && <a href="/">返回工作台</a>}</header>
     <section className="model-settings-card">
+      {converter && <p className="model-routing-note">文档转换器：{converter.status} · {converter.backend}</p>}
       <p className="model-routing-note">主模型不处理图片；批改工具成功读取图片后，本次运行会从下一轮起切换至视觉模型，并在该次运行余下轮次保持使用视觉模型。</p>
       <form onSubmit={handleSubmit}>
         <fieldset><legend>主模型（必填）</legend>

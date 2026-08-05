@@ -57,12 +57,16 @@ export class MineruClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly maxResultBytes: number;
+  private readonly backend: "hybrid-engine" | "pipeline";
+  private readonly signal: AbortSignal | undefined;
 
   constructor(options: {
     baseUrl: string;
     fetchImpl?: typeof fetch;
     timeoutMs?: number;
     maxResultBytes?: number;
+    backend?: "hybrid-engine" | "pipeline";
+    signal?: AbortSignal;
   }) {
     let url: URL;
     try {
@@ -88,6 +92,8 @@ export class MineruClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.maxResultBytes = options.maxResultBytes ?? 50 * 1024 * 1024;
+    this.backend = options.backend ?? "pipeline";
+    this.signal = options.signal;
   }
 
   async health(): Promise<{ protocolVersion?: string }> {
@@ -112,7 +118,9 @@ export class MineruClient {
     );
     form.append("return_md", "true");
     form.append("return_original_file", "false");
+    form.append("return_images", "true");
     form.append("response_format_zip", "true");
+    form.append("backend", this.backend);
     const response = await this.request("/tasks", {
       method: "POST",
       body: form,
@@ -184,7 +192,7 @@ export class MineruClient {
     try {
       response = await this.fetchImpl(`${this.baseUrl}${relativePath}`, {
         ...init,
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs),
       });
     } catch {
       throw new MineruUnavailableError();

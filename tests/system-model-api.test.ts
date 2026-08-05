@@ -140,8 +140,22 @@ it("protects writes and atomically saves validated settings with restart require
   const saved = await app.inject({ method: "PUT", url: "/api/system/models", headers: { origin: security.allowedOrigin, "x-csrf-token": csrfToken }, payload: body });
   expect(saved.statusCode).toBe(200);
   expect(saved.json()).toMatchObject({ restartRequired: true, primary: { providerId: "custom", configured: true } });
+  expect(saved.json()).toMatchObject({ restartScheduled: false });
   expect(saved.body).not.toContain("new-secret");
   expect(keys.get("custom")).toBe("new-secret");
+  await app.close();
+});
+
+it("acknowledges a saved configuration before requesting a supervised restart", async () => {
+  const { workspaceRoot, service } = await fixture();
+  const requestRestart = vi.fn(); let scheduled: (() => void) | undefined;
+  const app = await createServer({ workspaceRoot, modelConfigService: service, modelApiSecurity: security, requestRestart, runtimeOwnerToken: "instance-old", scheduleRestart: (restart) => { scheduled = restart; } });
+  const response = await app.inject({ method: "PUT", url: "/api/system/models", headers: { origin: security.allowedOrigin, "x-csrf-token": security.csrfToken }, payload: { primary: { providerId: "custom", modelId: "model-a", baseUrl: "https://api.example/v1", apiKey: "secret" } } });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toMatchObject({ restartRequired: true, restartScheduled: true, instanceId: "instance-old" });
+  expect(requestRestart).not.toHaveBeenCalled();
+  scheduled?.();
+  expect(requestRestart).toHaveBeenCalledOnce();
   await app.close();
 });
 

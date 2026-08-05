@@ -132,6 +132,7 @@ describe("GradingBatchService recovery", () => {
     const service = new GradingBatchService(root, {
       getSession: async (id) => members.find((member) => member.id === id)!,
       execute: async (sessionId) => {
+        if (sessionId !== "session-1") return { status: "cancelled" };
         sources.set(sessionId, { reviewStatus: "needs_review", version: 1, result: { score: { earned: 80, possible: 100 }, confidence: { overall: 0.8 } }, updatedAt: "2026-08-05T08:00:00.000Z" });
         return { status: "completed" };
       },

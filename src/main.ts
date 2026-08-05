@@ -18,10 +18,12 @@ import { resolveWorkspaceIdentity } from "./config/workspace-identity.js";
 const workspaceIdentity = await resolveWorkspaceIdentity(path.resolve(process.env.COURSE_AGENT_WORKSPACE ?? "workspace"));
 const workspaceRoot = workspaceIdentity.canonicalRoot;
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
+const mineruBackend = process.env.COURSE_AGENT_MINERU_BACKEND === "hybrid-engine" ? "hybrid-engine" : "pipeline";
 const logger = pino({ name: "course-agent", level: process.env.LOG_LEVEL ?? "info" });
 const credentialStore = new FileCredentialStore(defaultSecretRoot(workspaceIdentity.hash), new WindowsDpapiProtector());
 const modelConfigService = new ModelConfigService({ workspaceRoot, credentials: credentialStore });
 const { config, apiKeys } = await modelConfigService.loadRuntimeConfig();
+const mineruPort = Number.parseInt(process.env.COURSE_AGENT_MINERU_PORT ?? (new URL(config.mineru.baseUrl).port || "8000"), 10);
 const primaryApiKey = apiKeys[config.models.primary.providerId];
 const visionApiKey = config.models.vision ? apiKeys[config.models.vision.providerId] : undefined;
 const configuredModels = createConfiguredModels({ config: config.models, getApiKey: async (providerId) => apiKeys[providerId] });
@@ -36,12 +38,15 @@ const app = await createServer({
   ...(runtime.rubricDesignerFactory ? { rubricDesignerFactory: runtime.rubricDesignerFactory } : {}),
   ...(webFactory ? { webEvidenceFactory: webFactory } : {}),
   ...(primaryApiKey ? { studentIdentityClient: new OpenAICompatibleStudentIdentityClient({ apiKey: primaryApiKey, baseUrl: config.models.primary.baseUrl, model: config.models.primary.modelId }) } : {}),
-  mineruConversionClient: new MineruClient({ baseUrl: config.mineru.baseUrl }),
+  mineruConversionClient: new MineruClient({ baseUrl: process.env.COURSE_AGENT_MINERU_PORT ? `http://127.0.0.1:${mineruPort}` : config.mineru.baseUrl, backend: mineruBackend }),
   submissionConversionOptions: { pollIntervalMs: config.mineru.pollIntervalMs, taskTimeoutSeconds: config.mineru.taskTimeoutSeconds, maxAttempts: config.mineru.maxAttempts },
   ...(runtime.gradingAgentFactory ? { gradingAgentFactory: runtime.gradingAgentFactory } : {}),
   ...(runtime.gradingAgentFactory ? { submissionTitleAgentFactory: runtime.gradingAgentFactory } : {}),
   modelStatus: runtime.status,
   modelConfigService,
+  runtimeStatus: { appVersion: "0.1.0", appPort: port, mineru: { status: "ready", backend: mineruBackend, port: mineruPort }, workspaceConfigured: Boolean(primaryApiKey) },
+  ...(process.env.COURSE_AGENT_SUPERVISED === "1" ? { requestRestart: () => { void app.close().finally(() => process.exit(42)); } } : {}),
+  ...(process.env.COURSE_AGENT_RUNTIME_OWNER ? { runtimeOwnerToken: process.env.COURSE_AGENT_RUNTIME_OWNER } : {}),
   modelApiSecurity: {
     csrfToken: process.env.COURSE_AGENT_CSRF_TOKEN ?? randomUUID(),
     allowedOrigin: process.env.COURSE_AGENT_ORIGIN ?? `http://127.0.0.1:${port}`,

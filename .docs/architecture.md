@@ -60,8 +60,13 @@ Safe Filesystem / SQLite / External Providers
 6. 外部Provider通过接口注入，核心领域逻辑不依赖具体模型或企业微信SDK。
 7. 所有现有Agent、作业命名和身份识别从统一`models.primary`构造OpenAI-compatible运行时。每次批改运行从主模型开始；只有`read_submission_image`成功返回图片内容后，程序才从下一轮起切换至可选`models.vision`并保持到该次运行结束。模型元数据、Provider地址、切换时机和凭据查找由程序控制，Agent不能选择Provider或读取密钥。
 8. 模型配置写入在跨进程锁内执行两阶段本地事务：`prepared`日志提供崩溃回滚，配置提交后写`committed`再清理。规范Workspace身份同时界定事务日志、Windows全局Mutex和Workspace隔离的DPAPI凭据命名空间；日志不保存明文密钥，并发进程或不同Workspace不能交错/混用Provider密钥和模型元数据。
+9. Windows发布入口由Node监督进程拥有应用与MinerU子进程。监督进程按规范Workspace身份获取全局Mutex、以实际环回bind保留端口、完成MinerU硬件探测与smoke task，再启动Web应用；退出只回收已记录的子进程树。模型设置以退出码42只重启应用，健康的MinerU保持运行。
 
 ## 关键流程
+
+### Windows发布启动
+
+`start-course-agent.bat`只调用发布包内Node启动器。启动器默认使用`%LOCALAPPDATA%\CourseAgent\workspace`，应用端口依次选择3001–3010，MinerU从8000起在受控范围选择，所有监听地址固定为`127.0.0.1`。GPU探测必须由内置Python实际导入torch与lmdeploy并验证CUDA及至少8 GB显存；否则使用pipeline，hybrid smoke失败只回退pipeline一次。
 
 ### 知识发布
 

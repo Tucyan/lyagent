@@ -20,10 +20,10 @@
 
 ## Task 3：监督进程与 MinerU
 
-- [ ] 先写端口选择、单实例、子进程回收、硬件检测和 MinerU backend 请求测试。
-- [ ] `start-course-agent.bat` 仅启动内置 Node 监督进程；默认 3001，冲突时选择 3002–3010。
-- [ ] GPU/LMDeploy 自检通过时选择 `hybrid-engine`，否则选择 `pipeline`，并随 `/tasks` 显式提交。
-- [ ] 暴露脱敏的运行状态；所有服务只监听环回地址。
+- [x] 先写端口选择、单实例、子进程回收、硬件检测和 MinerU backend 请求测试。
+- [x] `start-course-agent.bat` 仅启动内置 Node 监督进程；默认 3001，冲突时选择 3002–3010。
+- [x] GPU/LMDeploy 自检通过时选择 `hybrid-engine`，否则选择 `pipeline`，并随 `/tasks` 显式提交。
+- [x] 暴露脱敏的运行状态；所有服务只监听环回地址。
 
 ## Task 4：发布构建与文档
 

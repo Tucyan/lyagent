@@ -28,6 +28,7 @@
 - 作业名称识别只通过当前会话的受控文件工具读取转换后Markdown和原始文件基本名；`set_submission_title`由服务端绑定当前会话，Agent不能提交会话ID或路径。未成功调用该工具的命名轮次不得解锁自动批改。
 - MinerU地址仅允许环回HTTP。DeepSeek身份识别只发送长度受限的原始文件基本名，不发送报告正文；完整正文仅由批改Agent通过当前会话工具按需读取。
 - MinerU不可达、超时、限流或5xx时，系统只持久化固定的安全错误码和教师说明，并保留不可变原件；不把底层socket错误、原始响应或可能包含敏感内容的解析错误返回页面。自动重试有次数上限，终态解析失败、安全拒绝或历史原件缺失不自动重试。
+- Windows发布监督进程使用`Global\CourseAgent.Launcher.<workspace-sha256>`确保单实例，并原子维护受控runtime descriptor。复用实例前同时验证Workspace身份、owner token格式、监督进程存活、loopback URL与健康接口；API只返回版本、端口、backend和就绪状态，不返回PID、绝对路径或原始错误。监督进程只向经过验证且由其记录的子PID执行`taskkill /T /F`。
 - 流式界面展示固定安全处理摘要和脱敏工具活动，不保存或展示Provider私有推理链、Prompt、密钥或跨会话正文。无视觉模型时，`read_submission_image`只返回`VISION_MODEL_NOT_CONFIGURED`文本码，不读取或返回图片字节、路径或底层错误；批改Agent必须将受影响项标记为证据不足或向教师确认。成功读取图片后的模型切换只发送非敏感模型ID与能力标签。
 - API错误、普通日志和审计索引不得包含完整正文。
 - `POST /api/system/models/test`只临时验证连接而不保存；`PUT /api/system/models`验证后保存并要求重启。两者必须同时通过环回来源、精确Origin和CSRF Token检查；同源页面先从`GET /api/system/models`响应头取得本进程Token，跨源页面受浏览器同源策略限制不能读取。Provider错误只返回安全摘要。

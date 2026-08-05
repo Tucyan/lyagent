@@ -55,6 +55,7 @@ describe("MineruClient", () => {
     });
     const client = new MineruClient({
       baseUrl: "http://127.0.0.1:8000",
+      backend: "hybrid-engine",
       fetchImpl,
     });
 
@@ -77,6 +78,8 @@ describe("MineruClient", () => {
     expect((submitInit.body as FormData).get("return_original_file")).toBe(
       "false",
     );
+    expect((submitInit.body as FormData).get("return_images")).toBe("true");
+    expect((submitInit.body as FormData).get("backend")).toBe("hybrid-engine");
   });
 
   it("maps a missing task to a retryable error", async () => {

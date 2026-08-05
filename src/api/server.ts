@@ -58,6 +58,13 @@ export interface ServerOptions {
     allowedOrigin: string;
     isLoopback(request: FastifyRequest): boolean;
   };
+  runtimeStatus?: {
+    appVersion: string; appPort: number; workspaceConfigured: boolean;
+    mineru: { status: "starting" | "ready" | "unavailable"; version?: string; backend: "hybrid-engine" | "pipeline"; port: number };
+  };
+  requestRestart?: () => void;
+  scheduleRestart?: (restart: () => void) => void;
+  runtimeOwnerToken?: string;
 }
 
 const modelEndpointInputSchema = z.object({
@@ -128,7 +135,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   const planner = options.materialPlanner ?? defaultPlanner;
   const activeAgentRuns = new Map<string, AbortController>();
   app.addHook("onRequest", async (request, reply) => {
-    if (!options.modelConfigService || !request.url.startsWith("/api/") || request.url === "/api/health" || request.url.startsWith("/api/system/model")) return;
+    if (!options.modelConfigService || !request.url.startsWith("/api/") || request.url === "/api/health" || request.url.startsWith("/api/system/model") || request.url === "/api/system/runtime") return;
     if (setupRequired) return reply.code(503).send({ code: "SETUP_REQUIRED", message: "请先完成主模型设置" });
   });
   const startupCourses = await materials.listCourses();
@@ -163,7 +170,13 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     return reply.code(500).send({ code: "INTERNAL_ERROR", message: "Unexpected server error" });
   });
 
-  app.get("/api/health", async () => ({ ok: true }));
+  app.get("/api/health", async (_request, reply) => {
+    if (options.runtimeOwnerToken) reply.header("x-course-agent-owner", options.runtimeOwnerToken);
+    return { ok: true, ...(options.runtimeStatus ? { ready: options.runtimeStatus.mineru.status === "ready" } : {}), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
+  });
+  app.get("/api/system/runtime", async () => options.runtimeStatus ?? ({
+    appVersion: "0.1.0", appPort: 0, mineru: { status: "unavailable", backend: "pipeline", port: 0 }, workspaceConfigured: false,
+  }));
   app.post("/api/agent-runs/:runId/cancel", async (request, reply) => {
     const { runId } = z.object({ runId: z.string().uuid() }).parse(request.params);
     const controller = activeAgentRuns.get(runId);
@@ -189,7 +202,11 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.put("/api/system/models", async (request, reply) => {
     if (!authorizeModelWrite(request, options.modelApiSecurity)) return reply.code(403).send({ code: "FORBIDDEN", message: "Model settings writes are allowed only from the local application" });
     if (!options.modelConfigService) return reply.code(503).send({ code: "MODEL_SETTINGS_UNAVAILABLE", message: "Model settings are unavailable" });
-    return options.modelConfigService.save(modelSettingsInputSchema.parse(request.body));
+    const saved = await options.modelConfigService.save(modelSettingsInputSchema.parse(request.body));
+    const response = { ...saved, restartScheduled: Boolean(options.requestRestart), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
+    if (options.requestRestart) reply.raw.once("finish", () => (options.scheduleRestart ?? ((restart) => setTimeout(restart, 50)))(options.requestRestart!));
+    reply.send(response);
+    return reply;
   });
   app.get("/api/system/model", async () => {
     if (!options.modelConfigService) return modelStatus;

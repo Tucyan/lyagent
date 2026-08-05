@@ -76,6 +76,14 @@ export function modelSettingsRequest(method: "POST" | "PUT", csrfToken: string, 
   };
 }
 
+export async function waitForRestartHealth(options: { health(): Promise<boolean>; sleep(milliseconds: number): Promise<void>; maxAttempts?: number }): Promise<boolean> {
+  for (let attempt = 0; attempt < (options.maxAttempts ?? 60); attempt += 1) {
+    try { if (await options.health()) return true; } catch { /* restarting */ }
+    await options.sleep(500);
+  }
+  return false;
+}
+
 export type AppRoute = { kind: "setup" } | { kind: "settings" } | { kind: "app"; path: string } | { kind: "redirect"; href: "/setup" };
 
 export function resolveAppRoute(path: string, primaryConfigured: boolean): AppRoute {
