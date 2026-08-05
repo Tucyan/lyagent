@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 
-type ActivePage = "dashboard" | "knowledge" | "rubrics" | "grading" | "batch-grading";
+type ActivePage = "dashboard" | "knowledge" | "rubrics" | "grading" | "batch-grading" | "model-settings";
 
 const futureModules = ["系统运维", "企业微信"];
 
@@ -13,6 +13,7 @@ export function AdminShell({ active, children }: { active: ActivePage; children:
     { id: "knowledge", href: "/knowledge", label: "课程资料库" },
     { id: "rubrics", href: "/rubrics", label: "评分量表" },
     { id: "qa", href: "/qa", label: "课程答疑" },
+    { id: "model-settings", href: "/settings/models", label: "模型设置" },
   ];
 
   return <div className="admin-shell">

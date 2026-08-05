@@ -28,9 +28,10 @@
 - 作业名称识别只通过当前会话的受控文件工具读取转换后Markdown和原始文件基本名；`set_submission_title`由服务端绑定当前会话，Agent不能提交会话ID或路径。未成功调用该工具的命名轮次不得解锁自动批改。
 - MinerU地址仅允许环回HTTP。DeepSeek身份识别只发送长度受限的原始文件基本名，不发送报告正文；完整正文仅由批改Agent通过当前会话工具按需读取。
 - MinerU不可达、超时、限流或5xx时，系统只持久化固定的安全错误码和教师说明，并保留不可变原件；不把底层socket错误、原始响应或可能包含敏感内容的解析错误返回页面。自动重试有次数上限，终态解析失败、安全拒绝或历史原件缺失不自动重试。
-- 流式界面展示固定安全处理摘要和脱敏工具活动，不保存或展示Provider私有推理链、Prompt、密钥或跨会话正文。
+- 流式界面展示固定安全处理摘要和脱敏工具活动，不保存或展示Provider私有推理链、Prompt、密钥或跨会话正文。无视觉模型时，`read_submission_image`只返回`VISION_MODEL_NOT_CONFIGURED`文本码，不读取或返回图片字节、路径或底层错误；批改Agent必须将受影响项标记为证据不足或向教师确认。成功读取图片后的模型切换只发送非敏感模型ID与能力标签。
 - API错误、普通日志和审计索引不得包含完整正文。
 - `POST /api/system/models/test`只临时验证连接而不保存；`PUT /api/system/models`验证后保存并要求重启。两者必须同时通过环回来源、精确Origin和CSRF Token检查；同源页面先从`GET /api/system/models`响应头取得本进程Token，跨源页面受浏览器同源策略限制不能读取。Provider错误只返回安全摘要。
+- `GET /api/system/models`只返回非敏感端点元数据和`configured`状态，绝不回填密钥。关闭独立视觉Provider时，配置事务同时删除已不再使用的视觉凭据；任一步失败都会恢复旧配置与旧凭据。主模型未配置期间只开放静态页面、`/api/health`和模型设置API。
 - 模型Provider远程地址必须使用HTTPS；HTTP仅允许`127.0.0.1`、`localhost`或`::1`，且地址不得包含用户名、密码、查询参数或片段。合法路径（如`/v1`）会保留。
 - 模型配置保存由`Global\CourseAgent.ModelConfig.<workspace-sha256>` Windows内核Mutex串行化，可覆盖同一机器的不同登录Session；Mutex、Workspace内事务日志和Workspace外凭据目录使用同一个规范Workspace身份。独立helper持锁，父进程退出或管道关闭即释放，并由内核处理崩溃遗留所有权。helper若在临界区意外退出，主进程立即中止，由supervisor重启后按事务日志恢复，不能在失锁后继续写入。覆盖DPAPI密文前先原子写入`prepared`事务日志；日志只含旧非敏感配置及旧DPAPI密文/缺失标记。配置原子提交后日志标记为`committed`并清理；首次配置操作会恢复遗留`prepared`事务或清理遗留`committed`日志。启动时在同一锁内读取配置及主模型/视觉模型凭据快照，运行期持续使用该一致快照直至重启。
 - 调试时如需内容片段，使用合成或脱敏数据并限制长度。

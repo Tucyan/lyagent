@@ -109,6 +109,7 @@ const rubricTitleSchema = z.object({ title: z.string().trim().min(1).max(120) })
 
 export async function createServer(options: ServerOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  const setupRequired = options.modelConfigService ? !(await options.modelConfigService.status()).primary.configured : false;
   const materials = new MaterialService(options.workspaceRoot);
   const knowledge = new KnowledgeService(options.workspaceRoot);
   const sessions = new SessionService(options.workspaceRoot);
@@ -126,6 +127,10 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   });
   const planner = options.materialPlanner ?? defaultPlanner;
   const activeAgentRuns = new Map<string, AbortController>();
+  app.addHook("onRequest", async (request, reply) => {
+    if (!options.modelConfigService || !request.url.startsWith("/api/") || request.url === "/api/health" || request.url.startsWith("/api/system/model")) return;
+    if (setupRequired) return reply.code(503).send({ code: "SETUP_REQUIRED", message: "请先完成主模型设置" });
+  });
   const startupCourses = await materials.listCourses();
   if (startupCourses.length === 1) await rubrics.bindUnboundAssignments(startupCourses[0]!.id);
 

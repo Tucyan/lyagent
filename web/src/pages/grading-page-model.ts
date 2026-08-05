@@ -163,6 +163,8 @@ export function applyGradingEvent(
 ): LiveGradingMessage {
   if (type === "process_delta" && typeof data.delta === "string")
     return { ...message, process: message.process + data.delta };
+  if (type === "model_switch" && data.capability === "vision")
+    return { ...message, process: `${message.process}${message.process ? "\n" : ""}已切换至视觉模型` };
   if (type === "reply_delta" && typeof data.delta === "string")
     return { ...message, content: message.content + data.delta };
   if (type === "tool_start" && typeof data.id === "string")

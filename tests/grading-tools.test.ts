@@ -18,9 +18,9 @@ async function fixture() {
   await rubrics.createDraft(assignment.id, { schemaVersion: "1.0", mode: "deductive", totalScore: 100, overlapGroups: [], rules: [{ id: "missing", name: "缺失", condition: "缺失", deduction: 20, maxDeduction: 20, occurrence: "once", evidenceRequired: true }] });
   const frozen = await rubrics.freeze(assignment.id, 1, []);
   const source = path.join(root, "report.md");
-  await writeFile(source, "# 报告\n\n课程概念与实现过程\n", "utf8");
+  await writeFile(source, "# 报告\n\n课程概念与实现过程\n\n![图表](assets/chart.png)\n", "utf8");
   const sessions = new GradingSessionService(root, rubrics);
-  const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: frozen.version, studentName: "张晓明", studentNumber: "20260001", originalPath: source, originalFilename: "report.md", autoStartAfterConversion: false });
+  const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: frozen.version, studentName: "张晓明", studentNumber: "20260001", originalPath: source, originalFilename: "report.md", autoStartAfterConversion: false, revisionAssets: [{ path: "assets/chart.png", bytes: new Uint8Array([1, 2, 3]) }] });
   await sessions.lockSubmissionForGrading(session.id);
   const results = new GradingResultService(root, sessions, rubrics);
   const knowledge = {
@@ -109,6 +109,19 @@ describe("assignment grader tools", () => {
     expect(asked.terminate).toBe(true);
     expect(tools.capturedQuestion()).toEqual({ question: "图表是否属于正文？", options: ["是", "否"] });
     expect(gradingToolActivity("read_submission_lines", { path: "private/absolute/path.md", startLine: 1, endLine: 2 })).toEqual({ label: "阅读作业内容", summary: "读取当前作业正文片段 · L1-L2" });
+    sessions.close();
+  });
+
+  it("returns controlled image content only when a vision model is available", async () => {
+    const { sessions, results, session, knowledge } = await fixture();
+    const withVision = createAssignmentGraderTools({ sessions, results, sessionId: session.id, runId: "run-vision", knowledge: knowledge as any, visionAvailable: true });
+    const image = await withVision.tools.find(({ name }) => name === "read_submission_image")!.execute("image", { path: "assets/chart.png" });
+    expect(image.content).toEqual([{ type: "image", data: "AQID", mimeType: "image/png" }]);
+
+    const withoutVision = createAssignmentGraderTools({ sessions, results, sessionId: session.id, runId: "run-text", knowledge: knowledge as any, visionAvailable: false });
+    const unavailable = await withoutVision.tools.find(({ name }) => name === "read_submission_image")!.execute("image", { path: "assets/chart.png" });
+    expect(unavailable.content).toEqual([{ type: "text", text: JSON.stringify({ code: "VISION_MODEL_NOT_CONFIGURED" }) }]);
+    expect(JSON.stringify(unavailable)).not.toContain("chart.png");
     sessions.close();
   });
 });

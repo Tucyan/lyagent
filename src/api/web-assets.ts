@@ -8,4 +8,6 @@ export async function registerWebAssets(app: FastifyInstance, root: string): Pro
   app.get("/rubrics", async (_request, reply) => reply.type("text/html; charset=utf-8").sendFile("index.html"));
   app.get("/grading", async (_request, reply) => reply.type("text/html; charset=utf-8").sendFile("index.html"));
   app.get("/grading/batches", async (_request, reply) => reply.type("text/html; charset=utf-8").sendFile("index.html"));
+  app.get("/setup", async (_request, reply) => reply.type("text/html; charset=utf-8").sendFile("index.html"));
+  app.get("/settings/models", async (_request, reply) => reply.type("text/html; charset=utf-8").sendFile("index.html"));
 }

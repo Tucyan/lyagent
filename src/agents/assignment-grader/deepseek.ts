@@ -16,7 +16,7 @@ export function createDeepSeekAssignmentGraderFactory(options: { workspaceRoot: 
     async run(request, onEvent, signal) {
       const session = await services.sessions.getSession(sessionId);
       const agent = createPiAssignmentGrader({
-        models, model, sessions: services.sessions, results: services.results, rubrics: services.rubrics,
+        models, primaryModel: model, sessions: services.sessions, results: services.results, rubrics: services.rubrics,
         sessionId, runId, knowledge: await knowledge.forCourse(session.courseId),
         ...(options.webFactory ? { web: options.webFactory() } : {}),
         getApiKey: () => options.apiKey,

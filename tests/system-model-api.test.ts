@@ -45,6 +45,31 @@ it("returns only non-sensitive model configuration and keeps the legacy status r
   await app.close();
 });
 
+it("blocks core APIs before setup while leaving health and model setup available", async () => {
+  const { workspaceRoot, service } = await fixture();
+  const app = await createServer({ workspaceRoot, modelConfigService: service, modelApiSecurity: security });
+  expect((await app.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(200);
+  expect((await app.inject({ method: "GET", url: "/api/system/models" })).statusCode).toBe(200);
+  const blocked = await app.inject({ method: "GET", url: "/api/dashboard" });
+  expect(blocked.statusCode).toBe(503);
+  expect(blocked.json()).toEqual({ code: "SETUP_REQUIRED", message: "请先完成主模型设置" });
+  expect((await app.inject({ method: "GET", url: "/api/grading/sessions" })).statusCode).toBe(503);
+  await app.close();
+});
+
+it("removes an unused vision provider credential when vision is disabled", async () => {
+  const { workspaceRoot, service, keys } = await fixture();
+  await service.save({
+    primary: { providerId: "primary", modelId: "text", baseUrl: "https://primary.example/v1", apiKey: "primary-secret" },
+    vision: { providerId: "vision", modelId: "image", baseUrl: "https://vision.example/v1", apiKey: "vision-secret" },
+  });
+  expect(keys.get("vision")).toBe("vision-secret");
+  await service.save({ primary: { providerId: "primary", modelId: "text", baseUrl: "https://primary.example/v1" } });
+  expect(keys.get("primary")).toBe("primary-secret");
+  expect(keys.has("vision")).toBe(false);
+  expect((await service.status()).vision).toBeUndefined();
+});
+
 it("reuses one submitted key when primary and vision share a provider", async () => {
   const { workspaceRoot, service, keys } = await fixture();
   const app = await createServer({ workspaceRoot, modelConfigService: service, modelApiSecurity: security });

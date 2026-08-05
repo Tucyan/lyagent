@@ -298,6 +298,7 @@ describe("grading API", () => {
     const grader: PiAssignmentGrader = {
       async run(_request, emit) {
         emit?.({ type: "process_delta", delta: "正在核对评分证据。" });
+        emit?.({ type: "model_switch", model: "vision-model", capability: "vision" });
         emit?.({ type: "reply_delta", delta: "已完成核对。" });
         return { kind: "reply", reply: "已完成核对。" };
       },
@@ -332,6 +333,8 @@ describe("grading API", () => {
     });
     expect(events.statusCode).toBe(200);
     expect(events.body).toContain("event: process_delta");
+    expect(events.body).toContain("event: model_switch");
+    expect(events.body).toContain('"capability":"vision"');
     expect(events.body).toContain("event: final");
     const detail = (
       await app.inject({

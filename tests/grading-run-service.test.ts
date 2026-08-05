@@ -68,6 +68,7 @@ describe("GradingRunService", () => {
     const grader: PiAssignmentGrader = { run: async (_request, onEvent) => {
       onEvent?.({ type: "process_delta", delta: "安全处理摘要" });
       onEvent?.({ type: "tool_start", id: "tool-1", name: "search_submission", label: "搜索学生作业", summary: "搜索相关内容" });
+      onEvent?.({ type: "model_switch", model: "vision-model", capability: "vision" });
       await gate;
       onEvent?.({ type: "reply_delta", delta: "已完成说明" });
       return { kind: "reply", reply: "已完成说明" };
@@ -81,9 +82,9 @@ describe("GradingRunService", () => {
     await expect(runs.waitForTerminal(started.id)).resolves.toMatchObject({ status: "completed" });
     const events = await runs.listEvents(started.id, 0);
     expect(events.map(({ sequence }) => sequence)).toEqual([...events.keys()].map((index) => index + 1));
-    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "process_delta" }), expect.objectContaining({ type: "tool_start" }), expect.objectContaining({ type: "final" })]));
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "process_delta" }), expect.objectContaining({ type: "tool_start" }), expect.objectContaining({ type: "model_switch", model: "vision-model", capability: "vision" }), expect.objectContaining({ type: "final" })]));
     expect(JSON.stringify(events)).not.toContain("submission-v1.md");
-    expect(await runs.getConversation(session.id)).toMatchObject({ messages: [expect.objectContaining({ role: "user", content: "请解释" }), expect.objectContaining({ role: "assistant", content: "已完成说明", processCollapsed: true })] });
+    expect(await runs.getConversation(session.id)).toMatchObject({ messages: [expect.objectContaining({ role: "user", content: "请解释" }), expect.objectContaining({ role: "assistant", content: "已完成说明", process: expect.stringContaining("已切换至视觉模型"), processCollapsed: true })] });
     expect((await sessions.getSession(session.id)).activeRunId).toBeUndefined();
     runs.close(); sessions.close();
   });

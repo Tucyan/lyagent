@@ -174,6 +174,7 @@ export class GradingRunService {
     let eventTail = Promise.resolve();
     const onEvent = (event: GradingAgentEvent) => {
       if (event.type === "process_delta") process += event.delta;
+      if (event.type === "model_switch") process += `${process ? "\n" : ""}已切换至视觉模型`;
       if (event.type === "reply_delta") reply += event.delta;
       if (event.type === "tool_start") tools.set(event.id, { id: event.id, name: event.name, label: event.label, summary: event.summary, status: "completed" });
       if (event.type === "tool_end") tools.set(event.id, { id: event.id, name: event.name, label: event.label, summary: event.summary, status: event.status });
@@ -291,6 +292,7 @@ function fromRunRow(row: RunRow): GradingRun {
 function safeEventPayload(event: GradingAgentEvent): Record<string, unknown> {
   if (event.type === "status") return { phase: event.phase };
   if (event.type === "process_delta" || event.type === "reply_delta") return { delta: event.delta };
+  if (event.type === "model_switch") return { model: event.model, capability: event.capability };
   return { id: event.id, name: event.name, label: event.label, summary: event.summary, ...(event.type === "tool_end" ? { status: event.status } : {}) };
 }
 

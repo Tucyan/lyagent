@@ -35,6 +35,8 @@ describe("web assets", () => {
     expect(gradingResponse.statusCode).toBe(200);
     const batchGradingResponse = await app.inject({ method: "GET", url: "/grading/batches" });
     expect(batchGradingResponse.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/setup" })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/settings/models" })).statusCode).toBe(200);
     expect(qaResponse.body).toContain("课程资料库");
     const assetResponse = await app.inject({ method: "GET", url: "/assets/app.js" });
     expect(assetResponse.statusCode).toBe(200);

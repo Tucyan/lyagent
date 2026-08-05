@@ -23,11 +23,12 @@ const credentialStore = new FileCredentialStore(defaultSecretRoot(workspaceIdent
 const modelConfigService = new ModelConfigService({ workspaceRoot, credentials: credentialStore });
 const { config, apiKeys } = await modelConfigService.loadRuntimeConfig();
 const primaryApiKey = apiKeys[config.models.primary.providerId];
+const visionApiKey = config.models.vision ? apiKeys[config.models.vision.providerId] : undefined;
 const configuredModels = createConfiguredModels({ config: config.models, getApiKey: async (providerId) => apiKeys[providerId] });
 const ddgs = new DdgsSearchService(createDdgsRunner(undefined, config.webSearch.pythonCommand), { maxResults: config.webSearch.maxResults });
 const webFetcher = new SafeWebFetcher();
 const webFactory = config.webSearch.enabled ? () => new WebEvidenceService(ddgs, (url) => webFetcher.fetch(url)) : undefined;
-const runtime = createPrimaryModelRuntime({ workspaceRoot, configured: configuredModels, ...(primaryApiKey ? { apiKey: primaryApiKey } : {}), ...(webFactory ? { webFactory } : {}) });
+const runtime = createPrimaryModelRuntime({ workspaceRoot, configured: configuredModels, ...(primaryApiKey ? { apiKey: primaryApiKey } : {}), ...(visionApiKey ? { visionApiKey } : {}), ...(webFactory ? { webFactory } : {}) });
 const app = await createServer({
   workspaceRoot,
   ...(runtime.materialPlanner ? { materialPlanner: runtime.materialPlanner } : {}),

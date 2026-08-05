@@ -13,6 +13,7 @@ export type GradingAgentEvent =
   | { type: "status"; phase: "thinking" }
   | { type: "process_delta"; delta: string }
   | { type: "reply_delta"; delta: string }
+  | { type: "model_switch"; model: string; capability: "vision" }
   | { type: "tool_start"; id: string; name: GradingToolName; label: string; summary: string }
   | { type: "tool_end"; id: string; name: GradingToolName; label: string; summary: string; status: "completed" | "failed" };
 
@@ -28,7 +29,8 @@ export interface PiAssignmentGrader {
 
 export function createPiAssignmentGrader(options: {
   models: Models;
-  model: Model<any>;
+  primaryModel: Model<any>;
+  visionModel?: Model<any>;
   sessions: GradingSessionService;
   results: GradingResultService;
   rubrics: RubricService;
@@ -36,7 +38,7 @@ export function createPiAssignmentGrader(options: {
   runId: string;
   knowledge: CourseKnowledgeService;
   web?: WebEvidenceService;
-  getApiKey?: () => string | undefined;
+  getApiKey?: (providerId: string) => Promise<string | undefined> | string | undefined;
 }): PiAssignmentGrader {
   return {
     async run(request, onEvent, signal) {
@@ -51,16 +53,26 @@ export function createPiAssignmentGrader(options: {
         knowledge: options.knowledge,
         ...(options.web ? { web: options.web } : {}),
         ...(request.kind === "name" ? { purpose: "naming" as const } : {}),
+        visionAvailable: Boolean(options.visionModel),
       });
+      let switchedToVision = false;
       const agent = new Agent({
         initialState: {
           systemPrompt: request.kind === "name" ? buildSubmissionNamingPrompt() : buildGraderSystemPrompt(frozen),
-          model: options.model,
+          model: options.primaryModel,
           thinkingLevel: "off",
           tools: graderTools.tools,
         },
         streamFn: options.models.streamSimple.bind(options.models),
-        ...(options.getApiKey ? { getApiKey: () => options.getApiKey?.() } : {}),
+        ...(options.getApiKey ? { getApiKey: options.getApiKey } : {}),
+        prepareNextTurnWithContext: ({ toolResults }) => {
+          const terminal = toolResults.some((result) => !result.isError && ["submit_grading_draft", "ask_grading_question", "set_submission_title"].includes(result.toolName));
+          const imageRead = toolResults.some((result) => result.toolName === "read_submission_image" && !result.isError && result.content.some((content) => content.type === "image"));
+          if (switchedToVision || !options.visionModel || terminal || !imageRead) return undefined;
+          switchedToVision = true;
+          onEvent?.({ type: "model_switch", model: options.visionModel.id, capability: "vision" });
+          return { model: options.visionModel };
+        },
         toolExecution: "sequential",
         beforeToolCall: async ({ toolCall }) => graderTools.tools.some((tool) => tool.name === toolCall.name) ? undefined : { block: true, reason: "Tool is not allowed" },
       });
@@ -132,6 +144,8 @@ export function buildGraderSystemPrompt(frozen: FrozenRubricVersion): string {
     "Do not turn fixed or per-occurrence rules into ranges: fixed rules use exactly their frozen deduction when triggered, and per-occurrence rules use exact frozen increments up to their cap.",
     "For each decision, provide at least one structured grading argument as evidence using {kind:'analysis', observation, rubricBasis, scoreJustification}. It must explain what was observed, how it maps to the frozen rule, and why that exact score or deduction follows. This is a concise auditable rationale, not hidden chain-of-thought. Text quotes and image references are optional supporting material, not the default evidence format.",
     "Also provide concise reasons, confidence values from 0 to 1, and evidenceInsufficient=true instead of fabricated support when a reliable judgment cannot be made.",
+    "The primary model does not inspect images. If read_submission_image returns image content, the program switches the next and remaining turns of this run to the configured vision model.",
+    "If read_submission_image returns VISION_MODEL_NOT_CONFIGURED, do not ignore the image and do not ask the text-only model to interpret it. Mark every affected item evidenceInsufficient=true or finish with ask_grading_question when teacher input is required.",
     "Do not calculate or assert the authoritative total: program code recalculates scores, overlap rules, confidence, and Review state when the draft is submitted.",
     "Course knowledge is the primary reference. Web search is optional and only for fact checking; read a result before relying on it.",
     "Ask the teacher only when a material ambiguity or missing input blocks a reliable judgment.",

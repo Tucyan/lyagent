@@ -58,7 +58,7 @@ Safe Filesystem / SQLite / External Providers
 4. 答疑只通过`active.json`解析当前不可变release，禁止扫描staging。
 5. 每个批改job只写自己的JSON和Markdown；批次CSV由单写者聚合。
 6. 外部Provider通过接口注入，核心领域逻辑不依赖具体模型或企业微信SDK。
-7. 所有现有Agent、作业命名和身份识别从统一`models.primary`构造OpenAI-compatible运行时；可选`models.vision`仅注册能力，视觉切换由后续阶段实现。模型元数据、Provider地址和凭据查找由程序控制，Agent不能选择Provider或读取密钥。
+7. 所有现有Agent、作业命名和身份识别从统一`models.primary`构造OpenAI-compatible运行时。每次批改运行从主模型开始；只有`read_submission_image`成功返回图片内容后，程序才从下一轮起切换至可选`models.vision`并保持到该次运行结束。模型元数据、Provider地址、切换时机和凭据查找由程序控制，Agent不能选择Provider或读取密钥。
 8. 模型配置写入在跨进程锁内执行两阶段本地事务：`prepared`日志提供崩溃回滚，配置提交后写`committed`再清理。规范Workspace身份同时界定事务日志、Windows全局Mutex和Workspace隔离的DPAPI凭据命名空间；日志不保存明文密钥，并发进程或不同Workspace不能交错/混用Provider密钥和模型元数据。
 
 ## 关键流程
@@ -125,7 +125,7 @@ Web /rubrics
 
 ## 教师工作台
 
-根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
+根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计，`/setup` 与`/settings/models`复用模型设置表单。主模型尚未配置时，浏览器进入首次设置页，除健康检查和模型设置外的核心API返回`SETUP_REQUIRED`。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
 
 Dashboard 只返回课程元数据、active release 元数据、文档/会话计数和截断后的会话摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。评分表与单份批改入口已启用；批量任务、运维和企业微信仍是后续里程碑。
 
@@ -134,7 +134,7 @@ Dashboard 只返回课程元数据、active release 元数据、文档/会话计
 - `GradingSessionService`绑定唯一课程、冻结评分表版本、不可变原文件、转换后Markdown版本与程序生成的内部ID；会话显示名与学生报告的作业名称是两个独立字段。
 - `SubmissionConversionService`通过仅允许环回地址的MinerU异步API转换DOCX、PDF、PPTX和图片；Markdown直接导入。连接失败、超时、限流和5xx进入`waiting_for_converter`并按有界退避重试；明确解析失败进入`conversion_failed`，本地安全或结果格式校验失败进入`result_rejected`。重试始终复用不可变原件。
 - `PiAssignmentGrader`在正式批改轮次只获得固定13项批改工具。未手填作业名称时，程序在提交转换完成后强制启动专用命名轮次，该轮次只开放作业文件浏览、正文搜索、正文读取和`set_submission_title`；模型必须同时核对正文与原始文件名，冲突时以正文标题为准。冻结评分标准由服务端注入系统提示词；总分、证据、置信度和Review状态由程序在提交草稿时重算。
-- `GradingRunService`以并发1执行后台轮次，把安全处理摘要、模型回复和脱敏工具活动写入可按序号回放的事件表；页面断开不会取消运行。
+- `GradingRunService`以并发1执行后台轮次，把安全处理摘要、模型回复、`model_switch`和脱敏工具活动写入可按序号回放的事件表；视觉Provider失败不会回退主模型，页面断开不会取消运行。
 - `GradingResultService`负责乐观版本、教师审计、Review确认和不可变JSON/Markdown发布。Agent不能直接发布正式结果。
 - `GradingCsvExportService`只聚合已确认JSON结果，按学生或精确冻结评分表生成可重建CSV；Agent不计算或写入成绩表。
 

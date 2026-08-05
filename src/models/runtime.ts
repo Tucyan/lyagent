@@ -13,6 +13,7 @@ export function createPrimaryModelRuntime(options: {
   workspaceRoot: string;
   configured: ConfiguredModels;
   apiKey?: string;
+  visionApiKey?: string;
   webFactory?: () => WebEvidenceService;
 }): {
   materialPlanner: ReturnType<typeof createPiMaterialPlanner> | undefined;
@@ -20,9 +21,11 @@ export function createPrimaryModelRuntime(options: {
   rubricDesignerFactory: ((assignmentId: string, rubricService: RubricService) => PiRubricDesigner) | undefined;
   gradingAgentFactory: GradingAgentBuilder | undefined;
   status: { provider: string; model: string; configured: boolean };
+  visionAvailable: boolean;
 } {
   const status = { provider: options.configured.primary.provider, model: options.configured.primary.id, configured: Boolean(options.apiKey) };
-  if (!options.apiKey) return { materialPlanner: undefined, courseQaAgentFactory: undefined, rubricDesignerFactory: undefined, gradingAgentFactory: undefined, status };
+  const visionAvailable = Boolean(options.configured.vision && options.visionApiKey);
+  if (!options.apiKey) return { materialPlanner: undefined, courseQaAgentFactory: undefined, rubricDesignerFactory: undefined, gradingAgentFactory: undefined, status, visionAvailable: false };
   const apiKey = options.apiKey;
   const common = { models: options.configured.models, model: options.configured.primary, getApiKey: () => apiKey };
   const knowledge = new KnowledgeService(options.workspaceRoot);
@@ -31,6 +34,9 @@ export function createPrimaryModelRuntime(options: {
       const session = await services.sessions.getSession(sessionId);
       return createPiAssignmentGrader({
         ...common,
+        primaryModel: options.configured.primary,
+        ...(visionAvailable && options.configured.vision ? { visionModel: options.configured.vision } : {}),
+        getApiKey: options.configured.getApiKey,
         sessions: services.sessions,
         results: services.results,
         rubrics: services.rubrics,
@@ -47,5 +53,6 @@ export function createPrimaryModelRuntime(options: {
     rubricDesignerFactory: (assignmentId, rubricService) => createPiRubricDesigner({ ...common, assignmentId, rubricService }),
     gradingAgentFactory,
     status,
+    visionAvailable,
   };
 }

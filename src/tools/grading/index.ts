@@ -46,6 +46,7 @@ export function createAssignmentGraderTools(options: {
   knowledge: CourseKnowledgeService;
   web?: WebEvidenceService;
   purpose?: "grading" | "naming";
+  visionAvailable?: boolean;
 }): AssignmentGraderTools {
   let question: GradingQuestion | undefined;
   let capturedTitle: string | undefined;
@@ -106,6 +107,9 @@ export function createAssignmentGraderTools(options: {
     parameters: readImageSchema,
     executionMode: "sequential",
     execute: async (_id, parameters) => {
+      if (!options.visionAvailable) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ code: "VISION_MODEL_NOT_CONFIGURED" }) }], details: {} };
+      }
       const submission = await options.sessions.getLockedSubmission(options.sessionId);
       if (!(submission.assetPaths ?? []).includes(parameters.path)) throw new Error("Requested image is not part of the current submission");
       const bytes = await options.sessions.readSubmissionAsset(options.sessionId, parameters.path);

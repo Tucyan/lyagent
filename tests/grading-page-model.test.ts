@@ -26,6 +26,7 @@ describe("grading workbench presentation", () => {
       label: "搜索学生作业",
       summary: "定位关键词",
     });
+    live = applyGradingEvent(live, "model_switch", { model: "vision-model", capability: "vision" });
     live = applyGradingEvent(live, "reply_delta", { delta: "已找到证据。" });
     live = applyGradingEvent(live, "tool_end", {
       id: "t1",
@@ -36,7 +37,7 @@ describe("grading workbench presentation", () => {
     });
     live = applyGradingEvent(live, "final", { message: "已找到证据。" });
     expect(live).toMatchObject({
-      process: "正在核对。",
+      process: expect.stringContaining("正在核对。\n已切换至视觉模型"),
       content: "已找到证据。",
       complete: true,
       collapsed: true,

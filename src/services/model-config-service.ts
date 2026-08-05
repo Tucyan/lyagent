@@ -166,6 +166,9 @@ export class ModelConfigService {
       for (const endpoint of endpoints) {
         await this.persistKey(endpoint, previous, submittedKeys);
       }
+      const activeProviderIds = new Set(endpoints.map((endpoint) => endpoint.providerId));
+      const previousVisionProvider = previous.models.vision?.providerId;
+      if (previousVisionProvider && !activeProviderIds.has(previousVisionProvider)) await this.options.credentials.deleteApiKey(previousVisionProvider);
       await this.saveConfig(this.options.workspaceRoot, { ...previous, models });
       await this.writeJournal({ ...journal, state: "committed" });
       await rm(this.journalPath(), { force: true });

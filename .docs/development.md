@@ -96,7 +96,7 @@ tests/
 - `/knowledge`：课程资料库；可用 `?course=<courseId>` 直接选中课程。
 - `/qa`：课程答疑；可用 `?course=<courseId>&session=<sessionId>` 打开上下文。
 
-Dashboard 不需要模型密钥即可显示；模型配置状态仅来自 `/api/system/model` 的安全摘要。修改前端路由时，同时更新 `src/api/web-assets.ts` 的直接访问入口和对应测试。
+主模型未配置时访问正常工作台会转到`/setup`，核心API返回`SETUP_REQUIRED`；`/settings/models`复用同一设置表单。模型配置状态仅来自 `/api/system/model` 或`/api/system/models`的安全摘要。修改前端路由时，同时更新 `src/api/web-assets.ts` 的直接访问入口和对应测试。
 
 ## 排查顺序
 
