@@ -1,12 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveWorkspaceIdentity } from "./config/workspace-identity.js";
 import { acquireLauncherMutex } from "./launcher/windows-mutex.js";
-import { appLaunchSpec, defaultWorkspaceRoot, doclingLaunchSpec, writeRuntimeDescriptor, type LaunchSpec } from "./launcher/runtime.js";
+import { appLaunchSpec, defaultWorkspaceRoot, doclingLaunchSpec, DOCLING_SERVE_VERSION, writeRuntimeDescriptor, type LaunchSpec } from "./launcher/runtime.js";
 import { chooseDoclingDevice, descriptorFor, PortReservation, readHealthyDescriptor, runSupervisor, type LauncherChild } from "./launcher/supervisor.js";
+import { prepareDoclingArtifacts, type DoclingDownloadSpec } from "./launcher/docling-artifacts.js";
 
 class LauncherFailure extends Error { constructor(message: string, public readonly code: number) { super(message); } }
 class ShutdownRequested extends Error {}
@@ -25,10 +26,12 @@ if (!mutex.acquired) {
 
 await rm(descriptorFile, { force: true });
 
+const device = chooseDoclingDevice(process.env);
+const localAppData = process.env.LOCALAPPDATA;
+if (!localAppData) fail("无法确定 Docling 模型目录。", 1);
+const artifactsPath = await prepareDoclingArtifacts({ releaseRoot, localAppData, doclingServeVersion: DOCLING_SERVE_VERSION, runDownload: runDoclingDownload });
 const appCandidates = Array.from({ length: 10 }, (_, index) => 3001 + index); let appReservation = await PortReservation.acquire(appCandidates);
 const converterCandidates = Array.from({ length: 10 }, (_, index) => 8000 + index); let converterReservation = await PortReservation.acquire(converterCandidates);
-const device = chooseDoclingDevice(process.env);
-const artifactsPath = await resolveDoclingArtifactsPath(releaseRoot, process.env);
 let converterReleased = false; let appReleased = false; let opened = false;
 let requestShutdown!: () => void; let shuttingDown = false; const ownedInstanceIds = new Set<string>(); const shutdownController = new AbortController();
 const shutdown = new Promise<void>((resolve) => { requestShutdown = () => { shuttingDown = true; shutdownController.abort(); resolve(); }; for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as NodeJS.Signals[]) process.once(signal, requestShutdown); });
@@ -84,7 +87,7 @@ finally {
 }
 
 function startChild(spec: LaunchSpec): LauncherChild {
-  const child = spawn(spec.command, spec.args, { cwd: releaseRoot, windowsHide: true, stdio: "ignore", env: childEnvironment(spec.env) });
+  const child = spawn(spec.command, spec.args, { cwd: spec.cwd, windowsHide: true, stdio: "ignore", env: childEnvironment(spec.env) });
   if (!child.pid) throw new Error("子进程未能启动。");
   const startedAt = Date.now(); const exited = childExit(child);
   return { pid: child.pid, startedAt, wait: () => exited };
@@ -125,13 +128,12 @@ function capture(command: string, args: string[]): Promise<string> { return new 
 async function windowsProcessStartedAt(pid: number): Promise<number | undefined> { try { const powershell = path.join(process.env.SystemRoot ?? process.env.WINDIR ?? "", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"); const value = (await capture(powershell, ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`])).trim(); const parsed = Date.parse(value); return Number.isFinite(parsed) ? parsed : undefined; } catch { return undefined; } }
 async function removeOwnedDescriptor(filename: string, ownerIds: Set<string>): Promise<void> { try { const value = JSON.parse(await readFile(filename, "utf8")) as { ownerToken?: unknown }; if (typeof value.ownerToken === "string" && ownerIds.has(value.ownerToken)) await rm(filename, { force: true }); } catch { /* absent or replaced by a newer owner */ } }
 
-async function resolveDoclingArtifactsPath(root: string, environment: NodeJS.ProcessEnv): Promise<string> {
-  const bundled = path.join(root, "models", "docling");
-  try { await access(bundled); return bundled; } catch { /* slim release */ }
-  const local = environment.LOCALAPPDATA;
-  if (!local) throw new Error("无法确定 Docling 模型目录。");
-  const directory = path.join(local, "CourseAgent", "models", "docling");
-  await mkdir(directory, { recursive: true });
-  return directory;
+function runDoclingDownload(spec: DoclingDownloadSpec): Promise<void> {
+  process.stdout.write("Docling 首次启动正在准备模型，请保持网络连接…\n");
+  return new Promise((resolve, reject) => {
+    const child = spawn(spec.command, spec.args, { cwd: spec.cwd, windowsHide: false, stdio: ["ignore", "inherit", "inherit"], env: childEnvironment(spec.env) });
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error("Docling 模型准备失败。")));
+  });
 }
 function fail(message: string, code: number): never { process.stderr.write(`${message}\n`); process.exit(code); }

@@ -12,10 +12,23 @@ it("uses LOCALAPPDATA and builds bundled loopback child commands without secrets
   const docling = doclingLaunchSpec(releaseRoot, { port: 8001, device: "auto", artifactsPath: "C:\\models\\docling" });
   expect(docling.command).toBe(path.join(releaseRoot, "runtime", "python", "Scripts", "docling-serve.exe"));
   expect(docling.args).toEqual(["run"]);
-  expect(docling.env).toMatchObject({ UVICORN_HOST: "127.0.0.1", UVICORN_PORT: "8001", UVICORN_WORKERS: "1", DOCLING_SERVE_ARTIFACTS_PATH: "C:\\models\\docling", DOCLING_DEVICE: "auto" });
+  expect(docling.cwd).toBe(releaseRoot);
+  expect(docling.env).toMatchObject({
+    UVICORN_HOST: "127.0.0.1",
+    UVICORN_PORT: "8001",
+    UVICORN_WORKERS: "1",
+    DOCLING_SERVE_ARTIFACTS_PATH: "C:\\models\\docling",
+    DOCLING_DEVICE: "auto",
+    DOCLING_SERVE_ENABLE_UI: "false",
+    DOCLING_SERVE_ENG_KIND: "local",
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    NO_COLOR: "1",
+  });
   const app = appLaunchSpec(releaseRoot, { workspaceRoot: "C:\\data", appPort: 3002, converterPort: 8001, device: "auto" });
   expect(app.command).toBe(path.join(releaseRoot, "runtime", "node", "node.exe"));
   expect(app.args).toEqual([path.join(releaseRoot, "app", "dist", "src", "main.js")]);
+  expect(app.cwd).toBe(path.join(releaseRoot, "app"));
   expect(JSON.stringify(app)).not.toMatch(/api.?key|secret/i);
   expect(app.env).toMatchObject({ PORT: "3002", COURSE_AGENT_CONVERTER_PORT: "8001", COURSE_AGENT_DOCLING_DEVICE: "auto" });
   expect(app.env).not.toHaveProperty("COURSE_AGENT_MINERU_PORT");
@@ -44,4 +57,5 @@ it("waits for Docling model readiness rather than process liveness alone", async
   const source = await readFile(path.resolve("src", "launcher.ts"), "utf8");
   expect(source).toContain("/ready");
   expect(source).not.toContain("/health`, child, 60_000");
+  expect(source).toContain("cwd: spec.cwd");
 });

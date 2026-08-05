@@ -5,7 +5,7 @@ import type { DoclingDevice, RuntimeDescriptor } from "./supervisor.js";
 
 export const DOCLING_SERVE_VERSION = "1.28.0";
 
-export interface LaunchSpec { command: string; args: string[]; env?: NodeJS.ProcessEnv }
+export interface LaunchSpec { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv }
 
 export function defaultWorkspaceRoot(environment: NodeJS.ProcessEnv): string {
   const local = environment.LOCALAPPDATA;
@@ -17,12 +17,18 @@ export function doclingLaunchSpec(releaseRoot: string, input: { port: number; de
   return {
     command: path.join(releaseRoot, "runtime", "python", "Scripts", "docling-serve.exe"),
     args: ["run"],
+    cwd: releaseRoot,
     env: {
       UVICORN_HOST: "127.0.0.1",
       UVICORN_PORT: String(input.port),
       UVICORN_WORKERS: "1",
       DOCLING_SERVE_ARTIFACTS_PATH: input.artifactsPath,
       DOCLING_DEVICE: input.device,
+      DOCLING_SERVE_ENABLE_UI: "false",
+      DOCLING_SERVE_ENG_KIND: "local",
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
+      NO_COLOR: "1",
     },
   };
 }
@@ -31,6 +37,7 @@ export function appLaunchSpec(releaseRoot: string, input: { workspaceRoot: strin
   return {
     command: path.join(releaseRoot, "runtime", "node", "node.exe"),
     args: [path.join(releaseRoot, "app", "dist", "src", "main.js")],
+    cwd: path.join(releaseRoot, "app"),
     env: {
       PORT: String(input.appPort),
       COURSE_AGENT_WORKSPACE: input.workspaceRoot,
