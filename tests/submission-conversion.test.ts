@@ -250,6 +250,27 @@ describe("SubmissionConversionService", () => {
     terminalSetup.sessions.close();
   });
 
+  it("bounds retryable TaskFailureResult resubmission", async () => {
+    const { sessions, session } = await setup();
+    const submit = vi.fn(async () => ({ taskId: "failed-result" }));
+    const conversion = new SubmissionConversionService(sessions, {
+      health: vi.fn(),
+      submit,
+      status: vi.fn(async (): Promise<ConversionTaskStatus> => ({ status: "completed" })),
+      result: vi.fn(async () => { throw new ConversionTaskFailedError(publicFailure(true)); }),
+    }, { maxAttempts: 2, sleep: async () => undefined });
+
+    await conversion.process(session.id);
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(await sessions.getSession(session.id)).toMatchObject({
+      conversionStatus: "waiting_for_converter",
+      conversionAttemptCount: 2,
+      conversionError: { code: "CONVERSION_FAILED", retryable: true },
+    });
+    sessions.close();
+  });
+
   it("rejects resource-bearing raw HTML before converted Markdown is persisted", async () => {
     const { sessions, session } = await setup();
     for (const markdown of [
