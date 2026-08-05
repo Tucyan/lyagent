@@ -5,5 +5,6 @@ export default defineConfig({
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     environment: "node",
     reporters: ["dot"],
+    ...(process.platform === "win32" ? { maxWorkers: 2 } : {}),
   },
 });

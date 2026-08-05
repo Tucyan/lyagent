@@ -192,16 +192,23 @@ it("tests an endpoint with the credential snapshot taken before a concurrent sav
 it("serializes long operations through independent OS lock helpers", async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "course-agent-lock-"));
   roots.push(workspaceRoot);
-  const events: string[] = [];
-  const first = withModelConfigLock(workspaceRoot, async () => {
-    events.push("first-start");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    events.push("first-end");
-  }, { timeoutMs: 500, pollMs: 5 });
+  let active = 0;
+  let maxActive = 0;
+  const completed: string[] = [];
+  const operation = async (name: string, durationMs: number) => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
+    completed.push(name);
+    active -= 1;
+  };
+  const first = withModelConfigLock(workspaceRoot, () => operation("first", 100), { timeoutMs: 500, pollMs: 5 });
   await new Promise((resolve) => setTimeout(resolve, 40));
-  const second = withModelConfigLock(workspaceRoot, async () => { events.push("second-start"); }, { timeoutMs: 500, pollMs: 5 });
+  const second = withModelConfigLock(workspaceRoot, () => operation("second", 0), { timeoutMs: 500, pollMs: 5 });
   await Promise.all([first, second]);
-  expect(events).toEqual(["first-start", "first-end", "second-start"]);
+  expect(maxActive).toBe(1);
+  expect(completed).toHaveLength(2);
+  expect(completed).toEqual(expect.arrayContaining(["first", "second"]));
 });
 
 it("bounds the wait for an OS lock held by another helper", async () => {

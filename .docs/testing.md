@@ -114,6 +114,8 @@ npm run check
 npm run build
 ```
 
+Windows 下 Vitest 固定最多使用 2 个 worker。集成测试会并行创建 SQLite 临时数据库、启动 Fastify 实例，并通过 PowerShell 子进程调用 DPAPI；更高的 worker 数会放大进程启动和磁盘 I/O 竞争，造成跨模块超时及 SQLite `EBUSY`，而不是暴露单个测试的逻辑慢路径。非 Windows 环境继续使用 Vitest 默认并发。此限制没有放宽单测超时，测试仍须在默认 5 秒内完成。
+
 显式真实评分表Agent验收：
 
 ```powershell
