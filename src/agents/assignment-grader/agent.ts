@@ -66,9 +66,8 @@ export function createPiAssignmentGrader(options: {
         streamFn: options.models.streamSimple.bind(options.models),
         ...(options.getApiKey ? { getApiKey: options.getApiKey } : {}),
         prepareNextTurnWithContext: ({ toolResults }) => {
-          const terminal = toolResults.some((result) => !result.isError && ["submit_grading_draft", "ask_grading_question", "set_submission_title"].includes(result.toolName));
           const imageRead = toolResults.some((result) => result.toolName === "read_submission_image" && !result.isError && result.content.some((content) => content.type === "image"));
-          if (switchedToVision || !options.visionModel || terminal || !imageRead) return undefined;
+          if (switchedToVision || !options.visionModel || !imageRead) return undefined;
           switchedToVision = true;
           onEvent?.({ type: "model_switch", model: options.visionModel.id, capability: "vision" });
           return { model: options.visionModel };

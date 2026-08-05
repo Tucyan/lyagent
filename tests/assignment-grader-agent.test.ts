@@ -101,7 +101,7 @@ describe("assignment grader Agent", () => {
     sessions.close();
   });
 
-  it("does not announce a switch when an image read shares the terminal turn", async () => {
+  it("switches when a successful image read shares a batch with a successful terminal tool", async () => {
     const { sessions, results, rubrics, session, knowledge } = await fixture();
     const faux = fauxProvider({ tokensPerSecond: 10_000, models: [{ id: "primary", input: ["text"] }, { id: "vision", input: ["text", "image"] }] });
     const models = createModels();
@@ -117,8 +117,21 @@ describe("assignment grader Agent", () => {
     const events: unknown[] = [];
     const grader = createPiAssignmentGrader({ models, primaryModel: faux.getModel("primary")!, visionModel: faux.getModel("vision")!, sessions, results, rubrics, sessionId: session.id, runId: "terminal-image", knowledge: knowledge as any });
     await expect(grader.run({ kind: "grade", message: "检查图片" }, (event) => events.push(event))).resolves.toMatchObject({ kind: "question" });
+    expect(events.filter((event: any) => event.type === "model_switch")).toEqual([{ type: "model_switch", model: "vision", capability: "vision" }]);
+    expect(usedModels).toEqual(["primary", "vision"]);
+    sessions.close();
+  });
+
+  it("does not announce a vision switch for a terminal-only batch", async () => {
+    const { sessions, results, rubrics, session, knowledge } = await fixture();
+    const faux = fauxProvider({ tokensPerSecond: 10_000, models: [{ id: "primary", input: ["text"] }, { id: "vision", input: ["text", "image"] }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("ask_grading_question", { question: "请补充说明" })], { stopReason: "toolUse" })]);
+    const events: unknown[] = [];
+    const grader = createPiAssignmentGrader({ models, primaryModel: faux.getModel("primary")!, visionModel: faux.getModel("vision")!, sessions, results, rubrics, sessionId: session.id, runId: "terminal-only", knowledge: knowledge as any });
+    await expect(grader.run({ kind: "grade", message: "开始" }, (event) => events.push(event))).resolves.toMatchObject({ kind: "question" });
     expect(events).not.toContainEqual(expect.objectContaining({ type: "model_switch" }));
-    expect(usedModels).toEqual(["primary", "primary"]);
     sessions.close();
   });
 
