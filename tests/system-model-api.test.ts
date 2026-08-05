@@ -20,6 +20,9 @@ async function fixture() {
       setApiKey: async (id, key) => { keys.set(id, key); },
       deleteApiKey: async (id) => { keys.delete(id); },
       listProviderIds: async () => [...keys.keys()],
+      readProtected: async (id) => keys.has(id) ? Buffer.from(keys.get(id)!) : undefined,
+      restoreProtected: async (id, value) => { if (value) keys.set(id, value.toString()); else keys.delete(id); },
+      protectApiKey: async (key) => Buffer.from(key),
     },
     fetchImpl: vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok", arguments: "{}" } }] } }] }), { status: 200 })),
   });
@@ -69,6 +72,9 @@ it("rolls back credential changes when non-secret config persistence fails", asy
       setApiKey: async (id, key) => { keys.set(id, key); },
       deleteApiKey: async (id) => { keys.delete(id); },
       listProviderIds: async () => [...keys.keys()],
+      readProtected: async (id) => keys.has(id) ? Buffer.from(keys.get(id)!) : undefined,
+      restoreProtected: async (id, value) => { if (value) keys.set(id, value.toString()); else keys.delete(id); },
+      protectApiKey: async (key) => Buffer.from(key),
     },
     fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok" } }] } }] }), { status: 200 }),
     saveConfig: async () => { throw new Error("disk full"); },
@@ -85,6 +91,15 @@ it("tests temporary settings without saving them", async () => {
   expect(response.statusCode).toBe(200);
   expect(response.body).not.toContain("temporary-secret");
   expect(keys.size).toBe(0);
+  await app.close();
+});
+
+it.each(["http://remote.example/v1", "https://secret@remote.example/v1", "https://remote.example/v1?token=x"])("does not send a key to an unsafe endpoint: %s", async (baseUrl) => {
+  const { workspaceRoot, service } = await fixture();
+  const app = await createServer({ workspaceRoot, modelConfigService: service, modelApiSecurity: security });
+  const response = await app.inject({ method: "POST", url: "/api/system/models/test", headers: { origin: security.allowedOrigin, "x-csrf-token": security.csrfToken }, payload: { primary: { providerId: "unsafe", modelId: "model", baseUrl, apiKey: "must-not-leak" } } });
+  expect(response.statusCode).toBe(400);
+  expect((service as unknown as { options: { fetchImpl: ReturnType<typeof vi.fn> } }).options.fetchImpl).not.toHaveBeenCalled();
   await app.close();
 });
 
@@ -120,6 +135,9 @@ it("restores earlier provider keys when a later credential write fails", async (
       },
       deleteApiKey: async (id) => { keys.delete(id); },
       listProviderIds: async () => [...keys.keys()],
+      readProtected: async (id) => keys.has(id) ? Buffer.from(keys.get(id)!) : undefined,
+      restoreProtected: async (id, value) => { if (value) keys.set(id, value.toString()); else keys.delete(id); },
+      protectApiKey: async (key) => Buffer.from(key),
     },
     fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok" } }] } }] }), { status: 200 }),
   });
@@ -143,6 +161,9 @@ it("serializes concurrent saves across validation, credentials, and config commi
       setApiKey: async (id, key) => { keys.set(id, key); },
       deleteApiKey: async (id) => { keys.delete(id); },
       listProviderIds: async () => [...keys.keys()],
+      readProtected: async (id) => keys.has(id) ? Buffer.from(keys.get(id)!) : undefined,
+      restoreProtected: async (id, value) => { if (value) keys.set(id, value.toString()); else keys.delete(id); },
+      protectApiKey: async (key) => Buffer.from(key),
     },
     fetchImpl: async () => {
       active += 1;

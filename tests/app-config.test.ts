@@ -56,6 +56,28 @@ describe("local app configuration", () => {
     } });
   });
 
+  it.each([
+    "http://models.example/v1",
+    "http://2130706433/v1",
+    "http://127.1/v1",
+    "https://user:password@models.example/v1",
+    "https://models.example/v1?key=value",
+    "https://models.example/v1#fragment",
+  ])("rejects an unsafe model base URL: %s", async (baseUrl) => {
+    const root = await temporaryWorkspace(JSON.stringify({ models: { primary: { providerId: "unsafe", modelId: "model", baseUrl } } }));
+    await expect(loadAppConfig(root)).rejects.toBeInstanceOf(AppConfigError);
+  });
+
+  it.each(["http://127.0.0.1:11434/v1", "http://localhost:11434/v1", "http://[::1]:11434/v1", "https://models.example/v1"])("allows a safe model base URL: %s", async (baseUrl) => {
+    const root = await temporaryWorkspace(JSON.stringify({ models: { primary: { providerId: "safe", modelId: "model", baseUrl } } }));
+    await expect(loadAppConfig(root)).resolves.toMatchObject({ models: { primary: { baseUrl } } });
+  });
+
+  it.each(["__proto__", "constructor", "contains space", "slash/provider"])("rejects an unsafe provider ID: %s", async (providerId) => {
+    const root = await temporaryWorkspace(JSON.stringify({ models: { primary: { providerId, modelId: "model", baseUrl: "https://models.example/v1" } } }));
+    await expect(loadAppConfig(root)).rejects.toBeInstanceOf(AppConfigError);
+  });
+
   it("atomically saves non-secret model settings and removes the legacy plaintext key", async () => {
     const root = await temporaryWorkspace('{"deepseekApiKey":"legacy-secret","unrelated":true}');
     const config = await loadAppConfig(root);

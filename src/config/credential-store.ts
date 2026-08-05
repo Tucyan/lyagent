@@ -8,6 +8,9 @@ export interface CredentialStore {
   setApiKey(providerId: string, apiKey: string): Promise<void>;
   deleteApiKey(providerId: string): Promise<void>;
   listProviderIds(): Promise<string[]>;
+  readProtected(providerId: string): Promise<Buffer | undefined>;
+  restoreProtected(providerId: string, value: Buffer | undefined): Promise<void>;
+  protectApiKey(apiKey: string): Promise<Buffer>;
 }
 
 export interface SecretProtector {
@@ -30,10 +33,25 @@ export class FileCredentialStore implements CredentialStore {
 
   async setApiKey(providerId: string, apiKey: string): Promise<void> {
     if (!apiKey.trim()) throw new Error("API key must not be empty");
+    await this.restoreProtected(providerId, await this.protectApiKey(apiKey));
+  }
+
+  protectApiKey(apiKey: string): Promise<Buffer> { return this.protector.protect(Buffer.from(apiKey, "utf8")); }
+
+  async readProtected(providerId: string): Promise<Buffer | undefined> {
+    try { return await readFile(this.filename(providerId)); }
+    catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  async restoreProtected(providerId: string, value: Buffer | undefined): Promise<void> {
+    if (!value) return this.deleteApiKey(providerId);
     await mkdir(this.root, { recursive: true });
     const filename = this.filename(providerId);
     const temporary = `${filename}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, await this.protector.protect(Buffer.from(apiKey, "utf8")), { flag: "wx", mode: 0o600 });
+    await writeFile(temporary, value, { flag: "wx", mode: 0o600 });
     await rename(temporary, filename);
   }
 

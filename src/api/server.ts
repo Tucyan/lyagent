@@ -26,6 +26,8 @@ import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequ
 import { GradingResultValidationError } from "../schemas/grading.js";
 import { GradingBatchConflictError, GradingBatchError } from "../services/grading-batch-service.js";
 import { ModelConfigService, ModelConfigurationError } from "../services/model-config-service.js";
+import { modelBaseUrlSchema } from "../config/model-base-url.js";
+import { modelProviderIdSchema } from "../config/app-config.js";
 
 export type MaterialPlanner = (sections: SourceSection[]) => Promise<KnowledgePlan>;
 export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeService["forCourse"]>>, web?: WebEvidenceService) => PiCourseQaAgent;
@@ -59,9 +61,9 @@ export interface ServerOptions {
 }
 
 const modelEndpointInputSchema = z.object({
-  providerId: z.string().trim().min(1).max(80),
+  providerId: modelProviderIdSchema,
   modelId: z.string().trim().min(1).max(160),
-  baseUrl: z.string().url(),
+  baseUrl: modelBaseUrlSchema,
   apiKey: z.string().trim().min(1).max(20_000).optional(),
 }).strict();
 const modelSettingsInputSchema = z.object({ primary: modelEndpointInputSchema, vision: modelEndpointInputSchema.optional() }).strict();

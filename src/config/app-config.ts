@@ -2,11 +2,14 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
+import { modelBaseUrlSchema } from "./model-base-url.js";
+
+export const modelProviderIdSchema = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u).refine((value) => !["__proto__", "constructor", "prototype"].includes(value));
 
 const modelConfigSchema = z.object({
-  providerId: z.string().trim().min(1).max(80),
+  providerId: modelProviderIdSchema,
   modelId: z.string().trim().min(1).max(160),
-  baseUrl: z.string().url(),
+  baseUrl: modelBaseUrlSchema,
 }).strict();
 
 const appConfigSchema = z.object({
@@ -65,21 +68,25 @@ export async function loadAppConfig(workspaceRoot: string): Promise<AppConfig> {
     throw error;
   }
   try {
-    const parsed = appConfigSchema.parse(JSON.parse(raw));
-    return {
-      ...(parsed.deepseekApiKey ? { deepseekApiKey: parsed.deepseekApiKey } : {}),
-      models: parsed.models ?? defaultModels(),
-      mineru: parsed.mineru ?? defaultMineru(),
-      webSearch: parsed.webSearch ? {
-        enabled: parsed.webSearch.enabled,
-        provider: parsed.webSearch.provider,
-        maxResults: parsed.webSearch.maxResults,
-        ...(parsed.webSearch.pythonCommand ? { pythonCommand: parsed.webSearch.pythonCommand } : {}),
-      } : { enabled: true, provider: "ddgs", maxResults: 5 },
-    };
+    return parseAppConfigValue(JSON.parse(raw));
   } catch {
     throw new AppConfigError("workspace/config/app.json is not a valid local configuration");
   }
+}
+
+export function parseAppConfigValue(value: unknown): AppConfig {
+  const parsed = appConfigSchema.parse(value);
+  return {
+    ...(parsed.deepseekApiKey ? { deepseekApiKey: parsed.deepseekApiKey } : {}),
+    models: parsed.models ?? defaultModels(),
+    mineru: parsed.mineru ?? defaultMineru(),
+    webSearch: parsed.webSearch ? {
+      enabled: parsed.webSearch.enabled,
+      provider: parsed.webSearch.provider,
+      maxResults: parsed.webSearch.maxResults,
+      ...(parsed.webSearch.pythonCommand ? { pythonCommand: parsed.webSearch.pythonCommand } : {}),
+    } : { enabled: true, provider: "ddgs", maxResults: 5 },
+  };
 }
 
 export async function saveAppConfig(workspaceRoot: string, config: AppConfig): Promise<void> {
@@ -87,10 +94,11 @@ export async function saveAppConfig(workspaceRoot: string, config: AppConfig): P
   const filename = path.join(directory, "app.json");
   const temporary = path.join(directory, `.app-${process.pid}-${randomUUID()}.tmp`);
   await mkdir(directory, { recursive: true });
+  const validated = parseAppConfigValue(config);
   const safe = {
-    models: config.models,
-    mineru: config.mineru,
-    webSearch: config.webSearch,
+    models: validated.models,
+    mineru: validated.mineru,
+    webSearch: validated.webSearch,
   };
   await writeFile(temporary, `${JSON.stringify(safe, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   await rename(temporary, filename);
