@@ -1,19 +1,11 @@
 import {
-  importMineruResult,
-  MineruTaskMissingError,
-  MineruUnavailableError,
-  type MineruTaskStatus,
-} from "./mineru-client.js";
+  ConversionTaskMissingError,
+  ConversionUnavailableError,
+  type ConversionTaskStatus,
+  type DocumentConversionClient,
+} from "./document-conversion-client.js";
+import { importConversionResult } from "./conversion-result.js";
 import type { GradingSessionService } from "./grading-session-service.js";
-
-export interface MineruConversionClient {
-  submit(input: {
-    filename: string;
-    bytes: Uint8Array;
-  }): Promise<{ taskId: string; queuedAhead?: number }>;
-  status(taskId: string): Promise<MineruTaskStatus>;
-  result(taskId: string): Promise<Uint8Array>;
-}
 
 export interface SubmissionConversionOptions {
   pollIntervalMs?: number;
@@ -35,7 +27,7 @@ export class SubmissionConversionService {
 
   constructor(
     private readonly sessions: GradingSessionService,
-    private readonly client: MineruConversionClient,
+    private readonly client: DocumentConversionClient,
     options: SubmissionConversionOptions = {},
   ) {
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
@@ -99,7 +91,7 @@ export class SubmissionConversionService {
           taskId = submitted.taskId;
           job = await this.sessions.recordConversionTask(sessionId, taskId);
         } catch (error: unknown) {
-          if (!(error instanceof MineruUnavailableError)) {
+          if (!(error instanceof ConversionUnavailableError)) {
             await this.sessions.recordConversionFailure(
               sessionId,
               conversionFailed(),
@@ -134,12 +126,12 @@ export class SubmissionConversionService {
         });
         return;
       }
-      let status: MineruTaskStatus;
+      let status: ConversionTaskStatus;
       try {
         status = await this.client.status(taskId);
       } catch (error: unknown) {
-        if (!(error instanceof MineruTaskMissingError)) {
-          if (error instanceof MineruUnavailableError) {
+        if (!(error instanceof ConversionTaskMissingError)) {
+          if (error instanceof ConversionUnavailableError) {
             transientFailures += 1;
             const delay = this.transientRetryDelay(transientFailures);
             await this.sessions.recordConversionFailure(
@@ -175,7 +167,7 @@ export class SubmissionConversionService {
           taskId = submitted.taskId;
           job = await this.sessions.recordConversionTask(sessionId, taskId);
         } catch (error: unknown) {
-          if (error instanceof MineruUnavailableError)
+          if (error instanceof ConversionUnavailableError)
             await this.sessions.recordConversionFailure(
               sessionId,
               converterUnavailable(),
@@ -201,13 +193,13 @@ export class SubmissionConversionService {
         let taskReplaced = false;
         while (!taskReplaced) {
           try {
-            const imported = importMineruResult(
+            const imported = importConversionResult(
               await this.client.result(taskId),
             );
             await this.sessions.completeConversion(sessionId, imported);
             return;
           } catch (error: unknown) {
-            if (error instanceof MineruUnavailableError) {
+            if (error instanceof ConversionUnavailableError) {
               transientFailures += 1;
               const delay = this.transientRetryDelay(transientFailures);
               await this.sessions.recordConversionFailure(
@@ -220,7 +212,7 @@ export class SubmissionConversionService {
               await this.sleep(delay);
               continue;
             }
-            if (error instanceof MineruTaskMissingError) {
+            if (error instanceof ConversionTaskMissingError) {
               job = await this.sessions.getConversionJob(sessionId);
               if ((job?.attemptCount ?? 0) >= this.maxAttempts) {
                 await this.sessions.recordConversionFailure(sessionId, {
@@ -244,7 +236,7 @@ export class SubmissionConversionService {
                 taskReplaced = true;
                 continue;
               } catch (submitError: unknown) {
-                if (submitError instanceof MineruUnavailableError)
+                if (submitError instanceof ConversionUnavailableError)
                   await this.sessions.recordConversionFailure(
                     sessionId,
                     converterUnavailable(),

@@ -4,15 +4,15 @@ import path from "node:path";
 import { strToU8, zipSync } from "fflate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  MineruTaskMissingError,
-  MineruUnavailableError,
-  type MineruTaskStatus,
-} from "../src/services/mineru-client.js";
+  ConversionTaskMissingError,
+  ConversionUnavailableError,
+  type ConversionTaskStatus,
+  type DocumentConversionClient,
+} from "../src/services/document-conversion-client.js";
 import { GradingSessionService } from "../src/services/grading-session-service.js";
 import { RubricService } from "../src/services/rubric-service.js";
 import {
   SubmissionConversionService,
-  type MineruConversionClient,
 } from "../src/services/submission-conversion-service.js";
 
 const roots: string[] = [];
@@ -69,20 +69,24 @@ afterEach(async () => {
 });
 
 function resultZip() {
-  return zipSync({
-    "report/report.md": strToU8("# 转换报告\n\n![图表](images/chart.png)\n"),
-    "report/images/chart.png": new Uint8Array([
-      137, 80, 78, 71, 13, 10, 26, 10,
-    ]),
-  });
+  return {
+    kind: "archive" as const,
+    bytes: zipSync({
+      "report/report.md": strToU8("# 转换报告\n\n![图表](images/chart.png)\n"),
+      "report/images/chart.png": new Uint8Array([
+        137, 80, 78, 71, 13, 10, 26, 10,
+      ]),
+    }),
+  };
 }
 
 describe("SubmissionConversionService", () => {
   it("converts a queued submission and auto-queues grading only when configured", async () => {
     const { root, sessions, session } = await setup(true);
-    const client: MineruConversionClient = {
+    const client: DocumentConversionClient = {
+      health: vi.fn(),
       submit: vi.fn(async () => ({ taskId: "task-1", queuedAhead: 0 })),
-      status: vi.fn(async (): Promise<MineruTaskStatus> => ({
+      status: vi.fn(async (): Promise<ConversionTaskStatus> => ({
         status: "completed",
       })),
       result: vi.fn(async () => resultZip()),
@@ -114,7 +118,7 @@ describe("SubmissionConversionService", () => {
     expect(root).toBeTruthy();
   });
 
-  it("resubmits from the immutable original when MinerU loses a task", async () => {
+  it("resubmits from the immutable original when the converter loses a task", async () => {
     const { sessions, session } = await setup();
     const submit = vi
       .fn()
@@ -122,9 +126,10 @@ describe("SubmissionConversionService", () => {
       .mockResolvedValueOnce({ taskId: "replacement" });
     const status = vi
       .fn()
-      .mockRejectedValueOnce(new MineruTaskMissingError())
+      .mockRejectedValueOnce(new ConversionTaskMissingError())
       .mockResolvedValueOnce({ status: "completed" });
-    const client: MineruConversionClient = {
+    const client: DocumentConversionClient = {
+      health: vi.fn(),
       submit,
       status,
       result: vi.fn(async () => resultZip()),
@@ -148,10 +153,11 @@ describe("SubmissionConversionService", () => {
 
   it("keeps a lost task retryable after the automatic retry budget is exhausted", async () => {
     const { sessions, session } = await setup();
-    const client: MineruConversionClient = {
+    const client: DocumentConversionClient = {
+      health: vi.fn(),
       submit: vi.fn(async () => ({ taskId: "lost" })),
       status: vi.fn(async () => {
-        throw new MineruTaskMissingError();
+        throw new ConversionTaskMissingError();
       }),
       result: vi.fn(),
     };
@@ -177,9 +183,10 @@ describe("SubmissionConversionService", () => {
   it("retries converter outages with bounded backoff and preserves a retryable waiting state", async () => {
     const { sessions, session } = await setup();
     const sleep = vi.fn(async (_milliseconds: number) => undefined);
-    const client: MineruConversionClient = {
+    const client: DocumentConversionClient = {
+      health: vi.fn(),
       submit: vi.fn(async () => {
-        throw new MineruUnavailableError();
+        throw new ConversionUnavailableError();
       }),
       status: vi.fn(),
       result: vi.fn(),
@@ -206,13 +213,14 @@ describe("SubmissionConversionService", () => {
     const sleep = vi.fn(async (_milliseconds: number) => undefined);
     const status = vi
       .fn()
-      .mockRejectedValueOnce(new MineruUnavailableError())
+      .mockRejectedValueOnce(new ConversionUnavailableError())
       .mockResolvedValue({ status: "completed" });
     const result = vi
       .fn()
-      .mockRejectedValueOnce(new MineruUnavailableError())
+      .mockRejectedValueOnce(new ConversionUnavailableError())
       .mockResolvedValue(resultZip());
-    const client: MineruConversionClient = {
+    const client: DocumentConversionClient = {
+      health: vi.fn(),
       submit: vi.fn(async () => ({ taskId: "stable-task" })),
       status,
       result,
@@ -243,12 +251,13 @@ describe("SubmissionConversionService", () => {
       .mockResolvedValueOnce({ taskId: "replacement-task" });
     const result = vi
       .fn()
-      .mockRejectedValueOnce(new MineruTaskMissingError())
+      .mockRejectedValueOnce(new ConversionTaskMissingError())
       .mockResolvedValue(resultZip());
-    const client: MineruConversionClient = {
+    const client: DocumentConversionClient = {
+      health: vi.fn(),
       submit,
       status: vi.fn(
-        async (): Promise<MineruTaskStatus> => ({ status: "completed" }),
+        async (): Promise<ConversionTaskStatus> => ({ status: "completed" }),
       ),
       result,
     };
@@ -276,8 +285,9 @@ describe("SubmissionConversionService", () => {
     const failed = new SubmissionConversionService(
       failedSetup.sessions,
       {
+        health: vi.fn(),
         submit: vi.fn(async () => ({ taskId: "failed-task" })),
-        status: vi.fn(async (): Promise<MineruTaskStatus> => ({
+        status: vi.fn(async (): Promise<ConversionTaskStatus> => ({
           status: "failed",
           error: "internal parser details",
         })),
@@ -298,11 +308,15 @@ describe("SubmissionConversionService", () => {
     const rejected = new SubmissionConversionService(
       rejectedSetup.sessions,
       {
+        health: vi.fn(),
         submit: vi.fn(async () => ({ taskId: "unsafe-task" })),
-        status: vi.fn(async (): Promise<MineruTaskStatus> => ({
+        status: vi.fn(async (): Promise<ConversionTaskStatus> => ({
           status: "completed",
         })),
-        result: vi.fn(async () => zipSync({ "../unsafe.md": strToU8("bad") })),
+        result: vi.fn(async () => ({
+          kind: "archive" as const,
+          bytes: zipSync({ "../unsafe.md": strToU8("bad") }),
+        })),
       },
       { sleep: async () => undefined },
     );
@@ -320,6 +334,7 @@ describe("SubmissionConversionService", () => {
     const { root, sessions, session } = await setup();
     await rm(path.join(root, "assignments", session.assignmentId, "submissions", session.batchId), { recursive: true, force: true });
     const conversion = new SubmissionConversionService(sessions, {
+      health: vi.fn(),
       submit: vi.fn(),
       status: vi.fn(),
       result: vi.fn(),
@@ -336,9 +351,10 @@ describe("SubmissionConversionService", () => {
 
   it("resumes queued and running conversions after startup", async () => {
     const { sessions, session } = await setup();
-    const client: MineruConversionClient = {
+    const client: DocumentConversionClient = {
+      health: vi.fn(),
       submit: vi.fn(async () => ({ taskId: "task-1" })),
-      status: vi.fn(async (): Promise<MineruTaskStatus> => ({
+      status: vi.fn(async (): Promise<ConversionTaskStatus> => ({
         status: "completed",
       })),
       result: vi.fn(async () => resultZip()),

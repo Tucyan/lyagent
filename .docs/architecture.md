@@ -137,7 +137,7 @@ Dashboard 只返回课程元数据、active release 元数据、文档/会话计
 ## M4单份批改边界
 
 - `GradingSessionService`绑定唯一课程、冻结评分表版本、不可变原文件、转换后Markdown版本与程序生成的内部ID；会话显示名与学生报告的作业名称是两个独立字段。
-- `SubmissionConversionService`通过仅允许环回地址的MinerU异步API转换DOCX、PDF、PPTX和图片；Markdown直接导入。连接失败、超时、限流和5xx进入`waiting_for_converter`并按有界退避重试；明确解析失败进入`conversion_failed`，本地安全或结果格式校验失败进入`result_rejected`。重试始终复用不可变原件。
+- `SubmissionConversionService`只依赖供应商无关的`DocumentConversionClient`，当前由仅允许环回地址的Docling Serve异步API转换DOCX、PDF、PPTX和图片；Markdown直接导入。连接失败、超时、限流和5xx进入`waiting_for_converter`并按有界退避重试；明确解析失败进入`conversion_failed`，本地安全或结果格式校验失败进入`result_rejected`。重试始终复用不可变原件。
 - `PiAssignmentGrader`在正式批改轮次只获得固定13项批改工具。未手填作业名称时，程序在提交转换完成后强制启动专用命名轮次，该轮次只开放作业文件浏览、正文搜索、正文读取和`set_submission_title`；模型必须同时核对正文与原始文件名，冲突时以正文标题为准。冻结评分标准由服务端注入系统提示词；总分、证据、置信度和Review状态由程序在提交草稿时重算。
 - `GradingRunService`以并发1执行后台轮次，把安全处理摘要、模型回复、`model_switch`和脱敏工具活动写入可按序号回放的事件表；视觉Provider失败不会回退主模型，页面断开不会取消运行。
 - `GradingResultService`负责乐观版本、教师审计、Review确认和不可变JSON/Markdown发布。Agent不能直接发布正式结果。

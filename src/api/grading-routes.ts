@@ -17,10 +17,8 @@ import {
   GradingConflictError,
   GradingSessionService,
 } from "../services/grading-session-service.js";
-import type {
-  MineruConversionClient,
-  SubmissionConversionOptions,
-} from "../services/submission-conversion-service.js";
+import type { DocumentConversionClient } from "../services/document-conversion-client.js";
+import type { SubmissionConversionOptions } from "../services/submission-conversion-service.js";
 import { SubmissionConversionService } from "../services/submission-conversion-service.js";
 import { SubmissionTitleService } from "../services/submission-title-service.js";
 import {
@@ -103,7 +101,7 @@ export interface GradingApiOptions {
   workspaceRoot: string;
   rubrics: RubricService;
   identityClient?: StudentIdentityClient;
-  conversionClient?: MineruConversionClient;
+  conversionClient?: DocumentConversionClient;
   conversionOptions?: SubmissionConversionOptions;
   gradingAgentFactory?: GradingAgentBuilder;
   submissionTitleAgentFactory?: GradingAgentBuilder;

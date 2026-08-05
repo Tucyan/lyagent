@@ -24,10 +24,10 @@
 - 模型密钥按Provider ID经Windows当前用户DPAPI保护，保存在Workspace外的`%LOCALAPPDATA%\CourseAgent\secrets\<workspace-sha256>`；哈希来自`realpath`规范化（Windows忽略大小写）后的Workspace绝对路径，不同Workspace不得共享凭据目录。普通JSON、日志、命令行和API响应不得包含密钥。旧`workspace/config/app.json`中的`deepseekApiKey`只读兼容，模型设置验证及凭据保存成功后原子改写非敏感配置并移除明文。DDGS搜索不需要API key；未来WeCom Secret、Token和EncodingAESKey使用同类本地凭据存储。
 - 示例配置只包含非敏感默认值和占位字段名，不包含可用凭据。
 - 学生作业、课程资料、会话和批改结果属于敏感业务数据。
-- M4上传先写入受控临时文件，再保存不可变原件；Agent永远看不到绝对路径。上传内容必须匹配文件扩展名，DOCX/PPTX还必须包含对应OOXML入口。MinerU响应体、ZIP条目数、目录深度、单条目和总解压大小均有限额；转换结果只接受Markdown和通过图片魔数校验的受支持图片，并拒绝绝对路径、`..`、伪造扩展名、跨目录或远程图片引用。
+- M4上传先写入受控临时文件，再保存不可变原件；Agent永远看不到绝对路径。上传内容必须匹配文件扩展名，DOCX/PPTX还必须包含对应OOXML入口。Docling响应体、ZIP条目数、目录深度、单条目和总解压大小均有限额；转换结果只接受Markdown和通过图片魔数校验的受支持图片，并拒绝绝对路径、`..`、伪造扩展名、跨目录或远程图片引用。
 - 作业名称识别只通过当前会话的受控文件工具读取转换后Markdown和原始文件基本名；`set_submission_title`由服务端绑定当前会话，Agent不能提交会话ID或路径。未成功调用该工具的命名轮次不得解锁自动批改。
-- MinerU地址仅允许环回HTTP。DeepSeek身份识别只发送长度受限的原始文件基本名，不发送报告正文；完整正文仅由批改Agent通过当前会话工具按需读取。
-- MinerU不可达、超时、限流或5xx时，系统只持久化固定的安全错误码和教师说明，并保留不可变原件；不把底层socket错误、原始响应或可能包含敏感内容的解析错误返回页面。自动重试有次数上限，终态解析失败、安全拒绝或历史原件缺失不自动重试。
+- Docling地址仅允许环回HTTP，且不得包含凭据、query或fragment。DeepSeek身份识别只发送长度受限的原始文件基本名，不发送报告正文；完整正文仅由批改Agent通过当前会话工具按需读取。
+- Docling不可达、超时、限流或5xx时，系统只持久化固定的安全错误码和教师说明，并保留不可变原件；不把底层socket错误、原始响应或可能包含敏感内容的解析错误返回页面。自动重试有次数上限，终态解析失败、安全拒绝或历史原件缺失不自动重试。
 - Windows发布监督进程使用`Global\CourseAgent.Launcher.<workspace-sha256>`确保单实例，并原子维护受控runtime descriptor。复用实例前同时验证Workspace身份、owner token格式、监督进程存活、loopback URL与健康接口；API只返回版本、端口、backend和就绪状态，不返回PID、绝对路径或原始错误。监督进程只向经过验证且由其记录的子PID执行`taskkill /T /F`。
 - 流式界面展示固定安全处理摘要和脱敏工具活动，不保存或展示Provider私有推理链、Prompt、密钥或跨会话正文。无视觉模型时，`read_submission_image`只返回`VISION_MODEL_NOT_CONFIGURED`文本码，不读取或返回图片字节、路径或底层错误；批改Agent必须将受影响项标记为证据不足或向教师确认。成功读取图片后的模型切换只发送非敏感模型ID与能力标签。
 - API错误、普通日志和审计索引不得包含完整正文。

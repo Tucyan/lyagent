@@ -19,7 +19,8 @@ import { rubricSchema, validateRubric, type Rubric } from "../schemas/rubric.js"
 import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricService, RubricServiceError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
 import { registerGradingApi } from "./grading-routes.js";
 import { StudentIdentityError, type StudentIdentityClient } from "../services/student-identity-service.js";
-import type { MineruConversionClient, SubmissionConversionOptions } from "../services/submission-conversion-service.js";
+import type { DocumentConversionClient } from "../services/document-conversion-client.js";
+import type { SubmissionConversionOptions } from "../services/submission-conversion-service.js";
 import type { GradingAgentBuilder } from "./grading-routes.js";
 import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
 import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequiredError } from "../services/grading-result-service.js";
@@ -47,7 +48,7 @@ export interface ServerOptions {
   webEvidenceFactory?: () => WebEvidenceService;
   rubricDesignerFactory?: RubricDesignerFactory;
   studentIdentityClient?: StudentIdentityClient;
-  mineruConversionClient?: MineruConversionClient;
+  mineruConversionClient?: DocumentConversionClient;
   submissionConversionOptions?: SubmissionConversionOptions;
   gradingAgentFactory?: GradingAgentBuilder;
   submissionTitleAgentFactory?: GradingAgentBuilder;

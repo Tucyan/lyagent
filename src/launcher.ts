@@ -4,7 +4,7 @@ import { access, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveWorkspaceIdentity } from "./config/workspace-identity.js";
-import { MineruClient } from "./services/mineru-client.js";
+import { DoclingClient } from "./services/docling-client.js";
 import { acquireLauncherMutex } from "./launcher/windows-mutex.js";
 import { appLaunchSpec, defaultWorkspaceRoot, mineruLaunchSpec, writeRuntimeDescriptor, type LaunchSpec } from "./launcher/runtime.js";
 import { chooseBackend, descriptorFor, PortReservation, readHealthyDescriptor, runSupervisor, type LauncherChild, type MineruBackend } from "./launcher/supervisor.js";
@@ -131,7 +131,7 @@ async function removeOwnedDescriptor(filename: string, ownerIds: Set<string>): P
 
 async function smokeMineru(port: number, selected: MineruBackend, signal?: AbortSignal): Promise<boolean> {
   try {
-    const client = new MineruClient({ baseUrl: `http://127.0.0.1:${port}`, backend: selected, timeoutMs: 5_000, ...(signal ? { signal } : {}) });
+    const client = new DoclingClient({ baseUrl: `http://127.0.0.1:${port}`, timeoutMs: 5_000, ...(signal ? { signal } : {}) });
     const submitted = await client.submit({ filename: "smoke.pdf", bytes: minimalPdf() });
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline && !signal?.aborted) { const status = await client.status(submitted.taskId); if (status.status === "completed") return true; if (status.status === "failed") return false; await new Promise((resolve) => setTimeout(resolve, 250)); }

@@ -11,7 +11,7 @@ import { DdgsSearchService } from "./services/ddgs-search-service.js";
 import { SafeWebFetcher } from "./services/safe-web-fetcher.js";
 import { WebEvidenceService } from "./services/web-evidence-service.js";
 import { OpenAICompatibleStudentIdentityClient } from "./services/student-identity-service.js";
-import { MineruClient } from "./services/mineru-client.js";
+import { DoclingClient } from "./services/docling-client.js";
 import { ModelConfigService } from "./services/model-config-service.js";
 import { resolveWorkspaceIdentity } from "./config/workspace-identity.js";
 
@@ -38,7 +38,7 @@ const app = await createServer({
   ...(runtime.rubricDesignerFactory ? { rubricDesignerFactory: runtime.rubricDesignerFactory } : {}),
   ...(webFactory ? { webEvidenceFactory: webFactory } : {}),
   ...(primaryApiKey ? { studentIdentityClient: new OpenAICompatibleStudentIdentityClient({ apiKey: primaryApiKey, baseUrl: config.models.primary.baseUrl, model: config.models.primary.modelId }) } : {}),
-  mineruConversionClient: new MineruClient({ baseUrl: process.env.COURSE_AGENT_MINERU_PORT ? `http://127.0.0.1:${mineruPort}` : config.mineru.baseUrl, backend: mineruBackend }),
+  mineruConversionClient: new DoclingClient({ baseUrl: process.env.COURSE_AGENT_MINERU_PORT ? `http://127.0.0.1:${mineruPort}` : config.mineru.baseUrl }),
   submissionConversionOptions: { pollIntervalMs: config.mineru.pollIntervalMs, taskTimeoutSeconds: config.mineru.taskTimeoutSeconds, maxAttempts: config.mineru.maxAttempts },
   ...(runtime.gradingAgentFactory ? { gradingAgentFactory: runtime.gradingAgentFactory } : {}),
   ...(runtime.gradingAgentFactory ? { submissionTitleAgentFactory: runtime.gradingAgentFactory } : {}),

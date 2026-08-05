@@ -8,13 +8,11 @@ import type { GradingAgentBuilder } from "../src/api/grading-routes.js";
 import { createServer } from "../src/api/server.js";
 import type { Rubric } from "../src/schemas/rubric.js";
 import {
-  MineruUnavailableError,
-  type MineruTaskStatus,
-} from "../src/services/mineru-client.js";
-import type {
-  MineruConversionClient,
-  SubmissionConversionOptions,
-} from "../src/services/submission-conversion-service.js";
+  ConversionUnavailableError,
+  type ConversionTaskStatus,
+  type DocumentConversionClient,
+} from "../src/services/document-conversion-client.js";
+import type { SubmissionConversionOptions } from "../src/services/submission-conversion-service.js";
 
 const roots: string[] = [];
 afterEach(async () =>
@@ -502,12 +500,13 @@ describe("grading API", () => {
   });
 
   it("exposes safe retryable converter outages and rejects retry for terminal parse failures", async () => {
-    const unavailableClient: MineruConversionClient = {
+    const unavailableClient: DocumentConversionClient = {
+      health: async () => ({}),
       submit: async () => {
-        throw new MineruUnavailableError("private socket detail");
+        throw new ConversionUnavailableError("private socket detail");
       },
-      status: async (): Promise<MineruTaskStatus> => ({ status: "running" }),
-      result: async () => new Uint8Array(),
+      status: async (): Promise<ConversionTaskStatus> => ({ status: "running" }),
+      result: async () => ({ kind: "archive", bytes: new Uint8Array() }),
     };
     const unavailableSetup = await setup(undefined, unavailableClient, {
       maxAttempts: 1,
@@ -550,13 +549,14 @@ describe("grading API", () => {
     ).toBe(202);
     await unavailableSetup.app.close();
 
-    const failedClient: MineruConversionClient = {
+    const failedClient: DocumentConversionClient = {
+      health: async () => ({}),
       submit: async () => ({ taskId: "failed-task" }),
-      status: async (): Promise<MineruTaskStatus> => ({
+      status: async (): Promise<ConversionTaskStatus> => ({
         status: "failed",
         error: "private parser detail",
       }),
-      result: async () => new Uint8Array(),
+      result: async () => ({ kind: "archive", bytes: new Uint8Array() }),
     };
     const failedSetup = await setup(undefined, failedClient);
     const failedCreated = await failedSetup.app.inject({
@@ -684,7 +684,7 @@ describe("grading API", () => {
 
 async function setup(
   graderFactory?: GradingAgentBuilder,
-  conversionClient?: MineruConversionClient,
+  conversionClient?: DocumentConversionClient,
   conversionOptions?: SubmissionConversionOptions,
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "grading-api-"));
