@@ -202,8 +202,13 @@ it("serializes long operations through independent OS lock helpers", async () =>
     completed.push(name);
     active -= 1;
   };
-  const first = withModelConfigLock(workspaceRoot, () => operation("first", 100), { timeoutMs: 500, pollMs: 5 });
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  let markFirstEntered!: () => void;
+  const firstEntered = new Promise<void>((resolve) => { markFirstEntered = resolve; });
+  const first = withModelConfigLock(workspaceRoot, () => {
+    markFirstEntered();
+    return operation("first", 100);
+  }, { timeoutMs: 500, pollMs: 5 });
+  await firstEntered;
   const second = withModelConfigLock(workspaceRoot, () => operation("second", 0), { timeoutMs: 500, pollMs: 5 });
   await Promise.all([first, second]);
   expect(maxActive).toBe(1);
