@@ -4,6 +4,7 @@ import {
   ConversionConfigurationError,
   ConversionError,
   ConversionResultError,
+  ConversionTaskFailedError,
   ConversionTaskMissingError,
   ConversionUnavailableError,
   type ConversionTaskStatus,
@@ -13,13 +14,27 @@ import {
 import { importConversionResult } from "./conversion-result.js";
 
 const taskIdSchema = z.string().trim().min(1).max(200);
+const publicFailureInfoSchema = z.object({
+  category: z.enum([
+    "policy", "capacity", "source_unavailable", "target_unavailable",
+    "timeout", "internal", "backend_failure", "inference_failure", "unknown",
+  ]),
+  message: z.string().max(20_000),
+  retryable: z.boolean(),
+  phase: z.enum(["admission", "source_enumeration", "execution", "orchestration"]),
+  details: z.record(z.string(), z.string()).default({}),
+});
 const taskResponseSchema = z.object({
   task_id: taskIdSchema,
   task_status: z.enum(["pending", "started", "success", "failure"]),
   task_position: z.number().int().nonnegative().nullable().optional(),
   error_message: z.unknown().optional(),
-  failure: z.unknown().optional(),
+  failure: publicFailureInfoSchema.nullable().optional(),
 });
+const taskFailureResultSchema = z.object({
+  kind: z.literal("TaskFailureResult"),
+  failure: publicFailureInfoSchema,
+}).passthrough();
 const inlineResultSchema = z.object({
   status: z.enum(["success", "partial_success"]),
   document: z.object({
@@ -136,6 +151,8 @@ export class DoclingClient implements DocumentConversionClient {
       status: statuses[payload.task_status],
       ...(payload.task_position === null || payload.task_position === undefined
         ? {} : { queuedAhead: payload.task_position }),
+      ...(payload.task_status === "failure" && payload.failure
+        ? { failure: payload.failure } : {}),
     };
   }
 
@@ -148,9 +165,18 @@ export class DoclingClient implements DocumentConversionClient {
     const bytes = await this.readBounded(response, operationSignal);
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (contentType.includes("json")) {
+      let rawPayload: unknown;
+      try {
+        rawPayload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      } catch {
+        throw new ConversionResultError("Document converter returned an invalid in-body result");
+      }
+      const taskFailure = taskFailureResultSchema.safeParse(rawPayload);
+      if (taskFailure.success)
+        throw new ConversionTaskFailedError(taskFailure.data.failure);
       let payload: z.infer<typeof inlineResultSchema>;
       try {
-        payload = inlineResultSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+        payload = inlineResultSchema.parse(rawPayload);
       } catch {
         throw new ConversionResultError("Document converter returned an invalid in-body result");
       }

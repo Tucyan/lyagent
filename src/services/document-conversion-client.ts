@@ -1,9 +1,34 @@
 export type ConversionStatus = "queued" | "running" | "completed" | "failed";
 
+export type ConversionFailureCategory =
+  | "policy"
+  | "capacity"
+  | "source_unavailable"
+  | "target_unavailable"
+  | "timeout"
+  | "internal"
+  | "backend_failure"
+  | "inference_failure"
+  | "unknown";
+export type ConversionFailurePhase =
+  | "admission"
+  | "source_enumeration"
+  | "execution"
+  | "orchestration";
+
+export interface PublicFailureInfo {
+  category: ConversionFailureCategory;
+  message: string;
+  retryable: boolean;
+  phase: ConversionFailurePhase;
+  details: Record<string, string>;
+}
+
 export interface ConversionTaskStatus {
   status: ConversionStatus;
   queuedAhead?: number;
   error?: string;
+  failure?: PublicFailureInfo;
 }
 
 export interface ImportedConversionResult {
@@ -46,6 +71,21 @@ export class ConversionTaskMissingError extends ConversionError {
   constructor() {
     super("Document conversion task no longer exists");
     this.name = "ConversionTaskMissingError";
+  }
+}
+
+export class ConversionTaskFailedError extends ConversionError {
+  public readonly code = "CONVERSION_TASK_FAILED";
+  public readonly retryable: boolean;
+  public readonly category: ConversionFailureCategory;
+  public readonly phase: ConversionFailurePhase;
+
+  constructor(failure: PublicFailureInfo) {
+    super("Document conversion task failed");
+    this.name = "ConversionTaskFailedError";
+    this.retryable = failure.retryable;
+    this.category = failure.category;
+    this.phase = failure.phase;
   }
 }
 

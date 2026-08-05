@@ -3,6 +3,7 @@ import {
   ConversionConfigurationError,
   ConversionError,
   ConversionResultError,
+  ConversionTaskFailedError,
   ConversionTaskMissingError,
   ConversionUnavailableError,
 } from "../src/services/document-conversion-client.js";
@@ -49,6 +50,8 @@ describe("DoclingClient", () => {
     const form = init?.body as FormData;
     expect((form.get("files") as File).name).toBe("report.pdf");
     expect(form.get("to_formats")).toBe('["md"]');
+    // Docling Serve v1.28 FormDepends applies json.loads to list/dict form fields.
+    expect(JSON.parse(String(form.get("to_formats")))).toEqual(["md"]);
     expect(form.get("image_export_mode")).toBe("referenced");
     expect(form.get("target_type")).toBe("zip");
     expect(form.get("do_ocr")).toBe("true");
@@ -71,6 +74,28 @@ describe("DoclingClient", () => {
       }),
     });
     await expect(client.status("task/1")).resolves.toEqual({ status: expected, queuedAhead: 0 });
+  });
+
+  it("preserves structured task failure retryability without interpreting provider text", async () => {
+    const failure = {
+      category: "capacity",
+      message: "private provider capacity detail",
+      retryable: true,
+      phase: "orchestration",
+      details: { trace: "private-trace" },
+    };
+    const client = new DoclingClient({
+      baseUrl: "http://127.0.0.1:5001",
+      fetchImpl: async () => Response.json({
+        task_id: "task-1", task_status: "failure", task_position: null,
+        error_message: failure.message, failure,
+      }),
+    });
+
+    await expect(client.status("task-1")).resolves.toEqual({
+      status: "failed",
+      failure,
+    });
   });
 
   it("maps missing tasks, retryable statuses, and other 4xx without leaking bodies", async () => {
@@ -233,6 +258,31 @@ describe("DoclingClient", () => {
       kind: "document", markdown: "# Report\n", assets: [],
     });
   });
+
+  it.each([true, false])(
+    "recognizes a 200 TaskFailureResult with retryable=%s without leaking its message",
+    async (retryable) => {
+      const client = new DoclingClient({
+        baseUrl: "http://127.0.0.1:5001",
+        fetchImpl: async () => Response.json({
+          kind: "TaskFailureResult",
+          failure: {
+            category: retryable ? "capacity" : "policy",
+            message: "private provider result failure",
+            retryable,
+            phase: "execution",
+            details: { traceback: "private traceback" },
+          },
+        }),
+      });
+
+      const error = await client.result("failed-task").catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ConversionTaskFailedError);
+      expect(error).toMatchObject({ retryable, code: "CONVERSION_TASK_FAILED" });
+      expect(String(error)).not.toContain("private provider result failure");
+      expect(JSON.stringify(error)).not.toContain("private traceback");
+    },
+  );
 
   it("rejects failed, malformed, empty, and remotely-referenced JSON results", async () => {
     for (const payload of [

@@ -1,4 +1,5 @@
 import {
+  ConversionTaskFailedError,
   ConversionTaskMissingError,
   ConversionUnavailableError,
   type ConversionTaskStatus,
@@ -183,6 +184,34 @@ export class SubmissionConversionService {
       }
       transientFailures = 0;
       if (status.status === "failed") {
+        if (status.failure?.retryable) {
+          job = await this.sessions.getConversionJob(sessionId);
+          const attemptCount = job?.attemptCount ?? session.conversionAttemptCount;
+          const delay = this.retryDelay(attemptCount);
+          if (delay === undefined || attemptCount >= this.maxAttempts) {
+            await this.sessions.recordConversionFailure(
+              sessionId,
+              retryableTaskFailure(),
+            );
+            return;
+          }
+          await this.sleep(delay);
+          session = await this.sessions.beginConversionAttempt(sessionId);
+          try {
+            const submitted = await this.client.submit(original);
+            taskId = submitted.taskId;
+            job = await this.sessions.recordConversionTask(sessionId, taskId);
+          } catch (error: unknown) {
+            await this.sessions.recordConversionFailure(
+              sessionId,
+              error instanceof ConversionUnavailableError
+                ? converterUnavailable()
+                : conversionFailed(),
+            );
+            return;
+          }
+          continue;
+        }
         await this.sessions.recordConversionFailure(
           sessionId,
           conversionFailed(),
@@ -199,6 +228,46 @@ export class SubmissionConversionService {
             await this.sessions.completeConversion(sessionId, imported);
             return;
           } catch (error: unknown) {
+            if (error instanceof ConversionTaskFailedError) {
+              if (!error.retryable) {
+                await this.sessions.recordConversionFailure(
+                  sessionId,
+                  conversionFailed(),
+                );
+                return;
+              }
+              job = await this.sessions.getConversionJob(sessionId);
+              const attemptCount = job?.attemptCount ?? session.conversionAttemptCount;
+              const delay = this.retryDelay(attemptCount);
+              if (delay === undefined || attemptCount >= this.maxAttempts) {
+                await this.sessions.recordConversionFailure(
+                  sessionId,
+                  retryableTaskFailure(),
+                );
+                return;
+              }
+              await this.sleep(delay);
+              session = await this.sessions.beginConversionAttempt(sessionId);
+              try {
+                const submitted = await this.client.submit(original);
+                taskId = submitted.taskId;
+                job = await this.sessions.recordConversionTask(
+                  sessionId,
+                  taskId,
+                );
+                transientFailures = 0;
+                taskReplaced = true;
+                continue;
+              } catch (submitError: unknown) {
+                await this.sessions.recordConversionFailure(
+                  sessionId,
+                  submitError instanceof ConversionUnavailableError
+                    ? converterUnavailable()
+                    : conversionFailed(),
+                );
+                return;
+              }
+            }
             if (error instanceof ConversionUnavailableError) {
               transientFailures += 1;
               const delay = this.transientRetryDelay(transientFailures);
@@ -310,5 +379,14 @@ function conversionFailed() {
     code: "CONVERSION_FAILED" as const,
     message: "转换服务无法解析该文件，请检查文件是否损坏、加密或不受支持。",
     retryable: false,
+  };
+}
+
+function retryableTaskFailure() {
+  return {
+    status: "waiting_for_converter" as const,
+    code: "CONVERSION_FAILED" as const,
+    message: "Document conversion failed temporarily; the original submission was preserved.",
+    retryable: true,
   };
 }

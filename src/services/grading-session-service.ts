@@ -1292,6 +1292,14 @@ function validateMarkdown(
 ): void {
   if (!markdown.trim() || Buffer.byteLength(markdown) > 10 * 1024 * 1024)
     throw new GradingSessionError("Converted Markdown is empty or too large");
+  const htmlForValidation = decodeNumericHtmlEntities(markdown);
+  if (
+    /<\s*\/?\s*(?:svg|image|object|embed|iframe|video|audio|source|script|link|base|track|portal)\b/i
+      .test(htmlForValidation)
+  )
+    throw new GradingSessionError(
+      "Markdown contains resource-bearing raw HTML",
+    );
   const unsafeLink = /!?(?:\[[^\]]*\])\((?<target>[^)]+)\)/g;
   for (const match of markdown.matchAll(unsafeLink)) {
     const target = match.groups?.target?.trim() ?? "";
@@ -1319,6 +1327,19 @@ function validateMarkdown(
         "Markdown image must reference an imported submission asset",
       );
   }
+}
+
+function decodeNumericHtmlEntities(value: string): string {
+  return value.replace(
+    /&#(?:x([0-9a-f]+)|([0-9]+));?/gi,
+    (entity, hexadecimal: string | undefined, decimal: string | undefined) => {
+      const codePoint = Number.parseInt(hexadecimal ?? decimal ?? "", hexadecimal ? 16 : 10);
+      if (!Number.isSafeInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff)
+        return entity;
+      try { return String.fromCodePoint(codePoint); }
+      catch { return entity; }
+    },
+  );
 }
 
 function validateFileSignature(extension: string, bytes: Buffer): void {
