@@ -1,43 +1,51 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import pino from "pino";
-import { createDeepSeekMaterialPlanner } from "./agents/material-import/deepseek.js";
-import { createDeepSeekCourseQaAgentFactory } from "./agents/course-qa/deepseek.js";
-import { createDeepSeekRubricDesignerFactory } from "./agents/rubric-designer/deepseek.js";
-import { createDeepSeekAssignmentGraderFactory } from "./agents/assignment-grader/deepseek.js";
 import { createServer } from "./api/server.js";
 import { registerWebAssets } from "./api/web-assets.js";
 import { loadAppConfig } from "./config/app-config.js";
+import { defaultSecretRoot, FileCredentialStore, WindowsDpapiProtector } from "./config/credential-store.js";
+import { createConfiguredModels } from "./models/openai-compatible.js";
+import { createPrimaryModelRuntime } from "./models/runtime.js";
 import { createDdgsRunner } from "./services/ddgs-process-runner.js";
 import { DdgsSearchService } from "./services/ddgs-search-service.js";
 import { SafeWebFetcher } from "./services/safe-web-fetcher.js";
 import { WebEvidenceService } from "./services/web-evidence-service.js";
-import { DeepSeekStudentIdentityClient } from "./services/student-identity-service.js";
+import { OpenAICompatibleStudentIdentityClient } from "./services/student-identity-service.js";
 import { MineruClient } from "./services/mineru-client.js";
+import { ModelConfigService } from "./services/model-config-service.js";
 
 const workspaceRoot = path.resolve(process.env.COURSE_AGENT_WORKSPACE ?? "workspace");
+const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const logger = pino({ name: "course-agent", level: process.env.LOG_LEVEL ?? "info" });
 const config = await loadAppConfig(workspaceRoot);
-const deepseek = createDeepSeekMaterialPlanner(config.deepseekApiKey);
-const courseQa = createDeepSeekCourseQaAgentFactory(config.deepseekApiKey);
-const rubricDesigner = createDeepSeekRubricDesignerFactory(config.deepseekApiKey);
+const credentialStore = new FileCredentialStore(defaultSecretRoot(), new WindowsDpapiProtector());
+const modelConfigService = new ModelConfigService({ workspaceRoot, credentials: credentialStore });
+const primaryApiKey = await modelConfigService.apiKey(config.models.primary.providerId);
+const configuredModels = createConfiguredModels({ config: config.models, getApiKey: (providerId) => modelConfigService.apiKey(providerId) });
 const ddgs = new DdgsSearchService(createDdgsRunner(undefined, config.webSearch.pythonCommand), { maxResults: config.webSearch.maxResults });
 const webFetcher = new SafeWebFetcher();
 const webFactory = config.webSearch.enabled ? () => new WebEvidenceService(ddgs, (url) => webFetcher.fetch(url)) : undefined;
-const gradingAgentFactory = createDeepSeekAssignmentGraderFactory({ workspaceRoot, ...(config.deepseekApiKey ? { apiKey: config.deepseekApiKey } : {}), ...(webFactory ? { webFactory } : {}) });
+const runtime = createPrimaryModelRuntime({ workspaceRoot, configured: configuredModels, ...(primaryApiKey ? { apiKey: primaryApiKey } : {}), ...(webFactory ? { webFactory } : {}) });
 const app = await createServer({
   workspaceRoot,
-  ...(deepseek.planner ? { materialPlanner: deepseek.planner } : {}),
-  ...(courseQa.factory ? { courseQaAgentFactory: courseQa.factory } : {}),
-  ...(rubricDesigner.factory ? { rubricDesignerFactory: rubricDesigner.factory } : {}),
+  ...(runtime.materialPlanner ? { materialPlanner: runtime.materialPlanner } : {}),
+  ...(runtime.courseQaAgentFactory ? { courseQaAgentFactory: runtime.courseQaAgentFactory } : {}),
+  ...(runtime.rubricDesignerFactory ? { rubricDesignerFactory: runtime.rubricDesignerFactory } : {}),
   ...(webFactory ? { webEvidenceFactory: webFactory } : {}),
-  ...(config.deepseekApiKey ? { studentIdentityClient: new DeepSeekStudentIdentityClient({ apiKey: config.deepseekApiKey }) } : {}),
+  ...(primaryApiKey ? { studentIdentityClient: new OpenAICompatibleStudentIdentityClient({ apiKey: primaryApiKey, baseUrl: config.models.primary.baseUrl, model: config.models.primary.modelId }) } : {}),
   mineruConversionClient: new MineruClient({ baseUrl: config.mineru.baseUrl }),
   submissionConversionOptions: { pollIntervalMs: config.mineru.pollIntervalMs, taskTimeoutSeconds: config.mineru.taskTimeoutSeconds, maxAttempts: config.mineru.maxAttempts },
-  ...(gradingAgentFactory ? { gradingAgentFactory } : {}),
-  ...(gradingAgentFactory ? { submissionTitleAgentFactory: gradingAgentFactory } : {}),
-  modelStatus: deepseek.status,
+  ...(runtime.gradingAgentFactory ? { gradingAgentFactory: runtime.gradingAgentFactory } : {}),
+  ...(runtime.gradingAgentFactory ? { submissionTitleAgentFactory: runtime.gradingAgentFactory } : {}),
+  modelStatus: runtime.status,
+  modelConfigService,
+  modelApiSecurity: {
+    csrfToken: process.env.COURSE_AGENT_CSRF_TOKEN ?? randomUUID(),
+    allowedOrigin: process.env.COURSE_AGENT_ORIGIN ?? `http://127.0.0.1:${port}`,
+    isLoopback: (request) => request.ip === "127.0.0.1" || request.ip === "::1",
+  },
 });
 await registerWebAssets(app, path.resolve("dist/web"));
-const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 await app.listen({ host: "127.0.0.1", port });
-logger.info({ workspace: workspaceRoot, port, model: deepseek.status }, "course-agent server is ready");
+logger.info({ workspace: workspaceRoot, port, model: runtime.status }, "course-agent server is ready");

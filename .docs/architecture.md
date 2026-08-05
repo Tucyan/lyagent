@@ -58,6 +58,7 @@ Safe Filesystem / SQLite / External Providers
 4. 答疑只通过`active.json`解析当前不可变release，禁止扫描staging。
 5. 每个批改job只写自己的JSON和Markdown；批次CSV由单写者聚合。
 6. 外部Provider通过接口注入，核心领域逻辑不依赖具体模型或企业微信SDK。
+7. 所有现有Agent、作业命名和身份识别从统一`models.primary`构造OpenAI-compatible运行时；可选`models.vision`仅注册能力，视觉切换由后续阶段实现。模型元数据、Provider地址和凭据查找由程序控制，Agent不能选择Provider或读取密钥。
 
 ## 关键流程
 

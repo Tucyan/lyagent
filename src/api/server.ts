@@ -25,6 +25,7 @@ import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError,
 import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequiredError } from "../services/grading-result-service.js";
 import { GradingResultValidationError } from "../schemas/grading.js";
 import { GradingBatchConflictError, GradingBatchError } from "../services/grading-batch-service.js";
+import { ModelConfigService, ModelConfigurationError } from "../services/model-config-service.js";
 
 export type MaterialPlanner = (sections: SourceSection[]) => Promise<KnowledgePlan>;
 export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeService["forCourse"]>>, web?: WebEvidenceService) => PiCourseQaAgent;
@@ -49,7 +50,21 @@ export interface ServerOptions {
   gradingAgentFactory?: GradingAgentBuilder;
   submissionTitleAgentFactory?: GradingAgentBuilder;
   modelStatus?: { provider: string; model: string; configured: boolean };
+  modelConfigService?: ModelConfigService;
+  modelApiSecurity?: {
+    csrfToken: string;
+    allowedOrigin: string;
+    isLoopback(request: FastifyRequest): boolean;
+  };
 }
+
+const modelEndpointInputSchema = z.object({
+  providerId: z.string().trim().min(1).max(80),
+  modelId: z.string().trim().min(1).max(160),
+  baseUrl: z.string().url(),
+  apiKey: z.string().trim().min(1).max(20_000).optional(),
+}).strict();
+const modelSettingsInputSchema = z.object({ primary: modelEndpointInputSchema, vision: modelEndpointInputSchema.optional() }).strict();
 
 const createCourseSchema = z.object({ name: z.string().trim().min(1).max(100) });
 const importSchema = z.object({
@@ -131,6 +146,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (error instanceof GradingBatchConflictError) return reply.code(409).send({ code: "GRADING_BATCH_CONFLICT", message: error.message });
     if (error instanceof GradingBatchError) return reply.code(422).send({ code: "GRADING_BATCH_ERROR", message: error.message });
     if (error instanceof GradingResultValidationError) return reply.code(422).send({ code: "GRADING_RESULT_INVALID", message: error.message });
+    if (error instanceof ModelConfigurationError) return reply.code(422).send({ code: "MODEL_CONFIGURATION_FAILED", message: "The model configuration could not be verified" });
     if (error instanceof GradingReviewRequiredError || error instanceof GradingResultServiceError || error instanceof GradingSessionError) return reply.code(422).send({ code: "GRADING_ERROR", message: error.message });
     const requestError = error as NodeJS.ErrnoException & { statusCode?: unknown };
     if (typeof requestError.statusCode === "number" && requestError.statusCode >= 400 && requestError.statusCode < 500) {
@@ -151,7 +167,28 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     controller.abort();
     return { cancelled: true };
   });
-  app.get("/api/system/model", async () => modelStatus);
+  app.get("/api/system/models", async (_request, reply) => {
+    if (options.modelApiSecurity) {
+      reply.header("cache-control", "no-store");
+      reply.header("x-csrf-token", options.modelApiSecurity.csrfToken);
+    }
+    return options.modelConfigService ? options.modelConfigService.status() : ({ primary: { providerId: modelStatus.provider, modelId: modelStatus.model, baseUrl: "https://api.deepseek.com", configured: modelStatus.configured } });
+  });
+  app.post("/api/system/models/test", async (request, reply) => {
+    if (!authorizeModelWrite(request, options.modelApiSecurity)) return reply.code(403).send({ code: "FORBIDDEN", message: "Model settings writes are allowed only from the local application" });
+    if (!options.modelConfigService) return reply.code(503).send({ code: "MODEL_SETTINGS_UNAVAILABLE", message: "Model settings are unavailable" });
+    return options.modelConfigService.test(modelSettingsInputSchema.parse(request.body));
+  });
+  app.put("/api/system/models", async (request, reply) => {
+    if (!authorizeModelWrite(request, options.modelApiSecurity)) return reply.code(403).send({ code: "FORBIDDEN", message: "Model settings writes are allowed only from the local application" });
+    if (!options.modelConfigService) return reply.code(503).send({ code: "MODEL_SETTINGS_UNAVAILABLE", message: "Model settings are unavailable" });
+    return options.modelConfigService.save(modelSettingsInputSchema.parse(request.body));
+  });
+  app.get("/api/system/model", async () => {
+    if (!options.modelConfigService) return modelStatus;
+    const status = (await options.modelConfigService.status()).primary;
+    return { provider: status.providerId, model: status.modelId, configured: status.configured };
+  });
   app.get("/api/dashboard", async () => dashboard.snapshot());
   app.get("/api/rubrics/assignments", async () => rubrics.listAssignments());
   app.post("/api/rubrics/assignments", async (request, reply) => {
@@ -398,6 +435,13 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
 
   app.addHook("onClose", async () => gradingApi.close());
   return app;
+}
+
+function authorizeModelWrite(request: FastifyRequest, security: ServerOptions["modelApiSecurity"]): boolean {
+  if (!security) return false;
+  return security.isLoopback(request)
+    && request.headers.origin === security.allowedOrigin
+    && request.headers["x-csrf-token"] === security.csrfToken;
 }
 
 function staticRubricRecommendation() {

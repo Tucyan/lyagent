@@ -34,7 +34,7 @@ npm run build
 - `check`：类型检查后运行一次全部测试；
 - `build`：生成`dist/`。
 
-M1资料规划和M2课程答疑都从`workspace/config/app.json`读取`deepseekApiKey`；未配置时资料规划使用确定性本地规划，课程答疑 API 返回`MODEL_NOT_CONFIGURED`。M2网络搜索默认使用本机 Python 的`ddgs`包，不需要搜索密钥；`webSearch.enabled`可关闭，`pythonCommand`可指定 Python 路径。该本地文件已被Git忽略，密钥不得写入仓库、日志或文档。
+资料规划、课程答疑、评分表设计、批改、作业命名和身份识别统一使用`workspace/config/app.json`中的`models.primary`；默认模型为`deepseek-v4-flash`，地址为`https://api.deepseek.com`。可选`models.vision`允许复用主Provider或指定独立Provider、模型和地址。模型密钥按Provider ID保存在Workspace外的Windows当前用户凭据存储；旧`deepseekApiKey`仅作读取兼容，并在系统模型设置成功保存时迁移后从JSON移除。未配置主模型时资料规划使用确定性本地规划，课程答疑 API 返回`MODEL_NOT_CONFIGURED`。M2网络搜索默认使用本机 Python 的`ddgs`包，不需要搜索密钥；`webSearch.enabled`可关闭，`pythonCommand`可指定 Python 路径。
 
 M4额外读取`mineru`配置。MinerU必须由用户单独启动，`baseUrl`只允许`http://127.0.0.1`、`localhost`或环回IPv6；默认轮询1秒、超时3600秒、最多自动提交3次，暂时性故障默认按5秒、30秒、2分钟序列退避且受提交次数上限约束。未配置时默认连接`http://127.0.0.1:8000`；服务未启动会进入等待转换状态并保留原件。旧式`.doc`不受支持，需先转换为`.docx`或`.pdf`。
 
@@ -81,7 +81,7 @@ tests/
 
 ## 配置与密钥
 
-非敏感默认值维护在`config.example.json`，本机值维护在`workspace/config/app.json`。新增配置时：
+非敏感默认值维护在`config.example.json`，本机非敏感值维护在`workspace/config/app.json`。模型密钥不得写入该JSON。新增配置时：
 
 - 在Schema中定义类型、默认值和范围；
 - 同步更新示例配置和相关测试；

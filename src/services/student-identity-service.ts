@@ -39,7 +39,7 @@ export async function resolveStudentIdentity(input: {
   }
 }
 
-export class DeepSeekStudentIdentityClient implements StudentIdentityClient {
+export class OpenAICompatibleStudentIdentityClient implements StudentIdentityClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly model: string;
@@ -86,6 +86,9 @@ export class DeepSeekStudentIdentityClient implements StudentIdentityClient {
     }
   }
 }
+
+/** @deprecated Use OpenAICompatibleStudentIdentityClient. */
+export const DeepSeekStudentIdentityClient = OpenAICompatibleStudentIdentityClient;
 
 function parseIdentity(value: unknown): StudentIdentity {
   const parsed = identitySchema.safeParse(value);

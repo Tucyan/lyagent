@@ -1,5 +1,11 @@
 {
-  "deepseekApiKey": "<local-only-key>",
+  "models": {
+    "primary": {
+      "providerId": "deepseek",
+      "modelId": "deepseek-v4-flash",
+      "baseUrl": "https://api.deepseek.com"
+    }
+  },
   "webSearch": {
     "enabled": true,
     "provider": "ddgs",
