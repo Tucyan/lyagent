@@ -35,6 +35,31 @@ afterEach(async () => {
 });
 
 describe("GradingRunService", () => {
+  it("honors an explicitly configured bounded worker concurrency", async () => {
+    const { root, sessions, createSession } = await setup();
+    const first = await createSession("20260001");
+    const second = await createSession("20260002");
+    let active = 0;
+    let maximum = 0;
+    const releases: Array<() => void> = [];
+    const runs = new GradingRunService(root, sessions, () => ({
+      async run() {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+        return { kind: "reply", reply: "完成" };
+      },
+    }), { concurrency: 2 });
+    const firstRun = await runs.start(first.id, { kind: "chat", message: "一" });
+    const secondRun = await runs.start(second.id, { kind: "chat", message: "二" });
+    await vi.waitFor(() => expect(active).toBe(2));
+    releases.splice(0).forEach((release) => release());
+    await Promise.all([runs.waitForTerminal(firstRun.id), runs.waitForTerminal(secondRun.id)]);
+    expect(maximum).toBe(2);
+    runs.close(); sessions.close();
+  });
+
   it("runs independently of the page request and persists replayable safe events and conversation", async () => {
     const { root, sessions, createSession } = await setup();
     const session = await createSession("20260001");

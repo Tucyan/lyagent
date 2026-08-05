@@ -91,7 +91,14 @@ export class SafeFilesystem {
         if (stat.isSymbolicLink()) throw new UnsafePathError(relativePath, "contains a reparse point");
         if (!stat.isDirectory()) throw new UnsafePathError(relativePath, "directory component is a file");
       } else {
-        await mkdir(current);
+        try {
+          await mkdir(current);
+        } catch (error: unknown) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          const created = await lstat(current);
+          if (!created.isDirectory() || created.isSymbolicLink())
+            throw new UnsafePathError(relativePath, "concurrent directory creation produced an unsafe target");
+        }
         await this.assertNotLink(current, relativePath);
       }
     }

@@ -24,6 +24,7 @@ import type { GradingAgentBuilder } from "./grading-routes.js";
 import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
 import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequiredError } from "../services/grading-result-service.js";
 import { GradingResultValidationError } from "../schemas/grading.js";
+import { GradingBatchConflictError, GradingBatchError } from "../services/grading-batch-service.js";
 
 export type MaterialPlanner = (sections: SourceSection[]) => Promise<KnowledgePlan>;
 export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeService["forCourse"]>>, web?: WebEvidenceService) => PiCourseQaAgent;
@@ -127,6 +128,8 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (error instanceof StudentIdentityError) return reply.code(422).send({ code: "STUDENT_IDENTITY_ERROR", message: error.message });
     if (error instanceof GradingSessionNotFoundError) return reply.code(404).send({ code: "GRADING_SESSION_NOT_FOUND", message: error.message });
     if (error instanceof GradingConflictError || error instanceof GradingDraftConflictError) return reply.code(409).send({ code: "GRADING_CONFLICT", message: error.message });
+    if (error instanceof GradingBatchConflictError) return reply.code(409).send({ code: "GRADING_BATCH_CONFLICT", message: error.message });
+    if (error instanceof GradingBatchError) return reply.code(422).send({ code: "GRADING_BATCH_ERROR", message: error.message });
     if (error instanceof GradingResultValidationError) return reply.code(422).send({ code: "GRADING_RESULT_INVALID", message: error.message });
     if (error instanceof GradingReviewRequiredError || error instanceof GradingResultServiceError || error instanceof GradingSessionError) return reply.code(422).send({ code: "GRADING_ERROR", message: error.message });
     const requestError = error as NodeJS.ErrnoException & { statusCode?: unknown };

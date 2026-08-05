@@ -65,7 +65,7 @@ changes_requested → in_progress
 |M2|带原文引用的Web课程答疑|MVP Core|accepted|
 |M3|加分/减分/混合Rubric设计与版本发布|MVP Core|accepted|
 |M4|单份作业批改、Review和导出|MVP Core|ready_for_user_test|
-|M5|可恢复批量批改和班级汇总|MVP Core|planned|
+|M5|可恢复批量批改和班级汇总|MVP Core|ready_for_user_test|
 |M6|本地备份、恢复和运行诊断|MVP Core|planned|
 |M7|企业微信私聊/群聊课程答疑|MVP Integration|planned|
 

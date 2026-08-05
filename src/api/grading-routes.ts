@@ -28,6 +28,7 @@ import {
   type StudentIdentityClient,
 } from "../services/student-identity-service.js";
 import type { RubricService } from "../services/rubric-service.js";
+import { GradingBatchService } from "../services/grading-batch-service.js";
 
 const sessionParams = z.object({ id: z.string().uuid() });
 const runParams = z.object({ id: z.string().uuid(), runId: z.string().uuid() });
@@ -60,6 +61,20 @@ const sessionListSchema = z
 const sessionTitleSchema = z.object({
   title: z.string().trim().min(1).max(80),
 });
+const batchParams = z.object({ batchId: z.string().uuid() });
+const batchJobParams = z.object({ batchId: z.string().uuid(), jobId: z.string().uuid() });
+const batchListSchema = z.object({
+  assignmentId: z.string().uuid().optional(),
+  rubricVersion: z.coerce.number().int().positive().optional(),
+}).refine((value) => !value.rubricVersion || Boolean(value.assignmentId), "assignmentId is required with rubricVersion");
+const createBatchSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  assignmentId: z.string().uuid(),
+  rubricVersion: z.number().int().positive(),
+  concurrency: z.number().int().min(1).max(8),
+  sessionIds: z.array(z.string().uuid()).min(30).max(120),
+});
+const batchAnswerSchema = z.object({ answer: z.string().trim().min(1).max(8_000) });
 const csvExportSchema = z.object({
   scope: z.discriminatedUnion("kind", [
     z.object({
@@ -139,7 +154,47 @@ export function registerGradingApi(
             rubrics: options.rubrics,
           })
       : () => fallback,
+    { concurrency: 8 },
   );
+  const batches = new GradingBatchService(options.workspaceRoot, {
+    getSession: (sessionId) => sessions.getSession(sessionId),
+    async execute(sessionId, input) {
+      const started = input.kind === "grade"
+        ? await startGrade(sessionId, input.message, true)
+        : await runs.start(sessionId, input);
+      const terminal = await runs.waitForTerminal(started.id, 10 * 60_000);
+      if (!["completed", "waiting_for_teacher", "failed", "cancelled"].includes(terminal.status))
+        throw new Error("Grading run did not reach a terminal state");
+      let question: string | undefined;
+      if (terminal.status === "waiting_for_teacher") {
+        const conversation = await runs.getConversation(sessionId);
+        const last = conversation.messages.at(-1);
+        if (last?.role === "assistant") question = last.content;
+      }
+      return {
+        status: terminal.status as "completed" | "waiting_for_teacher" | "failed" | "cancelled",
+        runId: terminal.id,
+        ...(terminal.errorCode ? { errorCode: terminal.errorCode } : {}),
+        ...(question ? { question } : {}),
+      };
+    },
+    async readResult(sessionId) {
+      const confirmed = await results.readConfirmedResult(sessionId);
+      if (confirmed) return {
+        reviewStatus: "confirmed" as const,
+        version: confirmed.version,
+        result: confirmed.result,
+        updatedAt: confirmed.confirmedAt,
+      };
+      const draft = await results.readDraft(sessionId);
+      return draft ? {
+        reviewStatus: "needs_review" as const,
+        version: draft.version,
+        result: draft.result,
+        updatedAt: draft.updatedAt,
+      } : undefined;
+    },
+  });
   const conversions = options.conversionClient
     ? new SubmissionConversionService(
         sessions,
@@ -177,6 +232,50 @@ export function registerGradingApi(
           });
       }
       return available;
+    });
+
+    scoped.get("/api/grading/batches", async (request) => {
+      const query = batchListSchema.parse(request.query);
+      return batches.listBatches({
+        ...(query.assignmentId ? { assignmentId: query.assignmentId } : {}),
+        ...(query.rubricVersion ? { rubricVersion: query.rubricVersion } : {}),
+      });
+    });
+    scoped.post("/api/grading/batches", async (request, reply) => {
+      if (!options.gradingAgentFactory)
+        return reply.code(503).send({ code: "GRADING_MODEL_NOT_CONFIGURED", message: "Configure the grading model before creating a batch" });
+      return reply.code(201).send(await batches.createBatch(createBatchSchema.parse(request.body)));
+    });
+    scoped.get("/api/grading/batches/:batchId", async (request) =>
+      batches.getBatch(batchParams.parse(request.params).batchId),
+    );
+    scoped.post("/api/grading/batches/:batchId/start", async (request, reply) =>
+      reply.code(202).send(await batches.startBatch(batchParams.parse(request.params).batchId)),
+    );
+    scoped.post("/api/grading/batches/:batchId/pause", async (request) =>
+      batches.pauseBatch(batchParams.parse(request.params).batchId),
+    );
+    scoped.post("/api/grading/batches/:batchId/resume", async (request, reply) =>
+      reply.code(202).send(await batches.resumeBatch(batchParams.parse(request.params).batchId)),
+    );
+    scoped.post("/api/grading/batches/:batchId/jobs/:jobId/retry", async (request, reply) => {
+      const { batchId, jobId } = batchJobParams.parse(request.params);
+      const job = await batches.getJob(jobId);
+      if (job.batchId !== batchId) return reply.code(404).send({ code: "BATCH_JOB_NOT_FOUND" });
+      return reply.code(202).send(await batches.retryJob(jobId));
+    });
+    scoped.post("/api/grading/batches/:batchId/jobs/:jobId/answer", async (request, reply) => {
+      const { batchId, jobId } = batchJobParams.parse(request.params);
+      const job = await batches.getJob(jobId);
+      if (job.batchId !== batchId) return reply.code(404).send({ code: "BATCH_JOB_NOT_FOUND" });
+      return reply.code(202).send(await batches.answerQuestion(jobId, batchAnswerSchema.parse(request.body).answer));
+    });
+    scoped.get("/api/grading/batches/:batchId/export.csv", async (request, reply) => {
+      const batchId = batchParams.parse(request.params).batchId;
+      await batches.getBatch(batchId);
+      return reply.header("content-disposition", 'attachment; filename="batch-grading-summary.csv"')
+        .type("text/csv; charset=utf-8")
+        .send(await batches.refreshResultsAndRebuildSummary(batchId));
     });
 
     scoped.post("/api/grading/sessions", async (request, reply) => {
@@ -442,6 +541,7 @@ export function registerGradingApi(
               message: "The grading model is not configured",
             });
         const { id } = sessionParams.parse(request.params);
+        batches.assertDirectRunAllowed(id);
         return reply
           .code(202)
           .send(
@@ -547,7 +647,9 @@ export function registerGradingApi(
   async function startGrade(
     sessionId: string,
     message = "请开始批改当前作业。",
+    fromBatch = false,
   ): Promise<Awaited<ReturnType<GradingRunService["start"]>>> {
+    if (!fromBatch) batches.assertDirectRunAllowed(sessionId);
     const session = await sessions.getSession(sessionId);
     if (
       !session.submissionTitle ||
@@ -556,8 +658,8 @@ export function registerGradingApi(
       throw new GradingConflictError(
         "Submission title must be resolved before grading starts",
       );
-    await sessions.lockSubmissionForGrading(sessionId);
-    return runs.start(sessionId, { kind: "grade", message });
+    await sessions.lockSubmissionForGrading(sessionId, fromBatch ? { allowBatchReservation: true, resumeWaitingForTeacher: true } : {});
+    return runs.start(sessionId, { kind: "grade", message }, fromBatch ? { allowBatchReservation: true } : {});
   }
 
   async function finishReadySession(sessionId: string): Promise<void> {
@@ -605,6 +707,7 @@ export function registerGradingApi(
       for (const session of pending) await finishReadySession(session.id);
     })().catch(() => undefined);
   }
+  void batches.recover().catch(() => undefined);
 
   return {
     async cancel(runId) {
@@ -615,6 +718,7 @@ export function registerGradingApi(
       }
     },
     close() {
+      batches.close();
       runs.close();
       sessions.close();
     },

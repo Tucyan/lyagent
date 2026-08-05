@@ -62,6 +62,23 @@ M1已由资料导入服务安全创建`inbox/materials`和`knowledge/{courseId}`
 
 `summary.csv`、搜索索引和计数缓存必须可以重建，不得成为唯一数据来源。
 
+## M5 批次状态与结果
+
+SQLite 表 `grading_batches` 保存批次绑定的唯一 Assignment、冻结 Rubric 版本、并发上限和运行状态；`grading_batch_jobs` 保存与 M4 会话的一对一成员关系、学生标识、尝试次数、下一轮会话信息、租约拥有者和租约到期时间。一个 M4 会话全局只能属于一个批次，同一批次内学生编号唯一；被批次预留的会话不能从 M4 直接启动 grade/chat 或删除，以免两个运行争用同一草稿或破坏成员文件。批次预留、M4 状态 CAS、run 创建与删除 claim 均使用 SQLite immediate 事务，并在事务内同时检查会话状态、删除标记、活动 run 与 reservation。批次允许 `draft`、`running`、`paused`、`completed`，job 允许 `pending`、`running`、`waiting_for_teacher`、`needs_review`、`completed`、`failed`、`cancelled`。
+
+批量结果的受控目录为：
+
+```text
+workspace/batch-grading/{batchId}/
+├── results/{jobId}-attempt-{attempt}.json
+├── results/{jobId}-attempt-{attempt}.md
+└── summary.csv
+```
+
+每个 JSON 快照包含其内容 SHA-256 和生成它的 job 尝试次数；读取、恢复与汇总时必须同时校验哈希及当前尝试。Markdown 与带 UTF-8 BOM 的 `summary.csv` 均为 JSON 快照的可重建派生物。CSV 字段执行 RFC 风格引用和公式注入转义，总置信度读取正式结果的 `confidence.overall`。批次快照用于批量复核与汇总，不替代 M4 教师确认后的正式评分 JSON；导出前会读取 M4 最新草稿或确认结果并刷新快照。
+
+运行实例通过有期限租约拥有 job，并可续租；租约 owner 与尝试次数是发布快照、失败和终态提交的 fencing 条件。进程重启时，已存在有效快照或可用草稿的 job 直接协调为待复核，不再调用模型；前一进程拥有的运行租约立即回到等待队列。单个 job 最多尝试三次，等待教师回答和失败状态都不占用并发槽。暂停时若最后一组已领取 job 全部结束且没有 pending，批次仍会进入 `completed`，不会形成无法恢复的 paused 状态。
+
 ## Web 答疑会话
 
 每个会话保存`courseId`、创建时的`releaseId`、时间、可选的用户标题与最近 20 条用户/助手消息。助手消息只在结构化答案和引用均通过验证后写入；被用户停止的流式草稿不保存。会话始终按课程目录隔离，新的会话只绑定当时的 active release。标题只能由当前课程会话的重命名接口写入；删除只删除该会话文件，前端必须先获得二次确认。课程引用包含逻辑路径和行号；网络引用包含本会话`sourceId`、标题、URL和已读行号，不持久化完整网页正文。读取旧会话时，缺少`type`的历史引用按课程引用兼容处理。

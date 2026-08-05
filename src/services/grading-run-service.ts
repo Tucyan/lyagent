@@ -59,19 +59,22 @@ export type GradingAgentFactory = (sessionId: string, runId: string) => PiAssign
 export class GradingRunService {
   private readonly database: Database.Database;
   private readonly filesystem: SafeFilesystem;
-  private readonly queue = new PQueue({ concurrency: 1 });
+  private readonly queue: PQueue;
   private readonly controllers = new Map<string, AbortController>();
   private readonly now: () => string;
 
-  constructor(private readonly root: string, private readonly sessions: GradingSessionService, private readonly graderFactory: GradingAgentFactory, options: { now?: () => string } = {}) {
+  constructor(private readonly root: string, private readonly sessions: GradingSessionService, private readonly graderFactory: GradingAgentFactory, options: { now?: () => string; concurrency?: number } = {}) {
     this.database = new Database(path.join(path.resolve(root), "grading.sqlite"));
     this.database.pragma("journal_mode = WAL");
     this.filesystem = new SafeFilesystem(root, { allowedExtensions: new Set([".json"]) });
     this.now = options.now ?? (() => new Date().toISOString());
+    const concurrency = options.concurrency ?? 1;
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error("Grading run concurrency must be an integer from 1 to 8");
+    this.queue = new PQueue({ concurrency });
     this.recoverInterruptedRuns();
   }
 
-  async start(sessionId: string, input: { kind: "grade" | "chat"; message: string }): Promise<GradingRun> {
+  async start(sessionId: string, input: { kind: "grade" | "chat"; message: string }, options: { allowBatchReservation?: boolean } = {}): Promise<GradingRun> {
     const session = await this.sessions.getSession(sessionId);
     if (input.kind === "grade" && session.gradingStatus !== "queued") throw new GradingConflictError("A grading run cannot start in the current session state");
     if (input.kind === "chat" && (session.conversionStatus !== "ready" || !["not_started", "queued", "waiting_for_teacher", "draft_ready", "needs_review", "failed"].includes(session.gradingStatus))) {
@@ -82,6 +85,11 @@ export class GradingRunService {
     const id = randomUUID();
     const now = this.now();
     const insert = this.database.transaction(() => {
+      if (!options.allowBatchReservation) {
+        const hasBatchJobs = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'grading_batch_jobs'").get();
+        if (hasBatchJobs && this.database.prepare("SELECT 1 FROM grading_batch_jobs WHERE session_id = ? LIMIT 1").get(sessionId))
+          throw new GradingConflictError("This grading session is reserved by a batch");
+      }
       const active = this.database.prepare("SELECT id FROM agent_runs WHERE session_id = ? AND status IN ('queued', 'running') LIMIT 1").get(sessionId);
       if (active) throw new GradingConflictError("A grading run is already active for this session");
       const inserted = this.database
@@ -96,7 +104,7 @@ export class GradingRunService {
           "The grading session is being deleted",
         );
     });
-    insert();
+    insert.immediate();
     await this.appendConversation(sessionId, { role: "user", content: message, runId: id, createdAt: now });
     await this.sessions.setActiveRun(sessionId, id);
     void this.queue.add(async () => this.execute(id)).catch(() => undefined);

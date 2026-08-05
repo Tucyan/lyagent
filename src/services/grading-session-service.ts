@@ -463,8 +463,11 @@ export class GradingSessionService {
 
   private async deleteSessionUnlocked(sessionId: string): Promise<void> {
     const session = this.getSessionIncludingDeletion(sessionId);
-    const claimed = this.database
-      .prepare(
+    const claimDeletion = this.database.transaction(() => {
+      const hasBatchJobs = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'grading_batch_jobs'").get();
+      if (hasBatchJobs && this.database.prepare("SELECT 1 FROM grading_batch_jobs WHERE session_id = ? LIMIT 1").get(sessionId))
+        throw new GradingConflictError("A grading session reserved by a batch cannot be deleted");
+      return this.database.prepare(
         `UPDATE grading_sessions SET deletion_pending = 1, updated_at = ?
          WHERE id = ?
            AND (
@@ -481,8 +484,9 @@ export class GradingSessionService {
                )
              )
            )`,
-      )
-      .run(this.now(), sessionId);
+      ).run(this.now(), sessionId);
+    });
+    const claimed = claimDeletion.immediate();
     if (claimed.changes !== 1)
       throw new GradingConflictError(
         "An active grading session cannot be deleted",
@@ -496,11 +500,13 @@ export class GradingSessionService {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-    this.database
+    const deleted = this.database
       .prepare(
         "DELETE FROM grading_sessions WHERE id = ? AND deletion_pending = 1",
       )
       .run(sessionId);
+    if (deleted.changes !== 1)
+      throw new GradingConflictError("The grading session could not be deleted safely");
   }
 
   async listPendingConversions(): Promise<GradingSession[]> {
@@ -981,7 +987,10 @@ export class GradingSessionService {
     return this.getSession(sessionId);
   }
 
-  async lockSubmissionForGrading(sessionId: string): Promise<GradingSession> {
+  async lockSubmissionForGrading(
+    sessionId: string,
+    options: { allowBatchReservation?: boolean; resumeWaitingForTeacher?: boolean } = {},
+  ): Promise<GradingSession> {
     const session = await this.getSession(sessionId);
     if (
       session.conversionStatus !== "ready" ||
@@ -989,15 +998,22 @@ export class GradingSessionService {
     )
       throw new GradingSessionError("Submission conversion is not ready");
     if (session.gradingStatus === "queued") return session;
-    if (!["not_started", "failed", "cancelled"].includes(session.gradingStatus))
+    const allowedStatuses = ["not_started", "failed", "cancelled", ...(options.resumeWaitingForTeacher ? ["waiting_for_teacher"] : [])];
+    if (!allowedStatuses.includes(session.gradingStatus))
       throw new GradingConflictError(
         "The submission cannot be queued in its current state",
       );
-    const result = this.database
-      .prepare(
+    const reserve = this.database.transaction(() => {
+      if (!options.allowBatchReservation) {
+        const hasBatchJobs = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'grading_batch_jobs'").get();
+        if (hasBatchJobs && this.database.prepare("SELECT 1 FROM grading_batch_jobs WHERE session_id = ? LIMIT 1").get(sessionId))
+          throw new GradingConflictError("This grading session is reserved by a batch");
+      }
+      return this.database.prepare(
         "UPDATE grading_sessions SET grading_status = 'queued', active_run_id = NULL, updated_at = ? WHERE id = ? AND grading_status = ?",
-      )
-      .run(this.now(), sessionId, session.gradingStatus);
+      ).run(this.now(), sessionId, session.gradingStatus);
+    });
+    const result = reserve.immediate();
     if (result.changes !== 1) throw new GradingConflictError();
     return this.getSession(sessionId);
   }

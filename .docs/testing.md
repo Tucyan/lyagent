@@ -89,6 +89,14 @@ Dashboard 测试不得依赖真实模型、网络搜索或本机已有课程资�
 
 ## 本地验证
 
+M5 批量批改的定向回归覆盖状态机、会话预留与租约 fencing、并发暂停、教师回答、崩溃窗口、Review 刷新、汇总文件、异步转换等待、API、页面模型和 120 份验收：
+
+```powershell
+npm test -- --run tests/grading-state-machine.test.ts tests/grading-concurrency.test.ts tests/grading-recovery.test.ts tests/summary-service.test.ts tests/grading-batch-acceptance.test.ts tests/grading-batch-page-model.test.ts tests/grading-api.test.ts tests/grading-run-service.test.ts tests/web-assets.test.ts
+```
+
+合成报告由 `scripts/generate-batch-grading-fixtures.ts` 生成，身份均为虚构数据。浏览器验收使用 `scripts/run-batch-grading-acceptance-server.ts` 的确定性 grader，在 `/grading/batches` 真实上传至少 30 份文件并验证并发 4、暂停/恢复和 CSV 下载；该脚本不作为模型质量验证，也不访问真实学生数据。
+
 定向测试：
 
 ```powershell

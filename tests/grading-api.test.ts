@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PiAssignmentGrader } from "../src/agents/assignment-grader/agent.js";
 import type { GradingAgentBuilder } from "../src/api/grading-routes.js";
@@ -44,6 +45,100 @@ const rubric: Rubric = {
 };
 
 describe("grading API", () => {
+  it("creates, runs, inspects, and exports a 30-report batch", async () => {
+    let asked = false;
+    const grader: GradingAgentBuilder = (sessionId, runId, services) => ({
+      async run() {
+        if (!asked) {
+          asked = true;
+          return { kind: "question", question: { question: "附件是否为必交项？", options: ["是", "否"] } };
+        }
+        const stored = await services.results.submitDraft(sessionId, 0, {
+          schemaVersion: "1.0",
+          mode: "additive",
+          criteria: [{
+            criterionId: "C1",
+            selectedLevelId: "L1",
+            score: 8,
+            reason: "内容达到主要要求",
+            evidence: [{ kind: "analysis", observation: "报告有完整正文", rubricBasis: "对应内容质量标准", scoreJustification: "达到良好但仍可完善" }],
+            confidence: 0.9,
+          }],
+          strengths: ["结构清楚"],
+          improvements: ["增加细节"],
+          warnings: [],
+        }, { type: "agent", id: runId });
+        return { kind: "draft", draft: stored };
+      },
+    });
+    const { app, assignmentId, root } = await setup(grader);
+    const sessionIds: string[] = [];
+    for (let index = 1; index <= 30; index += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=x" },
+        payload: multipart("x", {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: `学生${index}`,
+          studentNumber: `2026${String(index).padStart(4, "0")}`,
+          submissionTitle: `批量报告${index}`,
+        }, `2026${String(index).padStart(4, "0")}_学生${index}.md`, `# 批量报告${index}\n\n合成正文`),
+      });
+      expect(response.statusCode, response.body).toBe(201);
+      sessionIds.push(response.json().id);
+    }
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/grading/batches",
+      payload: { title: "一班批量报告", assignmentId, rubricVersion: 1, concurrency: 4, sessionIds },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const batch = created.json();
+    expect(batch).toMatchObject({ status: "draft", totalJobs: 30, concurrency: 4 });
+    const reservedDelete = await app.inject({ method: "DELETE", url: `/api/grading/sessions/${sessionIds[0]}` });
+    expect(reservedDelete.statusCode, reservedDelete.body).toBe(409);
+    const preserved = await app.inject({ method: "GET", url: `/api/grading/sessions/${sessionIds[0]}` });
+    expect(preserved.statusCode, preserved.body).toBe(200);
+    expect(preserved.json().submission.markdown).toContain("合成正文");
+    const reservationDb = new Database(path.join(root, "grading.sqlite"));
+    reservationDb.prepare("UPDATE grading_batch_jobs SET status = 'cancelled' WHERE session_id = ?").run(sessionIds[0]);
+    reservationDb.close();
+    const cancelledReservedDelete = await app.inject({ method: "DELETE", url: `/api/grading/sessions/${sessionIds[0]}` });
+    expect(cancelledReservedDelete.statusCode, cancelledReservedDelete.body).toBe(409);
+    const cancelledPreserved = await app.inject({ method: "GET", url: `/api/grading/sessions/${sessionIds[0]}` });
+    expect(cancelledPreserved.json().submission.markdown).toContain("合成正文");
+    const restoreDb = new Database(path.join(root, "grading.sqlite"));
+    restoreDb.prepare("UPDATE grading_batch_jobs SET status = 'pending' WHERE session_id = ?").run(sessionIds[0]);
+    restoreDb.close();
+    const reservedDirectRun = await app.inject({ method: "POST", url: `/api/grading/sessions/${sessionIds[0]}/runs`, payload: { message: "绕过批次直接开始" } });
+    expect(reservedDirectRun.statusCode, reservedDirectRun.body).toBe(409);
+    expect(reservedDirectRun.json().message).toMatch(/reserved by a batch/i);
+    expect((await app.inject({ method: "POST", url: `/api/grading/batches/${batch.id}/start` })).statusCode).toBe(202);
+    let detail: Record<string, any> = {};
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      detail = (await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}` })).json();
+      if (detail.status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(detail).toMatchObject({ status: "completed", counts: { waiting_for_teacher: 1, needs_review: 29, failed: 0 } });
+    const waitingJob = detail.jobs.find((job: { status: string }) => job.status === "waiting_for_teacher");
+    const answered = await app.inject({ method: "POST", url: `/api/grading/batches/${batch.id}/jobs/${waitingJob.id}/answer`, payload: { answer: "否，附件不是必交项" } });
+    expect(answered.statusCode, answered.body).toBe(202);
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      detail = (await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}` })).json();
+      if (detail.counts.needs_review === 30) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(detail).toMatchObject({ status: "completed", counts: { waiting_for_teacher: 0, needs_review: 30, failed: 0 } });
+    const exported = await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}/export.csv` });
+    expect(exported.statusCode, exported.body).toBe(200);
+    expect(exported.headers["content-disposition"]).toContain("batch-grading-summary.csv");
+    expect(exported.body.split("\r\n").filter(Boolean)).toHaveLength(31);
+    await app.close();
+  }, 15_000);
+
   it("creates a course-bound Markdown session and supports versioned editing", async () => {
     const { app, assignmentId } = await setup();
     const created = await app.inject({
@@ -585,7 +680,7 @@ describe("grading API", () => {
 });
 
 async function setup(
-  graderFactory?: () => PiAssignmentGrader,
+  graderFactory?: GradingAgentBuilder,
   conversionClient?: MineruConversionClient,
   conversionOptions?: SubmissionConversionOptions,
 ) {
@@ -648,7 +743,7 @@ async function setup(
     payload: { expectedVersion: 1, acknowledgedWarningCodes: [] },
   });
   expect(freezeResponse.statusCode, freezeResponse.body).toBe(201);
-  return { app, assignmentId: assignment.id };
+  return { app, assignmentId: assignment.id, root };
 }
 
 async function waitForConversionStatus(
