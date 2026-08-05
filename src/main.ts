@@ -34,6 +34,7 @@ const app = await createServer({
   mineruConversionClient: new MineruClient({ baseUrl: config.mineru.baseUrl }),
   submissionConversionOptions: { pollIntervalMs: config.mineru.pollIntervalMs, taskTimeoutSeconds: config.mineru.taskTimeoutSeconds, maxAttempts: config.mineru.maxAttempts },
   ...(gradingAgentFactory ? { gradingAgentFactory } : {}),
+  ...(gradingAgentFactory ? { submissionTitleAgentFactory: gradingAgentFactory } : {}),
   modelStatus: deepseek.status,
 });
 await registerWebAssets(app, path.resolve("dist/web"));

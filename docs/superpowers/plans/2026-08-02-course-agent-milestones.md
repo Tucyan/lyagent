@@ -233,7 +233,7 @@ changes_requested → in_progress
 
 ## M4：单份作业批改、教师Review与导出
 
-**用户获得的完整功能：** 教师可以上传一名学生的Markdown报告，选择冻结Rubric执行批改，查看逐项证据和置信度，修改并确认结果，导出JSON和学生Markdown反馈。
+**用户获得的完整功能：** 教师可以上传一名学生的报告，选择冻结Rubric执行批改，查看逐项证据和置信度，修改并确认结果，导出JSON、学生Markdown反馈和由已确认结果聚合的CSV成绩表。每份学生报告有独立作业名称；可手填，也可在转换后由Agent检索正文和文件名识别。
 
 **主要文件：**
 
@@ -262,6 +262,7 @@ changes_requested → in_progress
 - [x] 实现单份job所需的最小SQLite Schema和启动协调。
 - [x] 实现教师Patch、确认状态和追加写审计事件。
 - [x] 实现上传、启动批改、证据查看、Review和JSON/Markdown导出页面。
+- [x] 实现作业名称识别、评分标准筛选、会话重命名/删除和可配置CSV批量导出。
 - [x] 创建`docs/acceptance/M4-single-grading.md`并交付用户测试。
 
 ### 用户验收步骤

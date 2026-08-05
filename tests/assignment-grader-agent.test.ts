@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildGraderSystemPrompt, createPiAssignmentGrader } from "../src/agents/assignment-grader/agent.js";
+import { buildGraderSystemPrompt, buildSubmissionNamingPrompt, createPiAssignmentGrader } from "../src/agents/assignment-grader/agent.js";
 import { GradingResultService } from "../src/services/grading-result-service.js";
 import { GradingSessionService } from "../src/services/grading-session-service.js";
 import { RubricService } from "../src/services/rubric-service.js";
@@ -82,6 +82,23 @@ describe("assignment grader Agent", () => {
     const grader = createPiAssignmentGrader({ models, model: faux.getModel(), sessions, results, rubrics, sessionId: session.id, runId: "run-2", knowledge: knowledge as any });
     await expect(grader.run({ kind: "chat", message: "为什么没有扣分？" })).resolves.toEqual({ kind: "reply", reply: "该项未扣分，因为正文已经提供了对应内容。" });
     expect(await results.readDraft(session.id)).toBeUndefined();
+    sessions.close();
+  });
+
+  it("requires the naming tool and prefers a body title over the original filename", async () => {
+    const { sessions, results, rubrics, session, knowledge } = await fixture();
+    expect(buildSubmissionNamingPrompt()).toContain("document body wins");
+    const faux = fauxProvider({ tokensPerSecond: 10_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("list_submission_files", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("read_submission_lines", { path: "submission-v1.md", startLine: 1, endLine: 3 })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("set_submission_title", { title: "报告" })], { stopReason: "toolUse" }),
+    ]);
+    const grader = createPiAssignmentGrader({ models, model: faux.getModel(), sessions, results, rubrics, sessionId: session.id, runId: "name-1", knowledge: knowledge as any });
+    await expect(grader.run({ kind: "name", message: "识别作业名称" })).resolves.toEqual({ kind: "title", title: "报告" });
+    expect(await sessions.getSession(session.id)).toMatchObject({ submissionTitle: "报告", submissionTitleStatus: "resolved" });
     sessions.close();
   });
 });

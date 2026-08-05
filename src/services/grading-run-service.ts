@@ -84,7 +84,17 @@ export class GradingRunService {
     const insert = this.database.transaction(() => {
       const active = this.database.prepare("SELECT id FROM agent_runs WHERE session_id = ? AND status IN ('queued', 'running') LIMIT 1").get(sessionId);
       if (active) throw new GradingConflictError("A grading run is already active for this session");
-      this.database.prepare("INSERT INTO agent_runs (id, session_id, kind, input_message, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)").run(id, sessionId, input.kind, message, now, now);
+      const inserted = this.database
+        .prepare(
+          `INSERT INTO agent_runs (id, session_id, kind, input_message, status, created_at, updated_at)
+           SELECT ?, id, ?, ?, 'queued', ?, ? FROM grading_sessions
+           WHERE id = ? AND deletion_pending = 0`,
+        )
+        .run(id, input.kind, message, now, now, sessionId);
+      if (inserted.changes !== 1)
+        throw new GradingConflictError(
+          "The grading session is being deleted",
+        );
     });
     insert();
     await this.appendConversation(sessionId, { role: "user", content: message, runId: id, createdAt: now });
@@ -191,6 +201,8 @@ export class GradingRunService {
       await this.sessions.setGradingStatus(run.sessionId, "waiting_for_teacher", run.id);
     } else if (outcome.kind === "draft") {
       content = `批改草稿已更新：${outcome.draft.result.score.earned}/${outcome.draft.result.score.possible}。`;
+    } else if (outcome.kind === "title") {
+      throw new Error("A submission-title outcome cannot complete a grading run");
     } else {
       content = outcome.reply || streamedReply;
       if (run.kind === "grade") {

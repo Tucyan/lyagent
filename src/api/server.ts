@@ -46,6 +46,7 @@ export interface ServerOptions {
   mineruConversionClient?: MineruConversionClient;
   submissionConversionOptions?: SubmissionConversionOptions;
   gradingAgentFactory?: GradingAgentBuilder;
+  submissionTitleAgentFactory?: GradingAgentBuilder;
   modelStatus?: { provider: string; model: string; configured: boolean };
 }
 
@@ -103,6 +104,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     ...(options.mineruConversionClient ? { conversionClient: options.mineruConversionClient } : {}),
     ...(options.submissionConversionOptions ? { conversionOptions: options.submissionConversionOptions } : {}),
     ...(options.gradingAgentFactory ? { gradingAgentFactory: options.gradingAgentFactory } : {}),
+    ...(options.submissionTitleAgentFactory ? { submissionTitleAgentFactory: options.submissionTitleAgentFactory } : {}),
   });
   const planner = options.materialPlanner ?? defaultPlanner;
   const activeAgentRuns = new Map<string, AbortController>();

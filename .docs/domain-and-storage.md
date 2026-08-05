@@ -103,6 +103,8 @@ M1已由资料导入服务安全创建`inbox/materials`和`knowledge/{courseId}`
 
 一个批改会话绑定唯一课程、一个评分表Assignment的冻结版本、一名学生、一份不可变原文件和一个当前Markdown提交版本。`batchId`、`studentKey`与会话ID均由程序生成，姓名和学号不参与路径拼接。
 
+`GradingSession.title`是教师可重命名的会话显示名；`submissionTitle`是每名学生当前报告的作业名称，不等同于共享的`Assignment.title`。创建会话时可手填`submissionTitle`；留空时状态为`pending`，命名Agent运行前以CAS进入`resolving`，成功调用`set_submission_title`后变为`resolved`，失败则记录`failed`并允许重试。迁移前会话按`pending`兼容；服务重启时遗留的`resolving`恢复为`failed`，不根据旧会话名静默推断作业名称。
+
 ```text
 assignments/{assignmentId}/
 ├─ submissions/{batchId}/{studentKey}/
@@ -119,9 +121,17 @@ assignments/{assignmentId}/
 
 `grading.sqlite`中的`grading_sessions`、`grading_jobs`、`agent_runs`和`agent_run_events`只保存控制状态与可恢复事件。学生正文、草稿正文、正式结果和审计正文保存在受控Workspace文件中。正式JSON是事实来源，Markdown可重建。
 
+提交转换状态由程序维护：`queued → running → ready`是成功路径；暂时性基础设施错误进入`waiting_for_converter`，明确文件解析失败进入`conversion_failed`，转换结果未通过本地安全或格式校验进入`result_rejected`。不可变原件缺失同样进入`conversion_failed`并使用`ORIGINAL_UNAVAILABLE`安全错误码。提交、状态轮询和结果下载发生暂时性网络错误时，均按5秒、30秒、2分钟的默认退避序列在配置的次数上限内自动重试；耗尽后保留手动重试能力。任务在状态完成后、下载结果前丢失时从不可变原件受限重提，不得误记为安全拒绝；另外两个终态不得直接重试，教师应重新上传生成新会话。评分和作业命名只允许读取`ready`提交。
+
+`grading_sessions`同时保存转换尝试次数以及可选的安全错误代码、教师可读固定消息、可重试标记、最后失败时间和下次重试时间。不得保存MinerU原始异常、学生正文或外部响应；重试和成功完成会清除旧错误字段。迁移前的通用`failed`记录根据是否已有外部任务ID迁移为等待服务或终态失败，并使用明确的历史兼容错误码。
+
 已开始批改的提交与已确认结果不原地覆盖；教师选择“创建提交修订”或“创建结果修订”时，系统从当前锁定Markdown及其受控图片资源创建新的单份批改会话，原会话及正式JSON保持只读。`submissionHash`始终包含原件、当前Markdown和资源路径/内容哈希。相同会话同一时刻只允许一个排队或运行中的Agent run，grade与chat运行都会持久化`activeRunId`供页面恢复。
 
 批改失败、显式取消或服务重启中断后，原锁定提交可在同一会话重新排队；已有草稿的修订轮次仍可再次进入`waiting_for_teacher`。重启恢复会清理中断run的活动索引，尚未执行的queued run保留活动索引并继续单线程执行。
+
+会话列表可按`assignmentId + rubricVersion`精确筛选。重命名只修改会话显示名；删除会话会级联删除该会话的转换任务和Agent事件，并移除由程序ID定位的提交与结果目录，不删除共享Assignment或冻结评分表。转换、作业命名或批改仍活动时不得删除；提交版本文件写入与删除共用会话级互斥锁，删除取得锁后以数据库CAS写入`deletion_pending`墓碑阻止其他任务准入，再清理由程序ID定位的目录，全部清理成功后删除数据库行。清理失败保留墓碑和目录定位信息，允许再次执行删除，不得留下无法通过服务恢复的孤立敏感目录。
+
+CSV导出只读取已确认结果JSON。学生范围使用同一课程与学号聚合其全部已确认作业；评分标准范围使用精确的`assignmentId + rubricVersion`聚合全部已确认学生结果。列选择可包含姓名、学号、作业名称、逐项得分/扣分/加分、逐项置信度、总分和总置信度；CSV不是事实来源。
 
 ## Job状态机
 

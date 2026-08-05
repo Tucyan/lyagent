@@ -68,9 +68,23 @@ describe("assignment grader tools", () => {
     const search = await tools.tools.find(({ name }) => name === "search_submission")!.execute("search", { query: "实现", maxResults: 5 });
     const read = await tools.tools.find(({ name }) => name === "read_submission_lines")!.execute("read", { path: "submission-v1.md", startLine: 1, endLine: 3 });
     expect(JSON.stringify(list)).toContain("submission-v1.md");
+    expect(JSON.stringify(list)).toContain("report.md");
     expect(JSON.stringify(search)).toContain("课程概念与实现过程");
     expect(JSON.stringify(read)).toContain("# 报告");
     await expect(tools.tools.find(({ name }) => name === "read_submission_lines")!.execute("bad", { path: "../other/submission.md", startLine: 1, endLine: 3 })).rejects.toThrow(/current submission/i);
+    sessions.close();
+  });
+
+  it("exposes a terminal submission naming tool only during mandatory naming", async () => {
+    const { sessions, results, session, knowledge } = await fixture();
+    const tools = createAssignmentGraderTools({ sessions, results, sessionId: session.id, runId: "name-1", knowledge: knowledge as any, purpose: "naming" });
+    expect(tools.tools.map(({ name }) => name)).toEqual(["list_submission_files", "search_submission", "read_submission_lines", "set_submission_title"]);
+    const named = await tools.tools.find(({ name }) => name === "set_submission_title")!.execute("set-title", { title: "课程概念的工程实现" });
+    expect(named.terminate).toBe(true);
+    expect(tools.capturedTitle()).toBe("课程概念的工程实现");
+    expect(await sessions.getSession(session.id)).toMatchObject({ submissionTitle: "课程概念的工程实现", submissionTitleStatus: "resolved" });
+    await expect(tools.tools.find(({ name }) => name === "set_submission_title")!.execute("again", { title: "另一个标题" })).rejects.toThrow(/already/i);
+    expect(gradingToolActivity("set_submission_title", { title: "sensitive title" })).toEqual({ label: "命名学生作业", summary: "保存当前作业的识别名称" });
     sessions.close();
   });
 

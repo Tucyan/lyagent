@@ -10,7 +10,8 @@ export type GradingToolName =
   | "list_submission_files" | "search_submission" | "read_submission_lines" | "read_submission_image"
   | "read_grading_draft" | "submit_grading_draft"
   | "get_knowledge_root" | "list_knowledge_directory" | "search_knowledge" | "read_knowledge_lines"
-  | "web_search" | "read_web_result" | "ask_grading_question";
+  | "web_search" | "read_web_result" | "ask_grading_question"
+  | "set_submission_title";
 
 export interface GradingQuestion {
   question: string;
@@ -20,6 +21,7 @@ export interface GradingQuestion {
 export interface AssignmentGraderTools {
   tools: AgentTool<any>[];
   capturedQuestion(): GradingQuestion | undefined;
+  capturedTitle(): string | undefined;
   updatedDraft(): StoredGradingDraft | undefined;
 }
 
@@ -43,8 +45,10 @@ export function createAssignmentGraderTools(options: {
   runId: string;
   knowledge: CourseKnowledgeService;
   web?: WebEvidenceService;
+  purpose?: "grading" | "naming";
 }): AssignmentGraderTools {
   let question: GradingQuestion | undefined;
+  let capturedTitle: string | undefined;
   let updatedDraft: StoredGradingDraft | undefined;
   const emptySchema = Type.Object({}, { additionalProperties: false });
 
@@ -56,7 +60,8 @@ export function createAssignmentGraderTools(options: {
     executionMode: "sequential",
     execute: async () => {
       const submission = await options.sessions.getLockedSubmission(options.sessionId);
-      return { content: [{ type: "text", text: JSON.stringify([{ path: submission.path, type: "markdown" }, ...(submission.assetPaths ?? []).map((path) => ({ path, type: "image" }))]) }], details: {} };
+      const originalFilename = await options.sessions.getOriginalFilename(options.sessionId);
+      return { content: [{ type: "text", text: JSON.stringify([{ path: submission.path, type: "markdown", originalFilename }, ...(submission.assetPaths ?? []).map((path) => ({ path, type: "image" }))]) }], details: {} };
     },
   };
 
@@ -150,15 +155,35 @@ export function createAssignmentGraderTools(options: {
     },
   };
 
+  const titleSchema = Type.Object({ title: Type.String({ minLength: 1, maxLength: 200 }) }, { additionalProperties: false });
+  const setSubmissionTitle: AgentTool<typeof titleSchema> = {
+    name: "set_submission_title",
+    label: "命名学生作业",
+    description: "Save the current student's report title after checking both the document body and original filename. Prefer the title found in the body when they conflict. This is the required terminal action for naming.",
+    parameters: titleSchema,
+    executionMode: "sequential",
+    execute: async (_id, parameters) => {
+      if (capturedTitle) throw new Error("A submission title has already been set in this turn");
+      const resolved = await options.sessions.resolveSubmissionTitle(options.sessionId, parameters.title);
+      capturedTitle = resolved.submissionTitle;
+      return { content: [{ type: "text", text: JSON.stringify({ title: capturedTitle }) }], details: {}, terminate: true };
+    },
+  };
+
+  const tools = options.purpose === "naming"
+    ? [listSubmissionFiles, searchSubmission, readSubmissionLines, setSubmissionTitle]
+    : [listSubmissionFiles, searchSubmission, readSubmissionLines, readSubmissionImage, readGradingDraft, submitGradingDraft, ...knowledgeTools, askGradingQuestion];
+
   return {
-    tools: [listSubmissionFiles, searchSubmission, readSubmissionLines, readSubmissionImage, readGradingDraft, submitGradingDraft, ...knowledgeTools, askGradingQuestion],
+    tools,
     capturedQuestion: () => question,
+    capturedTitle: () => capturedTitle,
     updatedDraft: () => updatedDraft,
   };
 }
 
 export function isGradingToolName(value: string): value is GradingToolName {
-  return ["list_submission_files", "search_submission", "read_submission_lines", "read_submission_image", "read_grading_draft", "submit_grading_draft", "get_knowledge_root", "list_knowledge_directory", "search_knowledge", "read_knowledge_lines", "web_search", "read_web_result", "ask_grading_question"].includes(value);
+  return ["list_submission_files", "search_submission", "read_submission_lines", "read_submission_image", "read_grading_draft", "submit_grading_draft", "get_knowledge_root", "list_knowledge_directory", "search_knowledge", "read_knowledge_lines", "web_search", "read_web_result", "ask_grading_question", "set_submission_title"].includes(value);
 }
 
 export function gradingToolActivity(name: GradingToolName, args: Record<string, unknown>): { label: string; summary: string } {
@@ -176,6 +201,7 @@ export function gradingToolActivity(name: GradingToolName, args: Record<string, 
     web_search: { label: "搜索互联网", summary: "搜索公开网络资料" },
     read_web_result: { label: "阅读网页内容", summary: "阅读本轮已搜索的网页" },
     ask_grading_question: { label: "向教师确认", summary: "请求教师确认关键评分歧义" },
+    set_submission_title: { label: "命名学生作业", summary: "保存当前作业的识别名称" },
   };
   return fixed[name];
 }

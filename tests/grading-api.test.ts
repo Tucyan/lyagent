@@ -3,53 +3,116 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PiAssignmentGrader } from "../src/agents/assignment-grader/agent.js";
+import type { GradingAgentBuilder } from "../src/api/grading-routes.js";
 import { createServer } from "../src/api/server.js";
 import type { Rubric } from "../src/schemas/rubric.js";
+import {
+  MineruUnavailableError,
+  type MineruTaskStatus,
+} from "../src/services/mineru-client.js";
+import type {
+  MineruConversionClient,
+  SubmissionConversionOptions,
+} from "../src/services/submission-conversion-service.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+afterEach(async () =>
+  Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  ),
+);
 
 const rubric: Rubric = {
   schemaVersion: "1.0",
   mode: "additive",
   totalScore: 10,
   partialCreditAllowed: true,
-  criteria: [{
-    id: "C1", name: "内容", maxScore: 10, description: "内容质量",
-    scorePolicy: "range", evidenceRequired: true,
-    levels: [{ id: "L1", minScore: 5, maxScore: 10, condition: "完整" }, { id: "L0", minScore: 0, maxScore: 4.99, condition: "缺失" }],
-  }],
+  criteria: [
+    {
+      id: "C1",
+      name: "内容",
+      maxScore: 10,
+      description: "内容质量",
+      scorePolicy: "range",
+      evidenceRequired: true,
+      levels: [
+        { id: "L1", minScore: 5, maxScore: 10, condition: "完整" },
+        { id: "L0", minScore: 0, maxScore: 4.99, condition: "缺失" },
+      ],
+    },
+  ],
 };
 
 describe("grading API", () => {
   it("creates a course-bound Markdown session and supports versioned editing", async () => {
     const { app, assignmentId } = await setup();
     const created = await app.inject({
-      method: "POST", url: "/api/grading/sessions",
+      method: "POST",
+      url: "/api/grading/sessions",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "张晓明", studentNumber: "20260001", autoStartAfterConversion: "false" }, "20260001_张晓明.md", "# AI 与生活\n\n正文"),
+      payload: multipart(
+        "x",
+        {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "张晓明",
+          studentNumber: "20260001",
+          autoStartAfterConversion: "false",
+        },
+        "20260001_张晓明.md",
+        "# AI 与生活\n\n正文",
+      ),
     });
     expect(created.statusCode, created.body).toBe(201);
     const session = created.json();
-    expect(session).toMatchObject({ courseId: expect.any(String), conversionStatus: "ready", gradingStatus: "not_started", submissionVersion: 1 });
+    expect(session).toMatchObject({
+      courseId: expect.any(String),
+      conversionStatus: "ready",
+      gradingStatus: "not_started",
+      submissionVersion: 1,
+      submissionTitle: "自动识别作业",
+      submissionTitleStatus: "resolved",
+    });
 
-    const read = await app.inject({ method: "GET", url: `/api/grading/sessions/${session.id}` });
+    const read = await app.inject({
+      method: "GET",
+      url: `/api/grading/sessions/${session.id}`,
+    });
     expect(read.json().submission.markdown).toContain("AI 与生活");
-    const edited = await app.inject({ method: "PUT", url: `/api/grading/sessions/${session.id}/submission`, payload: { expectedVersion: 1, markdown: "# 已修订\n\n正文" } });
+    const edited = await app.inject({
+      method: "PUT",
+      url: `/api/grading/sessions/${session.id}/submission`,
+      payload: { expectedVersion: 1, markdown: "# 已修订\n\n正文" },
+    });
     expect(edited.json().submissionVersion).toBe(2);
-    expect((await app.inject({ method: "GET", url: "/api/grading/rubrics" })).json()).toHaveLength(1);
+    expect(
+      (await app.inject({ method: "GET", url: "/api/grading/rubrics" })).json(),
+    ).toHaveLength(1);
     await app.close();
   });
 
   it("rejects legacy .doc with an actionable 415 response", async () => {
     const { app, assignmentId } = await setup();
     const response = await app.inject({
-      method: "POST", url: "/api/grading/sessions",
+      method: "POST",
+      url: "/api/grading/sessions",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "张晓明", studentNumber: "20260001" }, "report.doc", "legacy"),
+      payload: multipart(
+        "x",
+        {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "张晓明",
+          studentNumber: "20260001",
+        },
+        "report.doc",
+        "legacy",
+      ),
     });
     expect(response.statusCode, response.body).toBe(415);
-    expect(response.json()).toMatchObject({ code: "UNSUPPORTED_SUBMISSION_TYPE" });
+    expect(response.json()).toMatchObject({
+      code: "UNSUPPORTED_SUBMISSION_TYPE",
+    });
     expect(response.json().message).toContain(".docx");
     await app.close();
   });
@@ -57,9 +120,20 @@ describe("grading API", () => {
   it("returns 422 for incomplete student identity instead of an internal error", async () => {
     const { app, assignmentId } = await setup();
     const response = await app.inject({
-      method: "POST", url: "/api/grading/sessions",
+      method: "POST",
+      url: "/api/grading/sessions",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "张晓明", studentNumber: "" }, "report.md", "# 报告"),
+      payload: multipart(
+        "x",
+        {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "张晓明",
+          studentNumber: "",
+        },
+        "report.md",
+        "# 报告",
+      ),
     });
     expect(response.statusCode).toBe(422);
     expect(response.json()).toMatchObject({ code: "STUDENT_IDENTITY_ERROR" });
@@ -69,21 +143,59 @@ describe("grading API", () => {
   it("returns 503 before locking the submission when no grading model is configured", async () => {
     const { app, assignmentId } = await setup();
     const created = await app.inject({
-      method: "POST", url: "/api/grading/sessions",
+      method: "POST",
+      url: "/api/grading/sessions",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "张晓明", studentNumber: "20260001" }, "report.md", "# 报告"),
+      payload: multipart(
+        "x",
+        {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "张晓明",
+          studentNumber: "20260001",
+        },
+        "report.md",
+        "# 报告",
+      ),
     });
     const session = created.json();
-    const response = await app.inject({ method: "POST", url: `/api/grading/sessions/${session.id}/runs`, payload: { message: "开始" } });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/grading/sessions/${session.id}/runs`,
+      payload: { message: "开始" },
+    });
     expect(response.statusCode).toBe(503);
-    expect((await app.inject({ method: "GET", url: `/api/grading/sessions/${session.id}` })).json().gradingStatus).toBe("not_started");
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/grading/sessions/${session.id}`,
+        })
+      ).json().gradingStatus,
+    ).toBe("not_started");
     const autoStart = await app.inject({
-      method: "POST", url: "/api/grading/sessions",
+      method: "POST",
+      url: "/api/grading/sessions",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "李华", studentNumber: "20260002", autoStartAfterConversion: "true" }, "report.md", "# 报告"),
+      payload: multipart(
+        "x",
+        {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "李华",
+          studentNumber: "20260002",
+          autoStartAfterConversion: "true",
+        },
+        "report.md",
+        "# 报告",
+      ),
     });
     expect(autoStart.statusCode).toBe(503);
-    expect((await app.inject({ method: "GET", url: "/api/grading/sessions" })).json()).toHaveLength(1);
+    expect(
+      (
+        await app.inject({ method: "GET", url: "/api/grading/sessions" })
+      ).json(),
+    ).toHaveLength(1);
     await app.close();
   });
 
@@ -97,33 +209,120 @@ describe("grading API", () => {
     };
     const { app, assignmentId } = await setup(() => grader);
     const created = await app.inject({
-      method: "POST", url: "/api/grading/sessions",
+      method: "POST",
+      url: "/api/grading/sessions",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "张晓明", studentNumber: "20260001" }, "report.md", "# 报告"),
+      payload: multipart(
+        "x",
+        {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "张晓明",
+          studentNumber: "20260001",
+        },
+        "report.md",
+        "# 报告",
+      ),
     });
     const session = created.json();
-    const runResponse = await app.inject({ method: "POST", url: `/api/grading/sessions/${session.id}/messages`, payload: { message: "解释评分" } });
+    const runResponse = await app.inject({
+      method: "POST",
+      url: `/api/grading/sessions/${session.id}/messages`,
+      payload: { message: "解释评分" },
+    });
     const run = runResponse.json();
-    const events = await app.inject({ method: "GET", url: `/api/grading/sessions/${session.id}/runs/${run.id}/events?after=0&follow=true` });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/grading/sessions/${session.id}/runs/${run.id}/events?after=0&follow=true`,
+    });
     expect(events.statusCode).toBe(200);
     expect(events.body).toContain("event: process_delta");
     expect(events.body).toContain("event: final");
-    const detail = (await app.inject({ method: "GET", url: `/api/grading/sessions/${session.id}` })).json();
-    expect(detail.conversation.messages.at(-1)).toMatchObject({ role: "assistant", processCollapsed: true });
+    const detail = (
+      await app.inject({
+        method: "GET",
+        url: `/api/grading/sessions/${session.id}`,
+      })
+    ).json();
+    expect(detail.conversation.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      processCollapsed: true,
+    });
     await app.close();
   });
 
   it("maps program-owned grading validation failures to 422", async () => {
-    const grader: PiAssignmentGrader = { async run() { return { kind: "question", question: { question: "请确认", options: ["确认"] } }; } };
+    const grader: PiAssignmentGrader = {
+      async run() {
+        return {
+          kind: "question",
+          question: { question: "请确认", options: ["确认"] },
+        };
+      },
+    };
     const { app, assignmentId } = await setup(() => grader);
-    const session = (await app.inject({
-      method: "POST", url: "/api/grading/sessions",
-      headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "张晓明", studentNumber: "20260001" }, "report.md", "# 报告"),
-    })).json();
-    const run = (await app.inject({ method: "POST", url: `/api/grading/sessions/${session.id}/runs`, payload: { message: "开始" } })).json();
-    await app.inject({ method: "GET", url: `/api/grading/sessions/${session.id}/runs/${run.id}/events?after=0&follow=true` });
-    const response = await app.inject({ method: "PUT", url: `/api/grading/sessions/${session.id}/draft`, payload: { expectedVersion: 0, note: "人工修订", draft: { schemaVersion: "1.0", mode: "additive", criteria: [{ criterionId: "C1", score: 8, reason: "缺少等级", evidence: [{ kind: "text", path: "submission-v1.md", heading: "报告", startLine: 1, endLine: 1, quote: "# 报告" }], confidence: 0.9 }], strengths: [], improvements: [], warnings: [] } } });
+    const session = (
+      await app.inject({
+        method: "POST",
+        url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=x" },
+        payload: multipart(
+          "x",
+          {
+            assignmentId,
+            rubricVersion: "1",
+            studentName: "张晓明",
+            studentNumber: "20260001",
+          },
+          "report.md",
+          "# 报告",
+        ),
+      })
+    ).json();
+    const run = (
+      await app.inject({
+        method: "POST",
+        url: `/api/grading/sessions/${session.id}/runs`,
+        payload: { message: "开始" },
+      })
+    ).json();
+    await app.inject({
+      method: "GET",
+      url: `/api/grading/sessions/${session.id}/runs/${run.id}/events?after=0&follow=true`,
+    });
+    const response = await app.inject({
+      method: "PUT",
+      url: `/api/grading/sessions/${session.id}/draft`,
+      payload: {
+        expectedVersion: 0,
+        note: "人工修订",
+        draft: {
+          schemaVersion: "1.0",
+          mode: "additive",
+          criteria: [
+            {
+              criterionId: "C1",
+              score: 8,
+              reason: "缺少等级",
+              evidence: [
+                {
+                  kind: "text",
+                  path: "submission-v1.md",
+                  heading: "报告",
+                  startLine: 1,
+                  endLine: 1,
+                  quote: "# 报告",
+                },
+              ],
+              confidence: 0.9,
+            },
+          ],
+          strengths: [],
+          improvements: [],
+          warnings: [],
+        },
+      },
+    });
     expect(response.statusCode).toBe(422);
     expect(response.json()).toMatchObject({ code: "GRADING_RESULT_INVALID" });
     await app.close();
@@ -132,58 +331,357 @@ describe("grading API", () => {
   it("cancels an active grading run through the public API", async () => {
     const grader: PiAssignmentGrader = {
       async run(_request, _emit, signal) {
-        await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+        await new Promise<void>((_resolve, reject) =>
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          ),
+        );
         return { kind: "reply", reply: "unreachable" };
       },
     };
     const { app, assignmentId } = await setup(() => grader);
     const created = await app.inject({
-      method: "POST", url: "/api/grading/sessions",
+      method: "POST",
+      url: "/api/grading/sessions",
       headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", { assignmentId, rubricVersion: "1", studentName: "张晓明", studentNumber: "20260001" }, "report.md", "# 报告"),
+      payload: multipart(
+        "x",
+        {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "张晓明",
+          studentNumber: "20260001",
+        },
+        "report.md",
+        "# 报告",
+      ),
     });
     const session = created.json();
-    const run = (await app.inject({ method: "POST", url: `/api/grading/sessions/${session.id}/runs`, payload: { message: "开始批改" } })).json();
+    const run = (
+      await app.inject({
+        method: "POST",
+        url: `/api/grading/sessions/${session.id}/runs`,
+        payload: { message: "开始批改" },
+      })
+    ).json();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const cancelled = await app.inject({ method: "POST", url: `/api/agent-runs/${run.id}/cancel` });
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/agent-runs/${run.id}/cancel`,
+    });
 
     expect(cancelled.statusCode).toBe(200);
     expect(cancelled.json()).toEqual({ cancelled: true });
-    const events = await app.inject({ method: "GET", url: `/api/grading/sessions/${session.id}/runs/${run.id}/events?after=0&follow=false` });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/grading/sessions/${session.id}/runs/${run.id}/events?after=0&follow=false`,
+    });
     expect(events.body).toContain("event: cancelled");
-    const retry = await app.inject({ method: "POST", url: `/api/grading/sessions/${session.id}/runs`, payload: { message: "重试批改" } });
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/grading/sessions/${session.id}/runs`,
+      payload: { message: "重试批改" },
+    });
     expect(retry.statusCode, retry.body).toBe(202);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await app.inject({ method: "POST", url: `/api/agent-runs/${retry.json().id}/cancel` });
-    const revision = await app.inject({ method: "POST", url: `/api/grading/sessions/${session.id}/revisions` });
+    await app.inject({
+      method: "POST",
+      url: `/api/agent-runs/${retry.json().id}/cancel`,
+    });
+    const revision = await app.inject({
+      method: "POST",
+      url: `/api/grading/sessions/${session.id}/revisions`,
+    });
     expect(revision.statusCode, revision.body).toBe(201);
-    expect(revision.json()).toMatchObject({ gradingStatus: "not_started", studentNumber: "20260001" });
+    expect(revision.json()).toMatchObject({
+      gradingStatus: "not_started",
+      studentNumber: "20260001",
+    });
+    await app.close();
+  });
+
+  it("exposes safe retryable converter outages and rejects retry for terminal parse failures", async () => {
+    const unavailableClient: MineruConversionClient = {
+      submit: async () => {
+        throw new MineruUnavailableError("private socket detail");
+      },
+      status: async (): Promise<MineruTaskStatus> => ({ status: "running" }),
+      result: async () => new Uint8Array(),
+    };
+    const unavailableSetup = await setup(undefined, unavailableClient, {
+      maxAttempts: 1,
+      retryDelaysMs: [],
+    });
+    const unavailableCreated = await unavailableSetup.app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=x" },
+      payload: multipart(
+        "x",
+        {
+          assignmentId: unavailableSetup.assignmentId,
+          rubricVersion: "1",
+          studentName: "Student",
+          studentNumber: "20260020",
+          submissionTitle: "Report",
+        },
+        "report.pdf",
+        "%PDF-1.7 synthetic",
+      ),
+    });
+    const unavailable = await waitForConversionStatus(
+      unavailableSetup.app,
+      unavailableCreated.json().id,
+      "waiting_for_converter",
+    );
+    expect(unavailable).toMatchObject({
+      conversionAttemptCount: 1,
+      conversionError: { code: "CONVERTER_UNAVAILABLE", retryable: true },
+    });
+    expect(JSON.stringify(unavailable)).not.toContain("private socket detail");
+    expect(
+      (
+        await unavailableSetup.app.inject({
+          method: "POST",
+          url: `/api/grading/sessions/${unavailable.id}/conversion/retry`,
+        })
+      ).statusCode,
+    ).toBe(202);
+    await unavailableSetup.app.close();
+
+    const failedClient: MineruConversionClient = {
+      submit: async () => ({ taskId: "failed-task" }),
+      status: async (): Promise<MineruTaskStatus> => ({
+        status: "failed",
+        error: "private parser detail",
+      }),
+      result: async () => new Uint8Array(),
+    };
+    const failedSetup = await setup(undefined, failedClient);
+    const failedCreated = await failedSetup.app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=y" },
+      payload: multipart(
+        "y",
+        {
+          assignmentId: failedSetup.assignmentId,
+          rubricVersion: "1",
+          studentName: "Student",
+          studentNumber: "20260021",
+          submissionTitle: "Report",
+        },
+        "report.pdf",
+        "%PDF-1.7 synthetic",
+      ),
+    });
+    const failed = await waitForConversionStatus(
+      failedSetup.app,
+      failedCreated.json().id,
+      "conversion_failed",
+    );
+    expect(failed.conversionError).toMatchObject({
+      code: "CONVERSION_FAILED",
+      retryable: false,
+    });
+    expect(JSON.stringify(failed)).not.toContain("private parser detail");
+    expect(
+      (
+        await failedSetup.app.inject({
+          method: "POST",
+          url: `/api/grading/sessions/${failed.id}/conversion/retry`,
+        })
+      ).statusCode,
+    ).toBe(409);
+    await failedSetup.app.close();
+  });
+
+  it("filters exact rubrics and renames and deletes grading sessions", async () => {
+    const { app, assignmentId } = await setup();
+    const session = (
+      await app.inject({
+        method: "POST",
+        url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=x" },
+        payload: multipart(
+          "x",
+          {
+            assignmentId,
+            rubricVersion: "1",
+            studentName: "张晓明",
+            studentNumber: "20260001",
+            submissionTitle: "手填选题",
+          },
+          "report.md",
+          "# 报告",
+        ),
+      })
+    ).json();
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/grading/sessions?assignmentId=${assignmentId}&rubricVersion=1`,
+        })
+      ).json(),
+    ).toHaveLength(1);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/grading/sessions?assignmentId=${assignmentId}&rubricVersion=2`,
+        })
+      ).json(),
+    ).toHaveLength(0);
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/grading/sessions/${session.id}`,
+      payload: { title: "选题报告批改" },
+    });
+    expect(renamed.json()).toMatchObject({
+      title: "选题报告批改",
+      submissionTitle: "手填选题",
+    });
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: `/api/grading/sessions/${session.id}`,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/grading/sessions/${session.id}`,
+        })
+      ).statusCode,
+    ).toBe(404);
+    await app.close();
+  });
+
+  it("serves a configurable CSV export for an exact frozen rubric", async () => {
+    const { app, assignmentId } = await setup();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/grading/exports/csv",
+      payload: {
+        scope: { kind: "rubric", assignmentId, rubricVersion: 1 },
+        columns: { studentName: true, totalScore: true },
+      },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/csv");
+    expect(response.headers["content-disposition"]).toContain(
+      "grading-results.csv",
+    );
+    expect(response.body).toBe("\ufeff学生姓名,总分\r\n");
     await app.close();
   });
 });
 
-async function setup(graderFactory?: () => PiAssignmentGrader) {
+async function setup(
+  graderFactory?: () => PiAssignmentGrader,
+  conversionClient?: MineruConversionClient,
+  conversionOptions?: SubmissionConversionOptions,
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), "grading-api-"));
   roots.push(root);
-  const app = await createServer({ workspaceRoot: root, ...(graderFactory ? { gradingAgentFactory: graderFactory } : {}) });
-  const course = (await app.inject({ method: "POST", url: "/api/courses", payload: { name: "唯一课程" } })).json();
+  const submissionTitleAgentFactory: GradingAgentBuilder = (
+    sessionId,
+    _runId,
+    services,
+  ) => ({
+    async run() {
+      await services.sessions.resolveSubmissionTitle(sessionId, "自动识别作业");
+      return { kind: "title", title: "自动识别作业" };
+    },
+  });
+  const app = await createServer({
+    workspaceRoot: root,
+    submissionTitleAgentFactory,
+    ...(graderFactory ? { gradingAgentFactory: graderFactory } : {}),
+    ...(conversionClient ? { mineruConversionClient: conversionClient } : {}),
+    ...(conversionOptions
+      ? { submissionConversionOptions: conversionOptions }
+      : {}),
+  });
+  const course = (
+    await app.inject({
+      method: "POST",
+      url: "/api/courses",
+      payload: { name: "唯一课程" },
+    })
+  ).json();
   expect(course.id).toBeTruthy();
-  const assignmentResponse = await app.inject({ method: "POST", url: "/api/rubrics/assignments", payload: { title: "评分表", totalScore: 10, requirements: "评价报告。", sources: [] } });
+  const assignmentResponse = await app.inject({
+    method: "POST",
+    url: "/api/rubrics/assignments",
+    payload: {
+      title: "评分表",
+      totalScore: 10,
+      requirements: "评价报告。",
+      sources: [],
+    },
+  });
   expect(assignmentResponse.statusCode, assignmentResponse.body).toBe(201);
   const assignment = assignmentResponse.json();
-  const modeResponse = await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+  const modeResponse = await app.inject({
+    method: "PUT",
+    url: `/api/rubrics/assignments/${assignment.id}/mode`,
+    payload: { mode: "additive" },
+  });
   expect(modeResponse.statusCode, modeResponse.body).toBe(200);
-  const draftResponse = await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/draft`, payload: { expectedVersion: 0, rubric } });
+  const draftResponse = await app.inject({
+    method: "PUT",
+    url: `/api/rubrics/assignments/${assignment.id}/draft`,
+    payload: { expectedVersion: 0, rubric },
+  });
   expect(draftResponse.statusCode, draftResponse.body).toBe(200);
-  const freezeResponse = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/freeze`, payload: { expectedVersion: 1, acknowledgedWarningCodes: [] } });
+  const freezeResponse = await app.inject({
+    method: "POST",
+    url: `/api/rubrics/assignments/${assignment.id}/freeze`,
+    payload: { expectedVersion: 1, acknowledgedWarningCodes: [] },
+  });
   expect(freezeResponse.statusCode, freezeResponse.body).toBe(201);
   return { app, assignmentId: assignment.id };
 }
 
-function multipart(boundary: string, fields: Record<string, string>, filename: string, content: string): Buffer {
+async function waitForConversionStatus(
+  app: Awaited<ReturnType<typeof createServer>>,
+  sessionId: string,
+  status: string,
+): Promise<Record<string, any>> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const detail = (
+      await app.inject({
+        method: "GET",
+        url: `/api/grading/sessions/${sessionId}`,
+      })
+    ).json<Record<string, any>>();
+    if (detail.conversionStatus === status) return detail;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(`Conversion did not reach ${status}`);
+}
+
+function multipart(
+  boundary: string,
+  fields: Record<string, string>,
+  filename: string,
+  content: string,
+): Buffer {
   const chunks: string[] = [];
-  for (const [name, value] of Object.entries(fields)) chunks.push(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
-  chunks.push(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n${content}\r\n--${boundary}--\r\n`);
+  for (const [name, value] of Object.entries(fields))
+    chunks.push(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    );
+  chunks.push(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n${content}\r\n--${boundary}--\r\n`,
+  );
   return Buffer.from(chunks.join(""), "utf8");
 }
