@@ -57,3 +57,18 @@ it.runIf(process.platform === "win32")("round-trips a value with Windows Current
   expect(ciphertext.toString()).not.toContain("dpapi-roundtrip-test");
   await expect(protector.unprotect(ciphertext)).resolves.toEqual(Buffer.from("dpapi-roundtrip-test"));
 });
+
+it.runIf(process.platform === "win32")("uses Windows DPAPI without inheriting PATH", async () => {
+  const previousPath = process.env.Path;
+  const previousUpperPath = process.env.PATH;
+  delete process.env.Path;
+  delete process.env.PATH;
+  try {
+    const protector = new WindowsDpapiProtector();
+    const ciphertext = await protector.protect(Buffer.from("dpapi-no-path-test"));
+    await expect(protector.unprotect(ciphertext)).resolves.toEqual(Buffer.from("dpapi-no-path-test"));
+  } finally {
+    if (previousPath !== undefined) process.env.Path = previousPath;
+    if (previousUpperPath !== undefined) process.env.PATH = previousUpperPath;
+  }
+});

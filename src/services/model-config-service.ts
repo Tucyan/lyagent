@@ -1,6 +1,6 @@
 import type { CredentialStore } from "../config/credential-store.js";
 import { loadAppConfig, parseAppConfigValue, saveAppConfig, type AppConfig, type ModelEndpointConfig, type ModelSettings } from "../config/app-config.js";
-import { assertSafeModelBaseUrl } from "../config/model-base-url.js";
+import { assertSafeModelBaseUrl, modelApiProtocol } from "../config/model-base-url.js";
 import { withModelConfigLock } from "../config/model-config-lock.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -8,6 +8,7 @@ import path from "node:path";
 
 export interface ModelEndpointInput extends ModelEndpointConfig { apiKey?: string | undefined }
 export interface ModelSettingsInput { primary: ModelEndpointInput; vision?: ModelEndpointInput | undefined }
+export type ModelConfigurationFailureReason = "invalid_url" | "missing_api_key" | "network_error" | "authentication_failed" | "model_not_found" | "rate_limited" | "provider_unavailable" | "request_rejected" | "invalid_response" | "tool_call_missing" | "verification_failed";
 type ModelStatus = { primary: ModelEndpointConfig & { configured: boolean }; vision?: ModelEndpointConfig & { configured: boolean } };
 interface TransactionJournal {
   version: 1;
@@ -17,8 +18,8 @@ interface TransactionJournal {
 }
 
 export class ModelConfigurationError extends Error {
-  constructor(message = "The model configuration could not be verified") {
-    super(message);
+  constructor(public readonly reason: ModelConfigurationFailureReason = "verification_failed") {
+    super("The model configuration could not be verified");
     this.name = "ModelConfigurationError";
   }
 }
@@ -80,8 +81,8 @@ export class ModelConfigService {
   }
 
   private async testWithKeys(input: ModelSettingsInput, apiKeys: ReadonlyMap<string, string>): Promise<{ ok: true }> {
-    await this.testEndpoint(input.primary, apiKeys.get(input.primary.providerId));
-    if (input.vision) await this.testEndpoint(input.vision, apiKeys.get(input.vision.providerId));
+    await this.testEndpoint(input.primary, apiKeys.get(input.primary.providerId), false);
+    if (input.vision) await this.testEndpoint(input.vision, apiKeys.get(input.vision.providerId), true);
     return { ok: true };
   }
 
@@ -114,34 +115,90 @@ export class ModelConfigService {
     return providerId === "deepseek" ? config.deepseekApiKey : undefined;
   }
 
-  private async testEndpoint(endpoint: ModelEndpointInput, apiKey: string | undefined): Promise<void> {
-    try { assertSafeModelBaseUrl(endpoint.baseUrl); } catch { throw new ModelConfigurationError(); }
-    if (!apiKey) throw new ModelConfigurationError();
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`${endpoint.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          model: endpoint.modelId,
-          temperature: 0,
-          max_tokens: 16,
-          messages: [{ role: "user", content: "Call configuration_ok now." }],
-          tools: [{ type: "function", function: { name: "configuration_ok", description: "Confirm model tool calling works", parameters: { type: "object", properties: {}, additionalProperties: false } } }],
-          tool_choice: { type: "function", function: { name: "configuration_ok" } },
-        }),
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch {
-      throw new ModelConfigurationError();
+  private async testEndpoint(endpoint: ModelEndpointInput, apiKey: string | undefined, includeImage: boolean): Promise<void> {
+    try { assertSafeModelBaseUrl(endpoint.baseUrl); } catch { throw new ModelConfigurationError("invalid_url"); }
+    if (!apiKey) throw new ModelConfigurationError("missing_api_key");
+    if (modelApiProtocol(endpoint.baseUrl, endpoint.providerId) === "openai-responses") return this.testResponsesEndpoint(endpoint, apiKey, includeImage);
+    const requestBody: Record<string, unknown> = {
+        model: endpoint.modelId,
+        messages: [{
+          role: "user",
+          content: includeImage
+            ? [
+                { type: "text", text: "Inspect this image and call configuration_ok now." },
+                { type: "image_url", image_url: { url: TEST_IMAGE_DATA_URL } },
+              ]
+            : "Call configuration_ok now.",
+        }],
+        tools: [{ type: "function", function: { name: "configuration_ok", description: "Confirm model tool calling works", parameters: { type: "object", properties: {}, additionalProperties: false } } }],
+        tool_choice: "required",
+    };
+    let previousStatus: number | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const body = { ...requestBody };
+      if (attempt === 1 && previousStatus === 400) delete body.tool_choice;
+      let response: Response;
+      try {
+        response = await this.fetchImpl(`${normalizeCompletionsUrl(endpoint.baseUrl)}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch {
+        throw new ModelConfigurationError("network_error");
+      }
+      previousStatus = response.status;
+      if (response.status === 400 && attempt === 0) continue;
+      if (!response.ok) throw new ModelConfigurationError(modelFailureReasonForStatus(response.status));
+      let payload: { choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string } }> } }> };
+      try {
+        payload = await response.json() as typeof payload;
+      } catch {
+        throw new ModelConfigurationError("invalid_response");
+      }
+      if (payload.choices?.[0]?.message?.tool_calls?.[0]?.function?.name === "configuration_ok") return;
     }
-    if (!response.ok) throw new ModelConfigurationError();
-    try {
-      const payload = await response.json() as { choices?: Array<{ message?: { tool_calls?: Array<{ function?: { name?: string } }> } }> };
-      if (payload.choices?.[0]?.message?.tool_calls?.[0]?.function?.name !== "configuration_ok") throw new Error("missing tool call");
-    } catch {
-      throw new ModelConfigurationError();
+    throw new ModelConfigurationError("tool_call_missing");
+  }
+
+  private async testResponsesEndpoint(endpoint: ModelEndpointInput, apiKey: string, includeImage: boolean): Promise<void> {
+    const requestBody: Record<string, unknown> = {
+      model: endpoint.modelId,
+      input: [{
+        role: "user",
+        content: [
+          { type: "input_text", text: includeImage ? "Inspect this image and call configuration_ok now." : "Call configuration_ok now." },
+          ...(includeImage ? [{ type: "input_image", image_url: TEST_IMAGE_DATA_URL }] : []),
+        ],
+      }],
+      tools: [{ type: "function", name: "configuration_ok", description: "Confirm model tool calling works", parameters: { type: "object", properties: {}, additionalProperties: false } }],
+      tool_choice: { type: "function", name: "configuration_ok" },
+    };
+    let previousStatus: number | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const body = { ...requestBody };
+      if (attempt === 1 && previousStatus === 400) delete body.tool_choice;
+      let response: Response;
+      try {
+      response = await this.fetchImpl(`${endpoint.baseUrl.replace(/\/$/, "")}/responses`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch {
+        throw new ModelConfigurationError("network_error");
+      }
+      previousStatus = response.status;
+      if (response.status === 400 && attempt === 0) continue;
+      if (!response.ok) throw new ModelConfigurationError(modelFailureReasonForStatus(response.status));
+      let payload: { output?: Array<{ type?: string; name?: string }> };
+      try { payload = await response.json() as typeof payload; }
+      catch { throw new ModelConfigurationError("invalid_response"); }
+      if (payload.output?.some((item) => item.type === "function_call" && item.name === "configuration_ok")) return;
     }
+    throw new ModelConfigurationError("tool_call_missing");
   }
 
   private async saveTransaction(input: ModelSettingsInput): Promise<Awaited<ReturnType<ModelConfigService["status"]>> & { restartRequired: true }> {
@@ -227,6 +284,23 @@ export class ModelConfigService {
     if (!key) throw new ModelConfigurationError();
     await this.options.credentials.setApiKey(endpoint.providerId, key);
   }
+}
+
+const TEST_IMAGE_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAN0lEQVR4nO3RwQ0AMAjDwJT9d05HMB9+vgGCZF7bXJrT9XhgwR8gEyETIRMhEyETIRMhEyEThXzH8QM9OMM6fAAAAABJRU5ErkJggg==";
+
+function normalizeCompletionsUrl(value: string): string {
+  const url = new URL(value);
+  const pathname = url.pathname.replace(/\/+$/u, "");
+  url.pathname = /\/chat\/completions$/iu.test(pathname) ? pathname : `${pathname}/chat/completions`;
+  return url.toString();
+}
+
+function modelFailureReasonForStatus(status: number): ModelConfigurationFailureReason {
+  if (status === 401 || status === 403) return "authentication_failed";
+  if (status === 404) return "model_not_found";
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "provider_unavailable";
+  return "request_rejected";
 }
 
 function parseJournal(value: unknown): TransactionJournal {

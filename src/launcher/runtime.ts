@@ -15,8 +15,8 @@ export function defaultWorkspaceRoot(environment: NodeJS.ProcessEnv): string {
 
 export function doclingLaunchSpec(releaseRoot: string, input: { port: number; device: DoclingDevice; artifactsPath: string }): LaunchSpec {
   return {
-    command: path.join(releaseRoot, "runtime", "python", "Scripts", "docling-serve.exe"),
-    args: ["run"],
+    command: path.join(releaseRoot, "runtime", "python", "python.exe"),
+    args: ["-m", "docling_serve", "run"],
     cwd: releaseRoot,
     env: {
       UVICORN_HOST: "127.0.0.1",
@@ -24,6 +24,9 @@ export function doclingLaunchSpec(releaseRoot: string, input: { port: number; de
       UVICORN_WORKERS: "1",
       DOCLING_SERVE_ARTIFACTS_PATH: input.artifactsPath,
       DOCLING_DEVICE: input.device,
+      // Windows CPU deployments must stay in eager mode; torch.compile invokes
+      // the MSVC compiler at runtime, which is not part of the release bundle.
+      DOCLING_INFERENCE_COMPILE_TORCH_MODELS: "false",
       DOCLING_SERVE_ENABLE_UI: "false",
       DOCLING_SERVE_ENG_KIND: "local",
       PYTHONUTF8: "1",

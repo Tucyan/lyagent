@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { windowsPowerShellPath } from "./windows-powershell.js";
 
 export interface CredentialStore {
   getApiKey(providerId: string): Promise<string | undefined>;
@@ -98,7 +99,7 @@ export function defaultSecretRoot(workspaceIdentityHash: string, localAppData = 
 function runDpapi(operation: "protect" | "unprotect", input: Buffer): Promise<Buffer> {
   if (process.platform !== "win32") return Promise.reject(new Error("Windows DPAPI is only available on Windows"));
   return new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", dpapiScript], {
+    const child = spawn(windowsPowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", dpapiScript], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       env: { ...process.env, COURSE_AGENT_DPAPI_OPERATION: operation },

@@ -49,15 +49,14 @@ describe("DoclingClient", () => {
     expect(init?.method).toBe("POST");
     const form = init?.body as FormData;
     expect((form.get("files") as File).name).toBe("report.pdf");
-    expect(form.get("to_formats")).toBe('["md"]');
-    // Docling Serve v1.28 FormDepends applies json.loads to list/dict form fields.
-    expect(JSON.parse(String(form.get("to_formats")))).toEqual(["md"]);
+    expect(form.get("to_formats")).toBe("md");
     expect(form.get("image_export_mode")).toBe("referenced");
     expect(form.get("target_type")).toBe("zip");
     expect(form.get("do_ocr")).toBe("true");
     expect(form.get("force_ocr")).toBe("false");
     expect(form.get("ocr_preset")).toBe("auto");
     expect(form.get("table_mode")).toBe("accurate");
+    expect(form.get("pdf_backend")).toBe("pypdfium2");
     expect(form.has("ocr")).toBe(false);
     expect(form.has("ocr_engine")).toBe(false);
   });

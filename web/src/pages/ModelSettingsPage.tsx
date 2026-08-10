@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   buildModelSettingsPayload,
+  modelConfigurationFailureMessage,
+  modelConfigurationFailureReason,
   modelSettingsRequest,
   modelSettingsStateFromStatus,
   waitForRestartHealth,
@@ -31,7 +33,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
     try {
       const payload = buildModelSettingsPayload(form);
       const response = await fetch(action === "test" ? "/api/system/models/test" : "/api/system/models", modelSettingsRequest(action === "test" ? "POST" : "PUT", csrfToken, payload));
-      if (!response.ok) throw new Error();
+      if (!response.ok) throw Object.assign(new Error("model-configuration-failed"), { reason: await modelConfigurationFailureReason(response) });
       setNotice(action === "test" ? "连接测试成功。" : "设置已安全保存。");
       if (action === "save") {
         const saved = await response.json() as ModelSettingsStatus & { restartRequired?: boolean; restartScheduled?: boolean; instanceId?: string };
@@ -47,12 +49,12 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
         }
       }
     } catch (caught) {
-      setError(caught instanceof Error && caught.message.includes("必填") ? caught.message : "模型连接或保存失败，请检查模型 ID、Base URL 和 API Key。当前表单与已保存设置均未被覆盖。");
+      setError(caught instanceof Error && caught.message.includes("必填") ? caught.message : modelConfigurationFailureMessage((caught as { reason?: unknown })?.reason));
     } finally { setBusy(undefined); }
   };
 
   if (!form) return <main className="model-settings-page"><section><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1><p>{error || "正在读取安全配置…"}</p></section></main>;
-  const updatePrimary = (field: "modelId" | "baseUrl" | "apiKey", value: string) => setForm({ ...form, primary: { ...form.primary, [field]: value } });
+  const updatePrimary = (field: "providerId" | "modelId" | "baseUrl" | "apiKey", value: string) => setForm({ ...form, primary: { ...form.primary, [field]: value } });
   const handleSubmit = (event: FormEvent) => { event.preventDefault(); void submit("save"); };
   return <main className="model-settings-page">
     <header><div><p className="eyebrow">Course Agent</p><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1></div>{mode === "settings" && <a href="/">返回工作台</a>}</header>
@@ -61,6 +63,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
       <p className="model-routing-note">主模型不处理图片；批改工具成功读取图片后，本次运行会从下一轮起切换至视觉模型，并在该次运行余下轮次保持使用视觉模型。</p>
       <form onSubmit={handleSubmit}>
         <fieldset><legend>主模型（必填）</legend>
+          <label>模型供应商<select value={form.primary.providerId} onChange={(event) => updatePrimary("providerId", event.target.value)}><option value="qwen-openai">Qwen（Chat Completions）</option><option value="openai">OpenAI（按 URL 自动识别）</option></select></label>
           <label>模型 ID<input required value={form.primary.modelId} onChange={(event) => updatePrimary("modelId", event.target.value)} /></label>
           <label>Base URL<input required type="url" value={form.primary.baseUrl} onChange={(event) => updatePrimary("baseUrl", event.target.value)} /></label>
           <label>API Key<input required={!form.primary.configured} type="password" autoComplete="new-password" value={form.primary.apiKey} placeholder={form.primary.configured ? "已安全保存；留空表示保持不变" : "请输入 API Key"} onChange={(event) => updatePrimary("apiKey", event.target.value)} /></label>
@@ -71,6 +74,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
             <label>视觉模型 ID<input required value={form.visionModelId} onChange={(event) => setForm({ ...form, visionModelId: event.target.value })} /></label>
             <label className="model-inline"><input type="checkbox" checked={form.visionUsesPrimaryCredentials} onChange={(event) => setForm({ ...form, visionUsesPrimaryCredentials: event.target.checked })} />复用主模型的 Base URL 与 API Key</label>
             {!form.visionUsesPrimaryCredentials && <>
+              <label>视觉模型供应商<select value={form.visionProviderId} onChange={(event) => setForm({ ...form, visionProviderId: event.target.value })}><option value="qwen-openai">Qwen（Chat Completions）</option><option value="openai">OpenAI（按 URL 自动识别）</option></select></label>
               <label>视觉 Base URL<input required type="url" value={form.visionBaseUrl} onChange={(event) => setForm({ ...form, visionBaseUrl: event.target.value })} /></label>
               <label>视觉 API Key<input required={!form.visionConfigured} type="password" autoComplete="new-password" value={form.visionApiKey} placeholder={form.visionConfigured ? "已安全保存；留空表示保持不变" : "请输入视觉 API Key"} onChange={(event) => setForm({ ...form, visionApiKey: event.target.value })} /></label>
             </>}

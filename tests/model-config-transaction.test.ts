@@ -239,3 +239,18 @@ it.runIf(process.platform === "win32")("invokes the fatal guard if the OS lock h
     fatalHandler: () => { throw fatal; },
   })).rejects.toBe(fatal);
 });
+
+it.runIf(process.platform === "win32")("acquires the model configuration mutex without inheriting PATH", async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "course-agent-lock-no-path-"));
+  roots.push(workspaceRoot);
+  const previousPath = process.env.Path;
+  const previousUpperPath = process.env.PATH;
+  delete process.env.Path;
+  delete process.env.PATH;
+  try {
+    await expect(withModelConfigLock(workspaceRoot, async () => "locked")).resolves.toBe("locked");
+  } finally {
+    if (previousPath !== undefined) process.env.Path = previousPath;
+    if (previousUpperPath !== undefined) process.env.PATH = previousUpperPath;
+  }
+});

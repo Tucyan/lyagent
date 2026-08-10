@@ -13,7 +13,8 @@
     "test": "vitest",
     "test:watch": "vitest --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
-    "check": "npm run typecheck && npm test -- --run"
+    "check": "npm run typecheck && npm test -- --run",
+    "release:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.83.0",

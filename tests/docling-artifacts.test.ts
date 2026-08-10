@@ -65,10 +65,10 @@ describe("Docling artifact preparation", () => {
     await expect(prepareDoclingArtifacts({ ...value, doclingServeVersion: "1.28.0", runDownload })).resolves.toBe(local);
     expect(specs).toHaveLength(1);
     expect(specs[0]).toMatchObject({
-      command: path.join(value.releaseRoot, "runtime", "python", "Scripts", "docling-tools.exe"),
-      args: ["models", "download", "--output-dir", expect.stringContaining(".docling-download-")],
+      command: path.join(value.releaseRoot, "runtime", "python", "python.exe"),
+      args: ["-m", "docling.cli.tools", "models", "download", "--output-dir", expect.stringContaining(".docling-download-")],
       cwd: value.releaseRoot,
-      env: { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", NO_COLOR: "1" },
+      env: { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", NO_COLOR: "1", HF_HUB_DISABLE_XET: "1" },
     });
     expect(JSON.parse(await readFile(path.join(local, DOCLING_ARTIFACTS_MARKER), "utf8"))).toMatchObject({ doclingServeVersion: "1.28.0", mode: "downloaded", complete: true });
     expect(await readFile(path.join(local, "model.bin"), "utf8")).toBe("downloaded");

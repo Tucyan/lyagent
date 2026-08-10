@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { resolveWorkspaceIdentity } from "./workspace-identity.js";
+import { windowsPowerShellPath } from "./windows-powershell.js";
 
 interface LockOptions { timeoutMs?: number; pollMs?: number; fatalHandler?: (error: Error) => never; helperAcquired?: (pid: number) => void }
 interface HelperExit { code: number | null; signal: NodeJS.Signals | null; error?: Error }
@@ -13,7 +14,7 @@ export async function withModelConfigLock<T>(workspaceRoot: string, action: () =
 
 async function withWindowsMutex<T>(workspaceRoot: string, action: () => Promise<T>, timeoutMs: number, fatalHandler: (error: Error) => never, helperAcquired?: (pid: number) => void): Promise<T> {
   const mutexName = await modelConfigMutexName(workspaceRoot);
-  const helper = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsMutexScript], {
+  const helper = spawn(windowsPowerShellPath(), ["-NoProfile", "-NonInteractive", "-Command", windowsMutexScript], {
     env: { ...process.env, COURSE_AGENT_MUTEX_NAME: mutexName, COURSE_AGENT_MUTEX_TIMEOUT_MS: String(timeoutMs) },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,

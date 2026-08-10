@@ -32,10 +32,10 @@ export async function prepareDoclingArtifacts(options: {
   let stagingExists = true;
   try {
     const spec: DoclingDownloadSpec = {
-      command: path.join(releaseRoot, "runtime", "python", "Scripts", "docling-tools.exe"),
-      args: ["models", "download", "--output-dir", staging],
+      command: path.join(releaseRoot, "runtime", "python", "python.exe"),
+      args: ["-m", "docling.cli.tools", "models", "download", "--output-dir", staging],
       cwd: releaseRoot,
-      env: { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", NO_COLOR: "1" },
+      env: { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", NO_COLOR: "1", HF_HUB_DISABLE_XET: "1" },
       outputDirectory: staging,
     };
     await options.runDownload(spec);

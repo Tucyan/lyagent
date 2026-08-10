@@ -106,13 +106,17 @@ export class DoclingClient implements DocumentConversionClient {
     const form = new FormData();
     const basename = path.posix.basename(input.filename.replaceAll("\\", "/"));
     form.append("files", new Blob([new Uint8Array(input.bytes)]), basename);
-    form.append("to_formats", JSON.stringify(["md"]));
+    // Docling Serve 1.28 exposes this list enum as repeated multipart fields.
+    // Sending JSON here is accepted by some mocks but is parsed as characters
+    // by FastAPI and rejected with 422 by the real service.
+    form.append("to_formats", "md");
     form.append("image_export_mode", "referenced");
     form.append("target_type", "zip");
     form.append("do_ocr", "true");
     form.append("force_ocr", "false");
     form.append("ocr_preset", "auto");
     form.append("table_mode", "accurate");
+    form.append("pdf_backend", "pypdfium2");
     const operationSignal = this.operationSignal(signal);
     const response = await this.request(
       "/v1/convert/file/async",

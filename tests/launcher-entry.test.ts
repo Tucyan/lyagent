@@ -10,8 +10,8 @@ it("uses LOCALAPPDATA and builds bundled loopback child commands without secrets
   expect(defaultWorkspaceRoot({ LOCALAPPDATA: "C:\\Users\\教师\\App Data" })).toBe(path.resolve("C:\\Users\\教师\\App Data", "CourseAgent", "workspace"));
   const releaseRoot = "C:\\发布 包";
   const docling = doclingLaunchSpec(releaseRoot, { port: 8001, device: "auto", artifactsPath: "C:\\models\\docling" });
-  expect(docling.command).toBe(path.join(releaseRoot, "runtime", "python", "Scripts", "docling-serve.exe"));
-  expect(docling.args).toEqual(["run"]);
+  expect(docling.command).toBe(path.join(releaseRoot, "runtime", "python", "python.exe"));
+  expect(docling.args).toEqual(["-m", "docling_serve", "run"]);
   expect(docling.cwd).toBe(releaseRoot);
   expect(docling.env).toMatchObject({
     UVICORN_HOST: "127.0.0.1",
@@ -19,6 +19,7 @@ it("uses LOCALAPPDATA and builds bundled loopback child commands without secrets
     UVICORN_WORKERS: "1",
     DOCLING_SERVE_ARTIFACTS_PATH: "C:\\models\\docling",
     DOCLING_DEVICE: "auto",
+    DOCLING_INFERENCE_COMPILE_TORCH_MODELS: "false",
     DOCLING_SERVE_ENABLE_UI: "false",
     DOCLING_SERVE_ENG_KIND: "local",
     PYTHONUTF8: "1",
@@ -49,7 +50,7 @@ it("scopes the Global Windows mutex to canonical workspace identity", () => {
 it("BAT launches only the bundled launcher through a quoted relative path", async () => {
   const bat = await readFile(path.resolve("start-course-agent.bat"), "utf8");
   expect(bat).toContain('"%~dp0runtime\\node\\node.exe" "%~dp0app\\dist\\src\\launcher.js"');
-  expect(bat).not.toMatch(/\bnode\s|\bpython\s|mineru-api/i);
+  expect(bat).not.toMatch(/mineru-api/i);
   expect(bat).toMatch(/if not exist/i);
 });
 

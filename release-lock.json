@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "platform": "win32",
+  "architecture": "x64",
+  "node": {
+    "version": "24.11.1",
+    "url": "https://nodejs.org/dist/v24.11.1/node-v24.11.1-win-x64.zip",
+    "sha256": "5355ae6d7c49eddcfde7d34ac3486820600a831bf81dc3bdca5c8db6a9bb0e76"
+  },
+  "python": {
+    "version": "3.12.10",
+    "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe",
+    "sha256": "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb",
+    "size": 26964224
+  },
+  "docling": {
+    "version": "2.118.0",
+    "wheelUrl": "https://files.pythonhosted.org/packages/83/d7/b63f774a7d274e9b5798dd5ad270c18ce3adda205807b70e1a27d5aefa85/docling-2.118.0-py3-none-any.whl",
+    "sha256": "fd4962c9a54229bae1eb9b49f7fadb7e7b8affabf7e4fba1aac8cb335f558c8f"
+  },
+  "doclingServe": {
+    "version": "1.28.0",
+    "wheelUrl": "https://files.pythonhosted.org/packages/93/19/c36b98d32f86704b0f7fe51b3c9be67244b5618e78c69146b1cd161214a4/docling_serve-1.28.0-py3-none-any.whl",
+    "sha256": "189595e0689bb2ca59dbdc24dc6c8bfabbe891652735c83dcbb8bce3140619b8"
+  }
+}
