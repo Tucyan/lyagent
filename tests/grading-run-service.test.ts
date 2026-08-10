@@ -8,6 +8,8 @@ import { GradingResultService } from "../src/services/grading-result-service.js"
 import { GradingRunService } from "../src/services/grading-run-service.js";
 import { GradingSessionService } from "../src/services/grading-session-service.js";
 import { RubricService } from "../src/services/rubric-service.js";
+import { KnowledgeAccessError } from "../src/services/knowledge-service.js";
+import { GradingResultValidationError } from "../src/schemas/grading.js";
 
 const roots: string[] = [];
 
@@ -35,6 +37,28 @@ afterEach(async () => {
 });
 
 describe("GradingRunService", () => {
+  it("persists stable safe failure categories without provider details", async () => {
+    const { root, sessions, createSession } = await setup();
+    const cases = [
+      { student: "20261001", error: new Error("provider secret response"), code: "GRADING_MODEL_REQUEST_FAILED" },
+      { student: "20261002", error: new Error("Grading Agent did not submit a draft"), code: "GRADING_TOOL_CALL_MISSING" },
+      { student: "20261003", error: new GradingResultValidationError("raw invalid draft"), code: "GRADING_DRAFT_VALIDATION_FAILED" },
+      { student: "20261004", error: new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "raw missing release"), code: "GRADING_KNOWLEDGE_UNAVAILABLE" },
+    ];
+    for (const item of cases) {
+      const session = await createSession(item.student);
+      const runs = new GradingRunService(root, sessions, () => ({ async run() { throw item.error; } }));
+      const started = await runs.start(session.id, { kind: "grade", message: "开始" });
+      const terminal = await runs.waitForTerminal(started.id);
+      expect(terminal).toMatchObject({ status: "failed", errorCode: item.code });
+      const events = await runs.listEvents(started.id, 0);
+      expect(events).toContainEqual(expect.objectContaining({ type: "error", code: item.code }));
+      expect(JSON.stringify(events)).not.toContain(item.error.message);
+      runs.close();
+    }
+    sessions.close();
+  });
+
   it("honors an explicitly configured bounded worker concurrency", async () => {
     const { root, sessions, createSession } = await setup();
     const first = await createSession("20260001");
@@ -137,13 +161,13 @@ describe("GradingRunService", () => {
 
     const runs = new GradingRunService(root, sessions, () => ({ run: provider }));
 
-    await expect(runs.getRun("interrupted-run")).resolves.toMatchObject({ status: "failed", errorCode: "INTERRUPTED" });
+    await expect(runs.getRun("interrupted-run")).resolves.toMatchObject({ status: "failed", errorCode: "GRADING_RUN_INTERRUPTED" });
     expect(provider).not.toHaveBeenCalled();
     expect((await sessions.getSession(session.id)).gradingStatus).toBe("failed");
     const recoveredChatSession = await sessions.getSession(chatSession.id);
     expect(recoveredChatSession.gradingStatus).toBe("queued");
     expect(recoveredChatSession.activeRunId).toBeUndefined();
-    expect(await runs.listEvents("interrupted-run", 0)).toEqual([expect.objectContaining({ type: "error", code: "INTERRUPTED" })]);
+    expect(await runs.listEvents("interrupted-run", 0)).toEqual([expect.objectContaining({ type: "error", code: "GRADING_RUN_INTERRUPTED" })]);
     runs.close(); sessions.close();
   });
 

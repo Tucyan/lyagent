@@ -24,7 +24,13 @@ export class KnowledgeService {
   }
 
   async forCourse(courseId: string): Promise<CourseKnowledgeService> {
-    const release = await this.materials.getActiveRelease(courseId);
+    let release: KnowledgeRelease | undefined;
+    try { release = await this.materials.getActiveRelease(courseId); }
+    catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "This course has no active knowledge release");
+      throw error;
+    }
     if (!release) throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "This course has no active knowledge release");
     const releaseRoot = `knowledge/${courseId}/releases/${release.id}`;
     const filesystem = new SafeFilesystem(`${this.materials.root}/${releaseRoot}`);

@@ -4,6 +4,7 @@ import type { CourseKnowledgeService } from "../../services/knowledge-service.js
 import type { StoredGradingDraft, GradingResultService } from "../../services/grading-result-service.js";
 import type { GradingSessionService } from "../../services/grading-session-service.js";
 import type { WebEvidenceService } from "../../services/web-evidence-service.js";
+import type { Rubric } from "../../schemas/rubric.js";
 import { createCourseQaTools } from "../knowledge/index.js";
 
 export type GradingToolName =
@@ -41,9 +42,10 @@ const knowledgeLabels: Partial<Record<GradingToolName, string>> = {
 export function createAssignmentGraderTools(options: {
   sessions: GradingSessionService;
   results: GradingResultService;
+  rubric?: Rubric;
   sessionId: string;
   runId: string;
-  knowledge: CourseKnowledgeService;
+  knowledge?: CourseKnowledgeService;
   web?: WebEvidenceService;
   purpose?: "grading" | "naming";
   visionAvailable?: boolean;
@@ -126,7 +128,13 @@ export function createAssignmentGraderTools(options: {
     execute: async () => ({ content: [{ type: "text", text: JSON.stringify((await options.results.readDraft(options.sessionId)) ?? null) }], details: {} }),
   };
 
-  const submitSchema = Type.Object({ expectedVersion: Type.Integer({ minimum: 0 }), draft: Type.Any() }, { additionalProperties: false });
+  const submitSchema = Type.Object({
+    expectedVersion: Type.Integer({
+      minimum: 0,
+      description: "Use 0 when read_grading_draft returns null; otherwise use exactly the returned draft version.",
+    }),
+    draft: gradingDraftToolSchema(options.rubric),
+  }, { additionalProperties: false });
   const submitGradingDraft: AgentTool<typeof submitSchema> = {
     name: "submit_grading_draft",
     label: "更新批改草稿",
@@ -140,7 +148,10 @@ export function createAssignmentGraderTools(options: {
     },
   };
 
-  const knowledgeTools = createCourseQaTools(options.knowledge, options.web).tools
+  const knowledgeTools = createCourseQaTools(
+    options.knowledge ?? unavailableKnowledgeService(),
+    options.web,
+  ).tools
     .filter((tool) => approvedKnowledgeNames.has(tool.name as GradingToolName))
     .map((tool) => ({ ...tool, label: knowledgeLabels[tool.name as GradingToolName] ?? tool.label }));
 
@@ -216,4 +227,111 @@ function imageMime(assetPath: string): "image/png" | "image/jpeg" | "image/gif" 
   if (extension === "gif") return "image/gif";
   if (extension === "webp") return "image/webp";
   return "image/jpeg";
+}
+
+function unavailableKnowledgeService(): CourseKnowledgeService {
+  const unavailable = {
+    code: "ACTIVE_RELEASE_NOT_FOUND",
+    message: "当前课程没有已发布资料；请继续依据冻结评分表和学生作业批改",
+  };
+  return {
+    async listDirectory() { return [unavailable]; },
+    async search() { return [unavailable]; },
+    async readLines() {
+      return { path: "", startLine: 1, endLine: 1, content: JSON.stringify(unavailable), ...unavailable };
+    },
+  } as unknown as CourseKnowledgeService;
+}
+
+function gradingDraftToolSchema(rubric?: Rubric): any {
+  const explanation = Type.String({ minLength: 1, maxLength: 4_000 });
+  const evidence = Type.Union([
+    Type.Object({
+      kind: Type.Literal("analysis"),
+      observation: explanation,
+      rubricBasis: explanation,
+      scoreJustification: explanation,
+    }, { additionalProperties: false }),
+    Type.Object({
+      kind: Type.Literal("text"),
+      path: Type.String({ minLength: 1, maxLength: 240 }),
+      heading: Type.String({ minLength: 1, maxLength: 240 }),
+      startLine: Type.Integer({ minimum: 1 }),
+      endLine: Type.Integer({ minimum: 1 }),
+      quote: Type.String({ minLength: 1, maxLength: 500 }),
+    }, { additionalProperties: false }),
+    Type.Object({
+      kind: Type.Literal("image"),
+      path: Type.String({ minLength: 1, maxLength: 240 }),
+      explanation,
+    }, { additionalProperties: false }),
+  ]);
+  const common = {
+    reason: explanation,
+    evidence: Type.Array(evidence, { maxItems: 20 }),
+    evidenceInsufficient: Type.Optional(Type.Boolean()),
+    confidence: Type.Number({ minimum: 0, maximum: 1 }),
+    confidenceReason: Type.Optional(Type.String({ minLength: 1, maxLength: 1_000 })),
+  };
+  const narrative = {
+    strengths: Type.Array(Type.String({ minLength: 1, maxLength: 1_000 }), { maxItems: 20 }),
+    improvements: Type.Array(Type.String({ minLength: 1, maxLength: 1_000 }), { maxItems: 20 }),
+    warnings: Type.Array(Type.String({ minLength: 1, maxLength: 1_000 }), { maxItems: 20 }),
+  };
+  const criterionIds = rubric && rubric.mode !== "deductive" ? rubric.criteria.map(({ id }) => id) : [];
+  const criterion = Type.Object({
+    criterionId: identifierToolSchema(criterionIds),
+    selectedLevelId: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+    score: Type.Number({ minimum: 0 }),
+    ...common,
+  }, { additionalProperties: false });
+  const deductionIds = rubric?.mode === "deductive"
+    ? rubric.rules.map(({ id }) => id)
+    : rubric?.mode === "hybrid"
+      ? rubric.deductionRules.map(({ id }) => id)
+      : [];
+  const deduction = Type.Object({
+    ruleId: identifierToolSchema(deductionIds),
+    triggered: Type.Boolean(),
+    deduction: Type.Number({ minimum: 0 }),
+    ...common,
+  }, { additionalProperties: false });
+  const bonusIds = rubric?.mode === "hybrid" ? rubric.bonusRules.map(({ id }) => id) : [];
+  const bonus = Type.Object({
+    ruleId: identifierToolSchema(bonusIds),
+    triggered: Type.Boolean(),
+    bonus: Type.Number({ minimum: 0 }),
+    ...common,
+  }, { additionalProperties: false });
+  const additive = Type.Object({
+    schemaVersion: Type.Literal("1.0"),
+    mode: Type.Literal("additive"),
+    criteria: Type.Array(criterion, { maxItems: 40 }),
+    ...narrative,
+  }, { additionalProperties: false });
+  const deductive = Type.Object({
+    schemaVersion: Type.Literal("1.0"),
+    mode: Type.Literal("deductive"),
+    deductions: Type.Array(deduction, { maxItems: 80 }),
+    ...narrative,
+  }, { additionalProperties: false });
+  const hybrid = Type.Object({
+    schemaVersion: Type.Literal("1.0"),
+    mode: Type.Literal("hybrid"),
+    criteria: Type.Array(criterion, { maxItems: 40 }),
+    bonuses: Type.Array(bonus, { maxItems: 40 }),
+    deductions: Type.Array(deduction, { maxItems: 80 }),
+    ...narrative,
+  }, { additionalProperties: false });
+  if (rubric?.mode === "additive") return additive;
+  if (rubric?.mode === "deductive") return deductive;
+  if (rubric?.mode === "hybrid") return hybrid;
+  return Type.Union([additive, deductive, hybrid]);
+}
+
+function identifierToolSchema(values: string[]): any {
+  const unique = [...new Set(values)];
+  if (unique.length === 1) return Type.Literal(unique[0]!);
+  if (unique.length > 1) return Type.Union(unique.map((value) => Type.Literal(value)));
+  return Type.String({ minLength: 1, maxLength: 80 });
 }

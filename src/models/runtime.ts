@@ -4,7 +4,7 @@ import { createPiMaterialPlanner } from "../agents/material-import/agent.js";
 import { createPiRubricDesigner, type PiRubricDesigner } from "../agents/rubric-designer/agent.js";
 import type { GradingAgentBuilder } from "../api/grading-routes.js";
 import type { CourseKnowledgeService } from "../services/knowledge-service.js";
-import { KnowledgeService } from "../services/knowledge-service.js";
+import { KnowledgeAccessError, KnowledgeService } from "../services/knowledge-service.js";
 import type { RubricService } from "../services/rubric-service.js";
 import type { WebEvidenceService } from "../services/web-evidence-service.js";
 import type { ConfiguredModels } from "./openai-compatible.js";
@@ -32,6 +32,13 @@ export function createPrimaryModelRuntime(options: {
   const gradingAgentFactory: GradingAgentBuilder = (sessionId, runId, services): PiAssignmentGrader => ({
     async run(request, onEvent, signal) {
       const session = await services.sessions.getSession(sessionId);
+      let courseKnowledge: CourseKnowledgeService | undefined;
+      if (request.kind !== "name") {
+        try { courseKnowledge = await knowledge.forCourse(session.courseId); }
+        catch (error: unknown) {
+          if (!(error instanceof KnowledgeAccessError) || error.code !== "ACTIVE_RELEASE_NOT_FOUND") throw error;
+        }
+      }
       return createPiAssignmentGrader({
         ...common,
         primaryModel: options.configured.primary,
@@ -42,7 +49,7 @@ export function createPrimaryModelRuntime(options: {
         rubrics: services.rubrics,
         sessionId,
         runId,
-        knowledge: await knowledge.forCourse(session.courseId),
+        ...(courseKnowledge ? { knowledge: courseKnowledge } : {}),
         ...(options.webFactory ? { web: options.webFactory() } : {}),
       }).run(request, onEvent, signal);
     },

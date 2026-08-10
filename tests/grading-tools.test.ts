@@ -20,7 +20,7 @@ async function fixture() {
   const source = path.join(root, "report.md");
   await writeFile(source, "# 报告\n\n课程概念与实现过程\n\n![图表](assets/chart.png)\n", "utf8");
   const sessions = new GradingSessionService(root, rubrics);
-  const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: frozen.version, studentName: "张晓明", studentNumber: "20260001", originalPath: source, originalFilename: "report.md", autoStartAfterConversion: false, revisionAssets: [{ path: "assets/chart.png", bytes: new Uint8Array([1, 2, 3]) }] });
+  const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: frozen.version, studentName: "张晓明", studentNumber: "20260001", originalPath: source, originalFilename: "report.md", autoStartAfterConversion: false, revisionAssets: [{ path: "assets/chart.png", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) }] });
   await sessions.lockSubmissionForGrading(session.id);
   const results = new GradingResultService(root, sessions, rubrics);
   const knowledge = {
@@ -33,7 +33,7 @@ async function fixture() {
     read: async () => ({ sourceId: "web-1", title: "公开资料", url: "https://example.edu", content: "网页内容", startLine: 1, endLine: 1 }),
     citation: () => undefined,
   };
-  return { sessions, results, rubrics, session, knowledge, web };
+  return { sessions, results, rubrics, frozen, session, knowledge, web };
 }
 
 afterEach(async () => {
@@ -47,9 +47,20 @@ const draft = {
 };
 
 describe("assignment grader tools", () => {
+  it("keeps knowledge tools available and returns a controlled missing-release state", async () => {
+    const { sessions, results, session } = await fixture();
+    const tools = createAssignmentGraderTools({ sessions, results, sessionId: session.id, runId: "no-knowledge" });
+    expect(tools.tools.map(({ name }) => name)).toEqual(expect.arrayContaining([
+      "get_knowledge_root", "list_knowledge_directory", "search_knowledge", "read_knowledge_lines",
+    ]));
+    const result = await tools.tools.find(({ name }) => name === "get_knowledge_root")!.execute("root", {});
+    expect(JSON.stringify(result)).toContain("ACTIVE_RELEASE_NOT_FOUND");
+    sessions.close();
+  });
+
   it("exposes exactly the approved fixed allow-list without rubric or score tools", async () => {
-    const { sessions, results, session, knowledge, web } = await fixture();
-    const tools = createAssignmentGraderTools({ sessions, results, sessionId: session.id, runId: "run-1", knowledge: knowledge as any, web: web as any });
+    const { sessions, results, frozen, session, knowledge, web } = await fixture();
+    const tools = createAssignmentGraderTools({ sessions, results, rubric: frozen.rubric, sessionId: session.id, runId: "run-1", knowledge: knowledge as any, web: web as any });
     expect(tools.tools.map(({ name }) => name)).toEqual([
       "list_submission_files", "search_submission", "read_submission_lines", "read_submission_image",
       "read_grading_draft", "submit_grading_draft",
@@ -58,6 +69,12 @@ describe("assignment grader tools", () => {
     ]);
     expect(JSON.stringify(tools.tools.map(({ parameters }) => parameters))).not.toContain("sessionId");
     expect(tools.tools.some(({ name }) => name.includes("rubric") || name.includes("score") || name.includes("validate"))).toBe(false);
+    const submitParameters = tools.tools.find(({ name }) => name === "submit_grading_draft")!.parameters;
+    expect(JSON.stringify(submitParameters)).toContain('"schemaVersion"');
+    expect(JSON.stringify(submitParameters)).toContain('"deductions"');
+    expect(JSON.stringify(submitParameters)).toContain('"reason"');
+    expect(JSON.stringify(submitParameters)).toContain('"scoreJustification"');
+    expect(JSON.stringify(submitParameters)).toContain("Use 0 when read_grading_draft returns null");
     sessions.close();
   });
 
@@ -116,7 +133,7 @@ describe("assignment grader tools", () => {
     const { sessions, results, session, knowledge } = await fixture();
     const withVision = createAssignmentGraderTools({ sessions, results, sessionId: session.id, runId: "run-vision", knowledge: knowledge as any, visionAvailable: true });
     const image = await withVision.tools.find(({ name }) => name === "read_submission_image")!.execute("image", { path: "assets/chart.png" });
-    expect(image.content).toEqual([{ type: "image", data: "AQID", mimeType: "image/png" }]);
+    expect(image.content).toEqual([{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]);
 
     const withoutVision = createAssignmentGraderTools({ sessions, results, sessionId: session.id, runId: "run-text", knowledge: knowledge as any, visionAvailable: false });
     const unavailable = await withoutVision.tools.find(({ name }) => name === "read_submission_image")!.execute("image", { path: "assets/chart.png" });

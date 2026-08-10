@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
 import PQueue from "p-queue";
+import { ZodError } from "zod";
 import type { GradingAgentEvent, GradingAgentOutcome, PiAssignmentGrader } from "../agents/assignment-grader/agent.js";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
 import { GradingConflictError, type GradingSession, type GradingSessionService } from "./grading-session-service.js";
+import { GradingResultValidationError } from "../schemas/grading.js";
+import { KnowledgeAccessError } from "./knowledge-service.js";
 
 export type GradingRunStatus = "queued" | "running" | "completed" | "waiting_for_teacher" | "failed" | "cancelled";
 
@@ -190,8 +193,9 @@ export class GradingRunService {
     } catch (error: unknown) {
       await eventTail;
       if ((await this.getRun(runId)).status === "cancelled" || isAbort(error)) return;
-      await this.finishRun(runId, "failed", "GRADING_RUN_FAILED");
-      await this.appendEvent(runId, "error", { code: "GRADING_RUN_FAILED", message: "批改运行未能完成" });
+      const failure = classifyGradingFailure(error);
+      await this.finishRun(runId, "failed", failure.code);
+      await this.appendEvent(runId, "error", failure);
       if (run.kind === "grade") await this.sessions.setGradingStatus(run.sessionId, "failed");
       else await this.sessions.clearActiveRun(run.sessionId, runId);
     } finally {
@@ -213,15 +217,17 @@ export class GradingRunService {
     } else if (outcome.kind === "title") {
       throw new Error("A submission-title outcome cannot complete a grading run");
     } else {
-      content = outcome.reply || streamedReply;
       if (run.kind === "grade") {
+        const failure = safeGradingFailure("GRADING_TOOL_CALL_MISSING");
+        content = failure.message;
         status = "failed";
         await this.sessions.setGradingStatus(run.sessionId, "failed");
-      }
+        await this.appendEvent(run.id, "error", failure);
+      } else content = outcome.reply || streamedReply;
     }
     const now = this.now();
     await this.appendConversation(run.sessionId, { role: "assistant", content, runId: run.id, process, processCollapsed: true, tools, ...(options ? { options } : {}), createdAt: now });
-    await this.finishRun(run.id, status);
+    await this.finishRun(run.id, status, status === "failed" ? "GRADING_TOOL_CALL_MISSING" : undefined);
     if (run.kind === "chat" && status !== "waiting_for_teacher") await this.sessions.clearActiveRun(run.sessionId, run.id);
     await this.appendEvent(run.id, "final", { kind: outcome.kind, message: content, ...(options ? { options } : {}) });
   }
@@ -260,9 +266,9 @@ export class GradingRunService {
     const interrupted = this.database.prepare("SELECT id, session_id, kind FROM agent_runs WHERE status = 'running'").all() as Array<{ id: string; session_id: string; kind: "grade" | "chat" }>;
     const recover = this.database.transaction(() => {
       for (const run of interrupted) {
-        this.database.prepare("UPDATE agent_runs SET status = 'failed', error_code = 'INTERRUPTED', updated_at = ? WHERE id = ?").run(now, run.id);
+        this.database.prepare("UPDATE agent_runs SET status = 'failed', error_code = 'GRADING_RUN_INTERRUPTED', updated_at = ? WHERE id = ?").run(now, run.id);
         const row = this.database.prepare("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM agent_run_events WHERE run_id = ?").get(run.id) as { sequence: number };
-        this.database.prepare("INSERT INTO agent_run_events (run_id, sequence, event_type, payload_json, created_at) VALUES (?, ?, 'error', ?, ?)").run(run.id, row.sequence + 1, JSON.stringify({ code: "INTERRUPTED", message: "批改运行因服务重启而中断；未自动重新调用模型" }), now);
+        this.database.prepare("INSERT INTO agent_run_events (run_id, sequence, event_type, payload_json, created_at) VALUES (?, ?, 'error', ?, ?)").run(run.id, row.sequence + 1, JSON.stringify(safeGradingFailure("GRADING_RUN_INTERRUPTED")), now);
         this.database.prepare("UPDATE grading_sessions SET active_run_id = NULL, updated_at = ? WHERE id = ? AND active_run_id = ?").run(now, run.session_id, run.id);
         if (run.kind === "grade") this.database.prepare("UPDATE grading_sessions SET grading_status = 'failed', updated_at = ? WHERE id = ? AND grading_status = 'running'").run(now, run.session_id);
       }
@@ -298,4 +304,33 @@ function safeEventPayload(event: GradingAgentEvent): Record<string, unknown> {
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+type SafeGradingFailureCode =
+  | "GRADING_MODEL_REQUEST_FAILED"
+  | "GRADING_TOOL_CALL_MISSING"
+  | "GRADING_DRAFT_VALIDATION_FAILED"
+  | "GRADING_KNOWLEDGE_UNAVAILABLE"
+  | "GRADING_RUN_INTERRUPTED";
+
+function safeGradingFailure(code: SafeGradingFailureCode): { code: SafeGradingFailureCode; message: string } {
+  const messages: Record<SafeGradingFailureCode, string> = {
+    GRADING_MODEL_REQUEST_FAILED: "模型请求失败，请检查模型连接后重试",
+    GRADING_TOOL_CALL_MISSING: "模型未提交有效批改草稿，请重试",
+    GRADING_DRAFT_VALIDATION_FAILED: "批改草稿未通过校验，请重试并检查评分依据",
+    GRADING_KNOWLEDGE_UNAVAILABLE: "课程资料暂不可用；可在不使用课程资料的情况下重试批改",
+    GRADING_RUN_INTERRUPTED: "批改运行因服务重启而中断；未自动重新调用模型",
+  };
+  return { code, message: messages[code] };
+}
+
+function classifyGradingFailure(error: unknown): { code: SafeGradingFailureCode; message: string } {
+  if (error instanceof KnowledgeAccessError)
+    return safeGradingFailure("GRADING_KNOWLEDGE_UNAVAILABLE");
+  if (error instanceof GradingResultValidationError || error instanceof ZodError || (error as { name?: unknown }).name === "GradingResultValidationError")
+    return safeGradingFailure("GRADING_DRAFT_VALIDATION_FAILED");
+  const message = error instanceof Error ? error.message : "";
+  if (/did not submit|terminal action|tool (?:call|missing)|submit_grading_draft/i.test(message))
+    return safeGradingFailure("GRADING_TOOL_CALL_MISSING");
+  return safeGradingFailure("GRADING_MODEL_REQUEST_FAILED");
 }
