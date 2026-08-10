@@ -24,9 +24,9 @@ M1新增路径安全、知识发布、Pi资料规划器和资料导入API测试�
 |API/Channel测试|鉴权、验签、去重、错误映射|使用录制或构造请求|
 |验收测试|冻结资料、固定Prompt和批量fixture|仅在明确标记的环境运行真实Provider|
 
-普通`npm test`不得要求模型密钥、MinerU、企业微信账户或公网连接。
+普通`npm test`不得要求模型密钥、Docling、企业微信账户或公网连接。
 
-Windows启动器测试通过依赖注入覆盖真实bind端口保留、伪造/过期runtime descriptor、Global Mutex命名、子进程参数与定向回收、退出码42、异常重启上限、GPU/强制CPU选择、hybrid smoke回退、BAT中文与空格路径，以及脱敏runtime API。普通测试不启动或安装真实MinerU；发布包真实组件验收属于后续发布验收任务。
+Windows启动器测试通过依赖注入覆盖真实bind端口保留、伪造/过期runtime descriptor、Global Mutex命名、子进程参数与定向回收、退出码42、异常重启上限、自动/强制CPU选择、Docling就绪检查、BAT中文与空格路径，以及脱敏runtime API。普通测试不启动或安装真实Docling；发布包真实组件验收属于后续发布验收任务。
 
 M4测试覆盖评分三种模式的程序重算、精确等级/等级区间/连续得分、固定一次/按次/整数区间扣分及历史规则兼容、结构化评分分析论据、可选原文与图片佐证的当前提交边界、不可变原件、Markdown版本锁、`.doc`拒绝、伪造扩展名与远程图片拒绝、文件名身份识别、Docling ZIP流式限额解包与404恢复、转换器不可达/超时/5xx分类、提交/轮询/结果下载的有界退避重试、完成后任务丢失的受限重提、明确解析失败与本地结果拒绝、安全错误持久化和恢复、活动转换删除保护、删除墓碑查询隔离以及提交文件写入与删除互斥、固定13项正式批改工具与专用作业命名工具、教师审计、并发草稿冲突、可恢复的幂等确认、后台单并发、运行中重启不重复调用模型、SSE序号回放和三栏页面状态。`tests/fixtures/single-grading/ai-life-report/`包含同内容的MD、DOCX和PDF合成报告及用户提供的冻结评分表。
 
@@ -94,6 +94,8 @@ Dashboard 测试不得依赖真实模型、网络搜索或本机已有课程资�
 ## 本地验证
 
 M5 批量批改的定向回归覆盖状态机、会话预留与租约 fencing、并发暂停、教师回答、崩溃窗口、Review 刷新、汇总文件、异步转换等待、API、页面模型和 120 份验收：
+
+Windows Release 回归还覆盖持久化上传草稿、逐项失败隔离、刷新/重启恢复、身份补填、替换/移除、共享 `assets/` 引用筛选、事务性幂等提交，以及没有 active knowledge release 时提交完整批改草稿。运行错误断言稳定安全码，并确认事件中不包含原始供应商错误。
 
 ```powershell
 npm test -- --run tests/grading-state-machine.test.ts tests/grading-concurrency.test.ts tests/grading-recovery.test.ts tests/summary-service.test.ts tests/grading-batch-acceptance.test.ts tests/grading-batch-page-model.test.ts tests/grading-api.test.ts tests/grading-run-service.test.ts tests/web-assets.test.ts

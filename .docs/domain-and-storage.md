@@ -66,6 +66,8 @@ M1已由资料导入服务安全创建`inbox/materials`和`knowledge/{courseId}`
 
 SQLite 表 `grading_batches` 保存批次绑定的唯一 Assignment、冻结 Rubric 版本、并发上限和运行状态；`grading_batch_jobs` 保存与 M4 会话的一对一成员关系、学生标识、尝试次数、下一轮会话信息、租约拥有者和租约到期时间。一个 M4 会话全局只能属于一个批次，同一批次内学生编号唯一；被批次预留的会话不能从 M4 直接启动 grade/chat 或删除，以免两个运行争用同一草稿或破坏成员文件。批次预留、M4 状态 CAS、run 创建与删除 claim 均使用 SQLite immediate 事务，并在事务内同时检查会话状态、删除标记、活动 run 与 reservation。批次允许 `draft`、`running`、`paused`、`completed`，job 允许 `pending`、`running`、`waiting_for_teacher`、`needs_review`、`completed`、`failed`、`cancelled`。
 
+`grading_batch_uploads` 与 `grading_batch_upload_items` 保存正式批次创建前的可恢复上传状态。草稿项允许 `pending`、`identity_required`、`converting`、`naming`、`ready`、`failed`、`committed`；报告与筛选后的附件位于受控 staging。替换文件会删除该项旧会话，移除或取消草稿默认保留已创建会话；正式提交在创建 `grading_batches/grading_batch_jobs` 的同一事务内写入 `committed_batch_id`，因此重复请求只能得到同一正式批次。
+
 批量结果的受控目录为：
 
 ```text

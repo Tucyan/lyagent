@@ -89,7 +89,7 @@
 
 - [ ] **Step 1: 先写失败测试**
 
-  配置从 `mineru` 迁移为 `converter`，旧 `mineru` 仅作为一次性只读兼容；runtime API 返回 `converter: { provider: "docling", version, status, port, device }`；上传错误和页面不得再声称需要 MinerU；启动命令必须使用内置 `docling-serve.exe run` 并通过环境变量绑定 `127.0.0.1`、端口、单 worker、artifacts 路径和 CPU/auto device。
+  配置从 `mineru` 迁移为 `converter`，旧 `mineru` 仅作为一次性只读兼容；runtime API 返回 `converter: { provider: "docling", version, status, port, device }`；上传错误和页面不得再声称需要 MinerU；启动命令必须使用内置 `python.exe -m docling_serve run`（不调用会绑定构建机路径的控制台脚本）并通过环境变量绑定 `127.0.0.1`、端口、单 worker、artifacts 路径和 CPU/auto device。
 
 - [ ] **Step 2: 验证 RED**
 
@@ -161,6 +161,17 @@
 - [ ] **Step 3: 验证并提交**
 
   检查 Markdown 链接、围栏和示例命令，运行 `git diff --check` 后提交 `docs: document Docling release runtime`。
+
+### Task 4.5：Windows Release 批改流程回归修复（2026-08-10）
+
+- [x] 身份识别固定为“完整手填 → 标准文件名本地解析 → 模型兜底 → 教师补填”，并为超时、无效 JSON、无法识别和字段不完整提供稳定错误码。
+- [x] 单份及批量上传支持 Markdown `assets/` 图片，执行路径、魔数、类型、数量、单文件和总量校验；共享目录只复制每份报告实际引用的图片。
+- [x] `/grading` 会话切换、评分表切换和修订创建使用页内历史导航，名称识别状态参与准备轮询并可单独重试。
+- [x] 新增 SQLite 持久化批次上传草稿和逐项状态，支持刷新/重启恢复、补填身份、替换、移除、单项重试、取消清理及事务性幂等提交。
+- [x] 没有 active knowledge release 时仍允许依据冻结评分表与学生作业批改；知识工具返回受控 `ACTIVE_RELEASE_NOT_FOUND`。
+- [x] SSE、运行记录和批量 job 使用安全错误分类，不保存供应商原始响应、Prompt、密钥或学生正文。
+- [x] 自动化回归覆盖 1/10/120 边界、附件安全、名称同步、草稿恢复、无课程资料批改和安全错误码。
+- [ ] 用户运行 Slim/Full 构建及 `verify-release.ps1` 后，继续执行中文空格路径、真实浏览器、真实 Docling 与视觉模型验收。
 
 ### Task 5：实际构建与端到端验收
 

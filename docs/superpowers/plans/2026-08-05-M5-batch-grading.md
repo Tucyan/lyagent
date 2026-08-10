@@ -1,6 +1,6 @@
 # M5 Concurrent Batch Grading Implementation Plan
 
-**Goal:** Add a dedicated batch-grading workspace for 30–120 submissions with configurable local concurrency, pause/resume, question handling, bounded retry, restart reconciliation, and deterministic class CSV export.
+**Goal:** Add a dedicated batch-grading workspace for 1–120 submissions with configurable local concurrency, pause/resume, question handling, bounded retry, restart reconciliation, and deterministic class CSV export.
 
 **Architecture:** Keep M4 sessions and conversations as the per-submission execution boundary. Add a SQLite-backed batch/job coordinator with transactional leases and one `PQueue` per active batch. Successful grading drafts are copied into immutable-by-job review snapshots; Markdown and class CSV are derived from those JSON snapshots. The dedicated `/grading/batches` page uploads reports through the existing controlled upload API, then operates the batch APIs.
 
@@ -14,7 +14,7 @@
 - Create: `tests/grading-state-machine.test.ts`
 - Create: `src/services/grading-batch-service.ts`
 
-1. Write failing tests for 30–120 membership, `(batchId, sessionId)` uniqueness, legal transitions, claim leases, renewal, and retry limits.
+1. Write failing tests for 1–120 membership, `(batchId, sessionId)` uniqueness, legal transitions, claim leases, renewal, and retry limits.
 2. Run the focused test and verify it fails because the service/schema is absent.
 3. Add idempotent SQLite tables, mappings, validation, transactional claims, renewal, and explicit transition guards.
 4. Re-run until the focused tests pass.

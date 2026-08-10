@@ -87,7 +87,7 @@ MVP明确不引入：
 
 - 分布式任务系统；
 
-- PDF和DOCX导入；
+- 旧式二进制`.doc`导入；Markdown、DOCX和PDF通过发布包内置的Docling转换，初版不内置LibreOffice兼容层；
 
 - OCR；
 

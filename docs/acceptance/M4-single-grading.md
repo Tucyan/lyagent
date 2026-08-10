@@ -7,7 +7,7 @@
 ## 启动准备
 
 1. 将`config.example.json`复制为本地且被Git忽略的`workspace/config/app.json`，填写`deepseekApiKey`。
-2. 按`mineru`配置在本机环回地址启动MinerU FastAPI；Markdown报告不需要MinerU。
+2. 按`converter`配置在本机环回地址启动Docling Serve；Markdown报告不需要转换服务。
 3. 确认系统中只有一门课程，且已存在冻结评分表。现有评分表会绑定该唯一课程。
 4. 运行`npm install`、`npm run build`和`npm start`，访问`http://127.0.0.1:3000/grading`。
 
@@ -22,10 +22,19 @@
 7. 展开每个评分项的“查看证据”，核对行号、短引文或受控图片；对每条Review原因分别勾选确认，未全部勾选时不能发布。
 8. 若存在Review原因，填写复核备注并确认全部警告；发布正式结果后确认只读，重复确认不会生成第二份结果。
 9. 下载`export.json`与`export.md`，核对总分一致；确认原始学生文件哈希和内容未改变。
-10. 分别上传同目录DOCX与PDF版本，通过真实MinerU检查转换标题、关键段落和表格。上传`.doc`文件应得到415和转换提示。
+10. 分别上传同目录DOCX与PDF版本，通过真实Docling检查转换标题、关键段落和表格；验收时覆盖`DOCLING_DEVICE=cpu`路径。上传`.doc`文件应得到415和转换提示。
 11. 批改运行中切换页面再返回，确认任务继续且事件按`runId`和序号恢复；只有显式停止按钮才取消运行。
 12. 确认结果后下载JSON与Markdown；点击“创建结果修订”应进入新的未开始会话，原确认结果保持只读。锁定提交也可通过“创建提交修订”生成新会话。
 13. 显式停止或模拟运行失败后，在原会话点击“重试批改”；若未配置模型，开启“转换完成后自动开始批改”必须在创建会话前返回503。
+
+## Windows Release 回归验收（2026-08-10）
+
+1. 使用只填姓名或只填学号的表单，确认服务端返回 `STUDENT_IDENTITY_FIELDS_REQUIRED`，输入框被标出且文件仍保留；补齐两项后可重试。
+2. 分别使用标准文件名、非法身份文件名及模拟超时/无效 JSON，确认本地解析优先，失败时显示稳定错误码和安全提示。
+3. 上传引用嵌套 `assets/` PNG/JPEG/GIF/WebP 的 Markdown；确认图片进入锁定提交和哈希。缺图、重复路径、SVG、伪造图片、越界路径和超限附件必须被拒绝。
+4. 在名称仍为 `pending/resolving` 时确认页面继续轮询；失败后显示安全错误并可“重试名称识别”。切换会话、评分表和创建修订不得重新挂载应用，浏览器前进/后退应恢复详情。
+5. 在课程没有 active knowledge release 时完成一次完整草稿提交；知识工具应返回 `ACTIVE_RELEASE_NOT_FOUND`，批改仍依据冻结评分表和学生作业继续。
+6. 运行失败只显示 `GRADING_MODEL_REQUEST_FAILED`、`GRADING_TOOL_CALL_MISSING`、`GRADING_DRAFT_VALIDATION_FAILED`、`GRADING_KNOWLEDGE_UNAVAILABLE` 或 `GRADING_RUN_INTERRUPTED` 等安全码，不出现供应商原始响应。
 
 ## 自动化证据
 
@@ -36,7 +45,7 @@
 ## 排除范围
 
 - 多份并发、批次暂停/恢复、班级CSV汇总和自动发布正式成绩属于M5。
-- 服务不安装或启动MinerU，不支持旧式二进制`.doc`。
+- 服务不安装或启动其他外部转换服务；初版发布包内置Docling Serve，不支持旧式二进制`.doc`。
 - 不展示Provider私有思考链；界面只展示安全处理摘要与脱敏工具活动。
 
 ## 用户结论

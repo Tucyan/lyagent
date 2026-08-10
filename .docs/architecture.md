@@ -58,15 +58,17 @@ Safe Filesystem / SQLite / External Providers
 4. 答疑只通过`active.json`解析当前不可变release，禁止扫描staging。
 5. 每个批改job只写自己的JSON和Markdown；批次CSV由单写者聚合。
 6. 外部Provider通过接口注入，核心领域逻辑不依赖具体模型或企业微信SDK。
-7. 所有现有Agent、作业命名和身份识别从统一`models.primary`构造OpenAI-compatible运行时。每次批改运行从主模型开始；只有`read_submission_image`成功返回图片内容后，程序才从下一轮起切换至可选`models.vision`并保持到该次运行结束。模型元数据、Provider地址、切换时机和凭据查找由程序控制，Agent不能选择Provider或读取密钥。
+7. 所有现有Agent、作业命名和身份识别从统一`models.primary`构造OpenAI-compatible运行时。`qwen-openai`固定使用Chat Completions；`openai`在Base URL为API根地址时使用Responses，在Base URL显式以`/chat/completions`结尾时使用Chat Completions，设置验证与运行时共用同一判定。每次批改运行从主模型开始；只有`read_submission_image`成功返回图片内容后，程序才从下一轮起切换至可选`models.vision`并保持到该次运行结束。模型元数据、Provider地址、切换时机和凭据查找由程序控制，Agent不能选择Provider或读取密钥。
 8. 模型配置写入在跨进程锁内执行两阶段本地事务：`prepared`日志提供崩溃回滚，配置提交后写`committed`再清理。规范Workspace身份同时界定事务日志、Windows全局Mutex和Workspace隔离的DPAPI凭据命名空间；日志不保存明文密钥，并发进程或不同Workspace不能交错/混用Provider密钥和模型元数据。
-9. Windows发布入口由Node监督进程拥有应用与MinerU子进程。监督进程按规范Workspace身份获取全局Mutex、以实际环回bind保留端口、完成MinerU硬件探测与smoke task，再启动Web应用；退出只回收已记录的子进程树。模型设置以退出码42只重启应用，健康的MinerU保持运行。
+9. Windows发布入口由Node监督进程拥有应用与Docling Serve子进程。监督进程按规范Workspace身份获取全局Mutex、以实际环回bind保留端口、等待Docling `/ready`，再启动Web应用；退出只回收已记录的子进程树。模型设置以退出码42只重启应用，健康的Docling保持运行。
+
+发布客户端对PDF请求显式选择Docling的`pypdfium2`后端。Windows下`docling_parse`原生后端在发布目录包含中文路径时可能无法解析其内置glyph资源；`pypdfium2`避免该路径兼容性问题，同时保留DOCX、PPTX和图片的统一Docling转换协议。
 
 ## 关键流程
 
 ### Windows发布启动
 
-`start-course-agent.bat`只调用发布包内Node启动器。启动器默认使用`%LOCALAPPDATA%\CourseAgent\workspace`，应用端口依次选择3001–3010，MinerU从8000起在受控范围选择，所有监听地址固定为`127.0.0.1`。GPU探测必须由内置Python实际导入torch与lmdeploy并验证CUDA及至少8 GB显存；否则使用pipeline，hybrid smoke失败只回退pipeline一次。
+`start-course-agent.bat`只调用发布包内Node启动器。启动器默认使用`%LOCALAPPDATA%\CourseAgent\workspace`，应用端口依次选择3001–3010，Docling Serve从5001起在受控范围选择，所有监听地址固定为`127.0.0.1`。发布默认使用`DOCLING_DEVICE=auto`，也支持`COURSE_AGENT_DOCLING_DEVICE=cpu`强制CPU；同时关闭`torch.compile`，避免Windows CPU运行时要求额外的MSVC编译器。
 
 ### 知识发布
 
@@ -163,6 +165,8 @@ channels/api → core/agents/tools → services → db/filesystem/provider inter
 ## M5 批量批改边界
 
 `/grading/batches` 是独立于 M4 单份会话页的批量操作界面。批次只编排已有的单份批改会话：每个学生仍由自己的 M4 会话、转换结果、草稿和 Agent 工具上下文隔离，批量协调器不合并学生正文，也不扩大 Agent 的文件权限。
+
+批量文件先进入 SQLite 驱动的上传草稿和受控 `batch-uploads/` staging。每项独立推进身份、转换、命名与就绪状态，进程重启后从持久状态恢复；只有全部保留项就绪时，正式批次、job 预留和草稿 `committed` 状态才在同一 immediate 事务中提交。Markdown 共享附件由程序按实际引用筛选后复制到各自会话，Agent 仍只看到当前会话的受控路径。
 
 `GradingBatchService` 负责 30–120 份成员校验、全局会话预留、1–8 并发调度、暂停/恢复、教师问题、有限重试和租约恢复。队列任务开始时才在 SQLite 事务中领取 job；暂停只阻止新领取，正在运行的 job 会自然结束并释放并发槽。教师回答通过程序控制的 `waiting_for_teacher → queued` 转换，以“继续完成评分”的 grade 轮次恢复，而不是普通咨询 chat。租约 owner 与尝试次数共同构成 fencing 条件，过期执行不能发布或终结后来领取的 job；每次尝试写入独立结果路径，旧执行也不能覆盖新尝试文件。`GradingSummaryService` 为每个成功 job 原子写入带尝试版本的 JSON 事实快照及 Markdown 预览，并以串行写者从当前尝试快照重建班级 CSV。API 和页面只发出确定性命令、读取状态，不自行计算分数。
 
