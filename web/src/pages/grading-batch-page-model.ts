@@ -15,7 +15,7 @@ export function batchProgress(batch: { totalJobs: number; counts: BatchJobCounts
 
 export function batchActions(batch: { status: string; totalJobs: number; counts: BatchJobCounts }) {
   return {
-    canStart: batch.status === "draft" && batch.totalJobs >= 30,
+    canStart: batch.status === "draft" && batch.totalJobs >= 1,
     canPause: batch.status === "running",
     canResume: batch.status === "paused" && batch.counts.pending > 0,
     canExport: batch.counts.needs_review + batch.counts.completed > 0,
@@ -24,6 +24,26 @@ export function batchActions(batch: { status: string; totalJobs: number; counts:
 
 export function shouldPollBatch(batch: { status: string; counts: Pick<BatchJobCounts, "running"> }): boolean {
   return batch.status === "running" || (batch.status === "paused" && batch.counts.running > 0);
+}
+
+export function shouldPollBatchUpload(upload: { status: string; items: Array<{ status: string }> }): boolean {
+  return upload.status === "draft" && upload.items.some(({ status }) => ["pending", "converting", "naming"].includes(status));
+}
+
+export function canCommitBatchUpload(upload: { status: string; items: Array<{ status: string }> }): boolean {
+  return upload.status === "draft" && upload.items.length > 0 && upload.items.every(({ status }) => status === "ready");
+}
+
+export function batchUploadItemStatusLabel(status: string): string {
+  return ({
+    pending: "等待处理",
+    identity_required: "待补填身份",
+    converting: "正在转换",
+    naming: "正在识别名称",
+    ready: "已就绪",
+    failed: "失败",
+    committed: "已创建批次",
+  } as Record<string, string>)[status] ?? status;
 }
 
 export function batchStatusLabel(status: string): string {

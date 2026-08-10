@@ -9,7 +9,7 @@ import { loadAppConfig } from "../src/config/app-config.js";
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
-async function fixture() {
+async function fixture(fetchImpl = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok", arguments: "{}" } }] } }] }), { status: 200 }))) {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "course-agent-model-api-"));
   roots.push(workspaceRoot);
   const keys = new Map<string, string>();
@@ -24,10 +24,66 @@ async function fixture() {
       restoreProtected: async (id, value) => { if (value) keys.set(id, value.toString()); else keys.delete(id); },
       protectApiKey: async (key) => Buffer.from(key),
     },
-    fetchImpl: vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok", arguments: "{}" } }] } }] }), { status: 200 })),
+    fetchImpl,
   });
   return { workspaceRoot, service, keys };
 }
+
+it("returns a safe model verification reason without exposing provider content", async () => {
+  const fetchImpl = vi.fn(async () => new Response("provider detail must stay private", { status: 404 }));
+  const { workspaceRoot, service } = await fixture(fetchImpl);
+  const app = await createServer({ workspaceRoot, modelConfigService: service, modelApiSecurity: security });
+  const response = await app.inject({
+    method: "POST", url: "/api/system/models/test",
+    headers: { origin: security.allowedOrigin, "x-csrf-token": security.csrfToken },
+    payload: { primary: { providerId: "custom", modelId: "missing", baseUrl: "https://api.example/v1", apiKey: "secret" } },
+  });
+  expect(response.statusCode).toBe(422);
+  expect(response.json()).toMatchObject({ code: "MODEL_CONFIGURATION_FAILED", reason: "model_not_found" });
+  expect(response.body).not.toContain("provider detail");
+  expect(response.body).not.toContain("secret");
+  await app.close();
+});
+
+it("retries one successful response that omits the required tool call", async () => {
+  const fetchImpl = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok" } }] } }] }), { status: 200 }));
+  const { workspaceRoot, service } = await fixture(fetchImpl);
+  await expect(service.test({ primary: { providerId: "custom", modelId: "model", baseUrl: "https://api.example/v1", apiKey: "secret" } })).resolves.toEqual({ ok: true });
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+});
+
+it("retries without tool_choice when a compatible endpoint rejects that optional field", async () => {
+  const fetchImpl = vi.fn()
+    .mockResolvedValueOnce(new Response("tool_choice is unsupported", { status: 400 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok" } }] } }] }), { status: 200 }));
+  const { service } = await fixture(fetchImpl);
+  await expect(service.test({ primary: { providerId: "custom", modelId: "model", baseUrl: "https://api.example/v1", apiKey: "secret" } })).resolves.toEqual({ ok: true });
+  const retryBody = JSON.parse(fetchImpl.mock.calls[1]![1]!.body as string) as { tool_choice?: unknown };
+  expect(retryBody.tool_choice).toBeUndefined();
+});
+
+it("validates OpenAI providers through the Responses API", async () => {
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ output: [{ type: "function_call", name: "configuration_ok", arguments: "{}" }] }), { status: 200 }));
+  const { service } = await fixture(fetchImpl);
+  await expect(service.test({ primary: { providerId: "openai", modelId: "gpt-model", baseUrl: "https://api.example/v1", apiKey: "secret" } })).resolves.toEqual({ ok: true });
+  const calls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+  expect(calls[0]![0]).toBe("https://api.example/v1/responses");
+  const body = JSON.parse(calls[0]![1].body as string) as { input?: unknown; messages?: unknown; tools?: Array<{ name?: string; function?: unknown }> };
+  expect(body.input).toBeDefined();
+  expect(body.messages).toBeUndefined();
+  expect(body.tools?.[0]).toMatchObject({ type: "function", name: "configuration_ok" });
+  expect(body.tools?.[0]?.function).toBeUndefined();
+});
+
+it("validates an OpenAI provider using a full Chat Completions URL", async () => {
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "configuration_ok" } }] } }] }), { status: 200 }));
+  const { service } = await fixture(fetchImpl);
+  await expect(service.test({ primary: { providerId: "openai", modelId: "gpt-model", baseUrl: "https://botcf.com/v1/chat/completions", apiKey: "secret" } })).resolves.toEqual({ ok: true });
+  const calls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+  expect(calls[0]![0]).toBe("https://botcf.com/v1/chat/completions");
+});
 
 const security = { csrfToken: "csrf-test", isLoopback: () => true, allowedOrigin: "http://127.0.0.1:3001" };
 
@@ -83,6 +139,38 @@ it("reuses one submitted key when primary and vision share a provider", async ()
   });
   expect(response.statusCode).toBe(200);
   expect(keys.size).toBe(0);
+  await app.close();
+});
+
+it("tests vision endpoints with an image while keeping tool calls broadly OpenAI-compatible", async () => {
+  const { workspaceRoot, service } = await fixture();
+  const app = await createServer({ workspaceRoot, modelConfigService: service, modelApiSecurity: security });
+  const response = await app.inject({
+    method: "POST", url: "/api/system/models/test",
+    headers: { origin: security.allowedOrigin, "x-csrf-token": security.csrfToken },
+    payload: {
+      primary: { providerId: "primary", modelId: "text-model", baseUrl: "https://api.example/v1", apiKey: "primary-secret" },
+      vision: { providerId: "vision", modelId: "vision-model", baseUrl: "https://vision.example/v1", apiKey: "vision-secret" },
+    },
+  });
+  expect(response.statusCode).toBe(200);
+  const fetchImpl = (service as unknown as { options: { fetchImpl: ReturnType<typeof vi.fn> } }).options.fetchImpl;
+  const primaryBody = JSON.parse(fetchImpl.mock.calls[0]![1]!.body as string) as { tool_choice?: unknown; temperature?: unknown; max_tokens?: unknown; messages: Array<{ content: unknown }> };
+  const visionBody = JSON.parse(fetchImpl.mock.calls[1]![1]!.body as string) as { tool_choice?: unknown; temperature?: unknown; max_tokens?: unknown; messages: Array<{ content: unknown }> };
+  expect(primaryBody.tool_choice).toBe("required");
+  expect(primaryBody.temperature).toBeUndefined();
+  expect(primaryBody.max_tokens).toBeUndefined();
+  expect(primaryBody.messages[0]!.content).toBeTypeOf("string");
+  expect(visionBody.tool_choice).toBe("required");
+  expect(visionBody.temperature).toBeUndefined();
+  expect(visionBody.max_tokens).toBeUndefined();
+  expect(visionBody.messages[0]!.content).toEqual(expect.arrayContaining([
+    expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ url: expect.stringMatching(/^data:image\/png;base64,/) }) }),
+  ]));
+  const imagePart = (visionBody.messages[0]!.content as Array<{ type: string; image_url?: { url: string } }>).find((part) => part.type === "image_url")!;
+  const image = Buffer.from(imagePart.image_url!.url.split(",", 2)[1]!, "base64");
+  expect(image.readUInt32BE(16)).toBeGreaterThanOrEqual(32);
+  expect(image.readUInt32BE(20)).toBeGreaterThanOrEqual(32);
   await app.close();
 });
 

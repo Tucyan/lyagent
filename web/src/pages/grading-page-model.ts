@@ -36,6 +36,25 @@ export const defaultGradingExportOptions: GradingExportOptions = {
   overallConfidence: true,
 };
 
+export function buildAssetManifest(
+  files: Array<{ name: string; webkitRelativePath?: string }>,
+): string[] {
+  const paths = files.map((file) => file.webkitRelativePath || file.name);
+  const seen = new Set<string>();
+  for (const assetPath of paths) {
+    const segments = assetPath.split("/");
+    if (
+      assetPath.includes("\\") ||
+      segments.length < 2 ||
+      segments[0] !== "assets" ||
+      segments.some((segment) => !segment || segment === "." || segment === "..")
+    ) throw new Error("请选择名为 assets 的附件目录");
+    if (seen.has(assetPath)) throw new Error("duplicate asset path");
+    seen.add(assetPath);
+  }
+  return paths;
+}
+
 export interface ConversionPresentationInput {
   conversionStatus: string;
   conversionError?: {
@@ -113,6 +132,51 @@ export function rubricSelectionKey(rubric: {
   version: number;
 }): string {
   return `${rubric.assignmentId}:${rubric.version}`;
+}
+
+export function resolveGradingRubricKey(
+  rubrics: Array<{ assignmentId: string; version: number }>,
+  preferredKey: string,
+): string {
+  if (rubrics.some((rubric) => rubricSelectionKey(rubric) === preferredKey))
+    return preferredKey;
+  return rubrics[0] ? rubricSelectionKey(rubrics[0]) : "";
+}
+
+export function resolveGradingSessionScope(
+  currentSession: { assignmentId: string; rubricVersion: number } | undefined,
+  rubrics: Array<{ assignmentId: string; version: number }>,
+  selectedRubricKey: string,
+): { assignmentId: string; version: number } | undefined {
+  if (currentSession)
+    return {
+      assignmentId: currentSession.assignmentId,
+      version: currentSession.rubricVersion,
+    };
+  return rubrics.find(
+    (rubric) => rubricSelectionKey(rubric) === selectedRubricKey,
+  );
+}
+
+export function shouldPollSessionPreparation(
+  input: ConversionPresentationInput & { submissionTitleStatus: string },
+): boolean {
+  return (
+    shouldPollConversion(input) ||
+    (input.conversionStatus === "ready" &&
+      ["pending", "resolving"].includes(input.submissionTitleStatus))
+  );
+}
+
+export function gradingSessionStatusLabel(input: {
+  conversionStatus: string;
+  submissionTitleStatus: string;
+}): "等待转换" | "正在识别" | "识别失败" | "已就绪" {
+  if (input.conversionStatus !== "ready") return "等待转换";
+  if (input.submissionTitleStatus === "failed") return "识别失败";
+  if (["pending", "resolving"].includes(input.submissionTitleStatus))
+    return "正在识别";
+  return "已就绪";
 }
 
 export function normalizeGradingExportOptions(

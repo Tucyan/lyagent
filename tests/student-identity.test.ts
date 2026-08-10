@@ -15,7 +15,20 @@ describe("student identity resolution", () => {
 
   it("rejects a partial manual identity without calling AI", async () => {
     const client: StudentIdentityClient = { identify: vi.fn() };
-    await expect(resolveStudentIdentity({ studentName: "张晓明", studentNumber: "", filename: "ignored.docx", client })).rejects.toThrow(/both student name and number/i);
+    await expect(resolveStudentIdentity({ studentName: "张晓明", studentNumber: "", filename: "ignored.docx", client })).rejects.toMatchObject({
+      code: "STUDENT_IDENTITY_FIELDS_REQUIRED",
+    });
+    expect(client.identify).not.toHaveBeenCalled();
+  });
+
+  it("parses a standard filename locally before calling AI", async () => {
+    const client: StudentIdentityClient = { identify: vi.fn() };
+    await expect(resolveStudentIdentity({
+      studentName: "",
+      studentNumber: "",
+      filename: "20260001_张晓明_生成式AI生活助手报告.md",
+      client,
+    })).resolves.toEqual({ studentName: "张晓明", studentNumber: "20260001" });
     expect(client.identify).not.toHaveBeenCalled();
   });
 
@@ -44,6 +57,28 @@ describe("student identity resolution", () => {
 
   it("rejects non-JSON provider output", async () => {
     const client = new DeepSeekStudentIdentityClient({ apiKey: "secret", fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "张晓明 20260001" } }] }), { status: 200 }) });
-    await expect(client.identify("report.docx")).rejects.toBeInstanceOf(StudentIdentityError);
+    await expect(client.identify("report.docx")).rejects.toMatchObject({
+      code: "STUDENT_IDENTITY_INVALID_JSON",
+    });
+  });
+
+  it("returns stable codes for model timeout and non-extractable identity", async () => {
+    const timeout = new DeepSeekStudentIdentityClient({
+      apiKey: "secret",
+      fetchImpl: async () => { throw new DOMException("timed out", "TimeoutError"); },
+    });
+    await expect(timeout.identify("report.docx")).rejects.toMatchObject({
+      code: "STUDENT_IDENTITY_TIMEOUT",
+    });
+
+    const client: StudentIdentityClient = {
+      identify: vi.fn(async () => { throw new StudentIdentityError("cannot extract", "STUDENT_IDENTITY_NOT_FOUND"); }),
+    };
+    await expect(resolveStudentIdentity({
+      studentName: "",
+      studentNumber: "",
+      filename: "report.docx",
+      client,
+    })).rejects.toMatchObject({ code: "STUDENT_IDENTITY_NOT_FOUND" });
   });
 });

@@ -8,17 +8,21 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { consumeSse } from "../lib/consume-sse";
-import { withJsonHeaders } from "../lib/api";
+import { ApiError, apiErrorFromResponse, withJsonHeaders } from "../lib/api";
 import type { RubricValue } from "../components/RubricPreviewEditor";
 import {
   applyGradingEvent,
+  buildAssetManifest,
   clampGradingPreviewPercent,
   conversionPresentation,
+  gradingSessionStatusLabel,
   initialLiveMessage,
   normalizeGradingExportOptions,
   parseGradingExportOptions,
+  resolveGradingSessionScope,
+  resolveGradingRubricKey,
   rubricSelectionKey,
-  shouldPollConversion,
+  shouldPollSessionPreparation,
   type GradingExportOptions,
   type GradingToolStep,
   type LiveGradingMessage,
@@ -37,6 +41,11 @@ type GradingSession = {
     | "resolving"
     | "resolved"
     | "failed";
+  submissionTitleError?: {
+    code: string;
+    message: string;
+    lastFailedAt: string;
+  };
   assignmentId: string;
   rubricVersion: number;
   conversionStatus: string;
@@ -89,16 +98,13 @@ type FrozenRubric = {
 
 async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, withJsonHeaders(init));
-  if (!response.ok)
-    throw new Error(
-      (await response.json().catch(() => ({ message: response.statusText })))
-        .message ?? "请求失败",
-    );
+  if (!response.ok) throw await apiErrorFromResponse(response);
   return response.json() as Promise<T>;
 }
 
 export function GradingPage() {
-  const query = new URLSearchParams(window.location.search);
+  const [locationSearch, setLocationSearch] = useState(window.location.search);
+  const query = new URLSearchParams(locationSearch);
   const selectedId = query.get("session") ?? undefined;
   const [sessions, setSessions] = useState<GradingSession[]>([]),
     [detail, setDetail] = useState<SessionDetail>(),
@@ -129,11 +135,30 @@ export function GradingPage() {
     parseGradingExportOptions(localStorage.getItem("grading-csv-columns")),
   );
   const splitRef = useRef<HTMLElement>(null);
+  const navigateWithinGrading = (search: URLSearchParams) => {
+    const suffix = search.toString();
+    window.history.pushState(null, "", `/grading${suffix ? `?${suffix}` : ""}`);
+    setLocationSearch(window.location.search);
+  };
+  const navigateToSession = (id: string) => {
+    const search = new URLSearchParams();
+    search.set("session", id);
+    navigateWithinGrading(search);
+  };
+  const navigateToRubric = (key: string) => {
+    const search = new URLSearchParams();
+    if (key) search.set("rubric", key);
+    navigateWithinGrading(search);
+  };
   const selectedRubric = rubrics.find(
     (rubric) => rubricSelectionKey(rubric) === selectedRubricKey,
   );
-  const refreshList = async (key = selectedRubricKey) => {
-    const rubric = rubrics.find((item) => rubricSelectionKey(item) === key);
+  const refreshList = async (currentSession?: GradingSession) => {
+    const rubric = resolveGradingSessionScope(
+      currentSession,
+      rubrics,
+      selectedRubricKey,
+    );
     setSessions(
       rubric
         ? await api<GradingSession[]>(
@@ -155,6 +180,14 @@ export function GradingPage() {
   };
 
   useEffect(() => {
+    const updateLocation = () => setLocationSearch(window.location.search);
+    window.addEventListener("popstate", updateLocation);
+    return () => window.removeEventListener("popstate", updateLocation);
+  }, []);
+  useEffect(() => {
+    setCreating(!selectedId && !query.has("rubric"));
+  }, [locationSearch]);
+  useEffect(() => {
     void (async () => {
       try {
         const [nextRubrics, nextDetail] = await Promise.all([
@@ -162,10 +195,12 @@ export function GradingPage() {
           refreshDetail(),
         ]);
         setRubrics(nextRubrics);
-        const key = nextDetail
-          ? `${nextDetail.assignmentId}:${nextDetail.rubricVersion}`
-          : selectedRubricKey ||
-            (nextRubrics[0] ? rubricSelectionKey(nextRubrics[0]) : "");
+        const key = resolveGradingRubricKey(
+          nextRubrics,
+          nextDetail
+            ? `${nextDetail.assignmentId}:${nextDetail.rubricVersion}`
+            : selectedRubricKey,
+        );
         setSelectedRubricKey(key);
         if (key) localStorage.setItem("grading-rubric", key);
         const rubric = nextRubrics.find(
@@ -191,14 +226,14 @@ export function GradingPage() {
     setAcknowledgedReasons([]);
   }, [detail?.draft?.version]);
   useEffect(() => {
-    if (!detail || !shouldPollConversion(detail)) return;
+    if (!detail || !shouldPollSessionPreparation(detail)) return;
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
       try {
         const next = await refreshDetail(detail.id);
-        await refreshList();
-        if (!cancelled && next && shouldPollConversion(next))
+        await refreshList(next);
+        if (!cancelled && next && shouldPollSessionPreparation(next))
           timer = window.setTimeout(() => void poll(), 1_000);
       } catch (error) {
         if (!cancelled) setNotice((error as Error).message);
@@ -213,6 +248,7 @@ export function GradingPage() {
     detail?.id,
     detail?.conversionStatus,
     detail?.conversionError?.nextRetryAt,
+    detail?.submissionTitleStatus,
   ]);
   useEffect(() => {
     if (!dragging) return;
@@ -293,7 +329,7 @@ export function GradingPage() {
       `/api/grading/sessions/${detail.id}/revisions`,
       { method: "POST" },
     );
-    window.location.href = `/grading?session=${revision.id}`;
+    navigateToSession(revision.id);
   };
   const saveSubmission = async () => {
     if (!detail?.submissionVersion) return;
@@ -324,7 +360,8 @@ export function GradingPage() {
   const chooseRubric = (key: string) => {
     setSelectedRubricKey(key);
     localStorage.setItem("grading-rubric", key);
-    window.location.href = `/grading?rubric=${encodeURIComponent(key)}`;
+    setCreating(false);
+    navigateToRubric(key);
   };
   const renameSession = async () => {
     if (!sessionToRename) return;
@@ -348,19 +385,12 @@ export function GradingPage() {
         `/api/grading/sessions/${sessionToDelete.id}`,
         { method: "DELETE" },
       );
-      if (!response.ok)
-        throw new Error(
-          (
-            await response
-              .json()
-              .catch(() => ({ message: response.statusText }))
-          ).message ?? "删除失败",
-        );
+      if (!response.ok) throw await apiErrorFromResponse(response, "删除失败");
       const deletingCurrent = selectedId === sessionToDelete.id;
       setSessionToDelete(undefined);
       setSessionActionError("");
       if (deletingCurrent)
-        window.location.href = `/grading?rubric=${encodeURIComponent(selectedRubricKey)}`;
+        navigateToRubric(selectedRubricKey);
       else await refreshList();
     } catch (error) {
       setSessionActionError((error as Error).message);
@@ -394,11 +424,7 @@ export function GradingPage() {
         body: JSON.stringify({ scope, columns: exportOptions }),
       }),
     );
-    if (!response.ok)
-      throw new Error(
-        (await response.json().catch(() => ({ message: response.statusText })))
-          .message ?? "导出失败",
-      );
+    if (!response.ok) throw await apiErrorFromResponse(response, "导出失败");
     const url = URL.createObjectURL(await response.blob());
     const link = document.createElement("a");
     link.href = url;
@@ -467,9 +493,16 @@ export function GradingPage() {
                 className={session.id === selectedId ? "active" : ""}
                 key={session.id}
               >
-                <a href={`/grading?session=${session.id}`}>
+                <a
+                  href={`/grading?session=${session.id}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setCreating(false);
+                    navigateToSession(session.id);
+                  }}
+                >
                   <strong>{session.title}</strong>
-                  <span>{session.submissionTitle ?? "正在识别作业名称"}</span>
+                  <span>{session.submissionTitle ?? gradingSessionStatusLabel(session)}</span>
                   <small>
                     {session.studentName} · {session.studentNumber}
                   </small>
@@ -528,6 +561,7 @@ export function GradingPage() {
               <NewSessionPanel
                 rubric={selectedRubric}
                 close={() => setCreating(false)}
+                created={navigateToSession}
               />
             ) : !detail ? (
               <div className="grading-empty">
@@ -555,13 +589,18 @@ export function GradingPage() {
                           ? "识别失败"
                           : "正在识别…")}
                     </p>
+                    {detail.submissionTitleError && (
+                      <p className="modal-error">
+                        [{detail.submissionTitleError.code}] {detail.submissionTitleError.message}
+                      </p>
+                    )}
                   </div>
                   {detail.submissionTitleStatus === "failed" && (
                     <button
                       type="button"
                       onClick={() => void retrySubmissionTitle()}
                     >
-                      重试识别名称
+                      重试名称识别
                     </button>
                   )}
                   {detail.conversionStatus === "ready" &&
@@ -673,6 +712,7 @@ export function GradingPage() {
                   setAcknowledgedReasons={setAcknowledgedReasons}
                   confirm={confirm}
                   createRevision={createRevision}
+                  refresh={() => refreshDetail(detail.id).then(() => undefined)}
                 />
               )}
             </div>
@@ -911,6 +951,7 @@ function ResultPreview({
   setAcknowledgedReasons,
   confirm,
   createRevision,
+  refresh,
 }: {
   detail: SessionDetail;
   reviewNote: string;
@@ -919,6 +960,7 @@ function ResultPreview({
   setAcknowledgedReasons(value: string[]): void;
   confirm(): Promise<void>;
   createRevision(): Promise<void>;
+  refresh(): Promise<void>;
 }) {
   const draft = detail.confirmed ?? detail.draft;
   const [manual, setManual] = useState(false);
@@ -945,7 +987,9 @@ function ResultPreview({
         note: editNote,
       }),
     });
-    window.location.reload();
+    await refresh();
+    setManual(false);
+    setEditNote("");
   };
   const allAcknowledged = result.review.reasons.every((reason) =>
     acknowledgedReasons.includes(reason),
@@ -1224,31 +1268,41 @@ function DecisionEditor({
 function NewSessionPanel({
   rubric,
   close,
+  created,
 }: {
   rubric?: FrozenRubric;
   close(): void;
+  created(id: string): void;
 }) {
   const [error, setError] = useState(""),
-    [submitting, setSubmitting] = useState(false);
+    [submitting, setSubmitting] = useState(false),
+    [errorFields, setErrorFields] = useState<string[]>([]),
+    [assetFiles, setAssetFiles] = useState<File[]>([]);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitting(true);
     setError("");
+    setErrorFields([]);
     try {
       const form = new FormData(event.currentTarget);
       if (!rubric) throw new Error("请选择冻结评分表");
       form.set("assignmentId", rubric.assignmentId);
       form.set("rubricVersion", String(rubric.version));
+      form.delete("assetDirectory");
+      const assetManifest = buildAssetManifest(assetFiles);
+      for (const asset of assetFiles) form.append("asset", asset);
+      form.set("assetManifest", JSON.stringify(assetManifest));
       if (!form.has("autoStartAfterConversion"))
         form.set("autoStartAfterConversion", "false");
       const response = await fetch("/api/grading/sessions", {
         method: "POST",
         body: form,
       });
+      if (!response.ok) throw await apiErrorFromResponse(response, "创建失败");
       const body = await response.json();
-      if (!response.ok) throw new Error(body.message ?? "创建失败");
-      window.location.href = `/grading?session=${body.id}`;
+      created(String(body.id));
     } catch (cause) {
+      if (cause instanceof ApiError) setErrorFields(cause.issuePaths);
       setError((cause as Error).message);
       setSubmitting(false);
     }
@@ -1266,11 +1320,19 @@ function NewSessionPanel({
         </p>
         <label>
           学生姓名
-          <input name="studentName" placeholder="两项都留空时从文件名识别" />
+          <input
+            name="studentName"
+            placeholder="两项都留空时从文件名识别"
+            aria-invalid={errorFields.includes("studentName") || undefined}
+          />
         </label>
         <label>
           学号
-          <input name="studentNumber" placeholder="姓名与学号必须同时填写" />
+          <input
+            name="studentNumber"
+            placeholder="姓名与学号必须同时填写"
+            aria-invalid={errorFields.includes("studentNumber") || undefined}
+          />
         </label>
         <label>
           作业名称（可选）
@@ -1287,7 +1349,21 @@ function NewSessionPanel({
             type="file"
             required
             accept=".md,.pdf,.docx,.pptx,.png,.jpg,.jpeg"
+            aria-invalid={errorFields.includes("file") || undefined}
           />
+        </label>
+        <label>
+          Markdown 图片目录（可选）
+          <input
+            name="assetDirectory"
+            type="file"
+            multiple
+            accept=".png,.jpg,.jpeg,.gif,.webp"
+            aria-invalid={errorFields.includes("assetManifest") || undefined}
+            onChange={(event) => setAssetFiles(Array.from(event.target.files ?? []))}
+            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+          />
+          <small>{assetFiles.length ? `已选择 ${assetFiles.length} 个附件` : "请选择名为 assets 的目录"}</small>
         </label>
         <label className="inline-check">
           <input

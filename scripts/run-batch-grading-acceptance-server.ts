@@ -32,6 +32,13 @@ const grader: GradingAgentBuilder = (sessionId, runId, services) => ({
     return { kind: "draft", draft: stored };
   },
 });
+const titleAgent: GradingAgentBuilder = (sessionId, _runId, services) => ({
+  async run() {
+    const title = "合成报告";
+    await services.sessions.resolveSubmissionTitle(sessionId, title);
+    return { kind: "title", title };
+  },
+});
 
 const app = await createServer({
   workspaceRoot,
@@ -43,7 +50,7 @@ const app = await createServer({
     },
   },
   gradingAgentFactory: grader,
-  submissionTitleAgentFactory: grader,
+  submissionTitleAgentFactory: titleAgent,
   modelStatus: { provider: "deterministic-acceptance", model: "m5-fake", configured: true },
 });
 await registerWebAssets(app, path.resolve("dist/web"));
@@ -80,5 +87,6 @@ if (courses.length === 0) {
   });
   await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/freeze`, payload: { expectedVersion: 1, acknowledgedWarningCodes: [] } });
 }
-await app.listen({ host: "127.0.0.1", port: 3001 });
-console.log(`M5 deterministic acceptance server ready at http://127.0.0.1:3001/grading/batches (${workspaceRoot})`);
+const port = Number(process.env.PORT ?? 3001);
+await app.listen({ host: "127.0.0.1", port });
+console.log(`M5 deterministic acceptance server ready at http://127.0.0.1:${port}/grading/batches (${workspaceRoot})`);

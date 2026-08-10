@@ -43,6 +43,140 @@ const rubric: Rubric = {
 };
 
 describe("grading API", () => {
+  it("persists, resumes, and idempotently commits a batch upload draft", async () => {
+    const grader: GradingAgentBuilder = () => ({
+      async run() { return { kind: "reply", reply: "ready" }; },
+    });
+    const { app, assignmentId, root } = await setup(grader);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/grading/batch-uploads",
+      payload: {
+        title: "可恢复批次",
+        assignmentId,
+        rubricVersion: 1,
+        concurrency: 2,
+        items: [{ filename: "20260001_张晓明_校园AI报告.md" }],
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const draft = created.json();
+    const uploaded = await app.inject({
+      method: "PUT",
+      url: `/api/grading/batch-uploads/${draft.id}/items/${draft.items[0].id}/file`,
+      headers: { "content-type": "multipart/form-data; boundary=draft" },
+      payload: multipartWithAssets("draft", {
+        assetManifest: "[]",
+      }, {
+        filename: "20260001_张晓明_校园AI报告.md",
+        bytes: Buffer.from("# 校园 AI 报告\n\n正文"),
+      }, []),
+    });
+    expect(uploaded.statusCode, uploaded.body).toBe(202);
+    let detail: any;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      detail = (await app.inject({ method: "GET", url: `/api/grading/batch-uploads/${draft.id}` })).json();
+      if (detail.items[0].status === "ready") break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(detail.items[0]).toMatchObject({ status: "ready", studentNumber: "20260001" });
+    const committed = await app.inject({ method: "POST", url: `/api/grading/batch-uploads/${draft.id}/commit` });
+    expect(committed.statusCode, committed.body).toBe(201);
+    const repeated = await app.inject({ method: "POST", url: `/api/grading/batch-uploads/${draft.id}/commit` });
+    expect(repeated.statusCode, repeated.body).toBe(201);
+    expect(repeated.json().id).toBe(committed.json().id);
+    await app.close();
+
+    const reopened = await createServer({ workspaceRoot: root });
+    const restored = await reopened.inject({ method: "GET", url: `/api/grading/batch-uploads/${draft.id}` });
+    expect(restored.statusCode, restored.body).toBe(200);
+    expect(restored.json()).toMatchObject({ status: "committed", committedBatchId: committed.json().id });
+    await reopened.close();
+  });
+
+  it("uploads a Markdown report with nested image assets and a manifest", async () => {
+    const { app, assignmentId } = await setup();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=assets" },
+      payload: multipartWithAssets("assets", {
+        assignmentId,
+        rubricVersion: "1",
+        studentName: "",
+        studentNumber: "",
+        submissionTitle: "共享图片报告",
+        assetManifest: JSON.stringify(["assets/charts/chart.png"]),
+      }, {
+        filename: "20260001_张晓明_共享图片报告.md",
+        bytes: Buffer.from("# 报告\n\n![图表](assets/charts/chart.png)\n"),
+      }, [{ filename: "chart.png", bytes: png }]),
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json()).toMatchObject({ studentName: "张晓明", studentNumber: "20260001" });
+    const asset = await app.inject({
+      method: "GET",
+      url: `/api/grading/sessions/${response.json().id}/assets/charts/chart.png`,
+    });
+    expect(asset.statusCode, asset.body).toBe(200);
+    expect(asset.rawPayload).toEqual(png);
+    await app.close();
+  });
+
+  it("creates a one-report batch through the public API", async () => {
+    const grader: GradingAgentBuilder = () => ({
+      async run() { return { kind: "reply", reply: "ready" }; },
+    });
+    const { app, assignmentId } = await setup(grader);
+    const session = await app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=x" },
+      payload: multipart("x", {
+        assignmentId,
+        rubricVersion: "1",
+        studentName: "张晓明",
+        studentNumber: "20260001",
+        submissionTitle: "同名报告",
+      }, "20260001_张晓明_同名报告.md", "# 报告"),
+    });
+    expect(session.statusCode, session.body).toBe(201);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/grading/batches",
+      payload: {
+        title: "单份批次",
+        assignmentId,
+        rubricVersion: 1,
+        concurrency: 1,
+        sessionIds: [session.json().id],
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    expect(created.json()).toMatchObject({ totalJobs: 1 });
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/grading/batches",
+      payload: {
+        title: "空批次",
+        assignmentId,
+        rubricVersion: 1,
+        concurrency: 1,
+        sessionIds: [],
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({
+      code: "VALIDATION_ERROR",
+      message: "请求参数无效，请检查标出的字段",
+      issues: [{ path: "sessionIds" }],
+    });
+    await app.close();
+  });
+
   it("creates, runs, inspects, and exports a 30-report batch", async () => {
     let asked = false;
     const grader: GradingAgentBuilder = (sessionId, runId, services) => ({
@@ -249,7 +383,13 @@ describe("grading API", () => {
       ),
     });
     expect(response.statusCode).toBe(422);
-    expect(response.json()).toMatchObject({ code: "STUDENT_IDENTITY_ERROR" });
+    expect(response.json()).toMatchObject({
+      code: "STUDENT_IDENTITY_FIELDS_REQUIRED",
+      issues: [
+        { path: "studentName" },
+        { path: "studentNumber" },
+      ],
+    });
     await app.close();
   });
 
@@ -802,4 +942,23 @@ function multipart(
     `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n${content}\r\n--${boundary}--\r\n`,
   );
   return Buffer.from(chunks.join(""), "utf8");
+}
+
+function multipartWithAssets(
+  boundary: string,
+  fields: Record<string, string>,
+  report: { filename: string; bytes: Buffer },
+  assets: Array<{ filename: string; bytes: Buffer }>,
+): Buffer {
+  const chunks: Buffer[] = [];
+  for (const [name, value] of Object.entries(fields))
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  const file = (fieldname: string, item: { filename: string; bytes: Buffer }) => {
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldname}"; filename="${item.filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`));
+    chunks.push(item.bytes, Buffer.from("\r\n"));
+  };
+  file("file", report);
+  for (const asset of assets) file("asset", asset);
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return Buffer.concat(chunks);
 }

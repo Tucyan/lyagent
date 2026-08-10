@@ -56,6 +56,42 @@ afterEach(async () => {
 });
 
 describe("GradingBatchService state machine", () => {
+  it("allows duplicate assignment titles but rejects duplicate student numbers", async () => {
+    const first = await setup();
+    first.known.get("session-2")!.submissionTitle = first.known.get("session-1")!.submissionTitle!;
+    await expect(first.service.createBatch({
+      title: "允许同名作业",
+      assignmentId: "assignment-1",
+      rubricVersion: 1,
+      concurrency: 2,
+      sessionIds: ["session-1", "session-2"],
+    })).resolves.toMatchObject({ totalJobs: 2 });
+    first.service.close();
+
+    const second = await setup();
+    second.known.get("session-2")!.studentNumber = second.known.get("session-1")!.studentNumber;
+    await expect(second.service.createBatch({
+      title: "拒绝重复学号",
+      assignmentId: "assignment-1",
+      rubricVersion: 1,
+      concurrency: 2,
+      sessionIds: ["session-1", "session-2"],
+    })).rejects.toBeInstanceOf(GradingBatchConflictError);
+    second.service.close();
+  });
+
+  it("accepts a ten-report batch", async () => {
+    const { service } = await setup();
+    await expect(service.createBatch({
+      title: "十份报告",
+      assignmentId: "assignment-1",
+      rubricVersion: 1,
+      concurrency: 4,
+      sessionIds: sessions(10).map(({ id }) => id),
+    })).resolves.toMatchObject({ totalJobs: 10 });
+    service.close();
+  });
+
   it("creates a 30-report batch and rejects duplicate membership", async () => {
     const { service } = await setup();
     const created = await service.createBatch({

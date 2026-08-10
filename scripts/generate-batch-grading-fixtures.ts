@@ -3,17 +3,18 @@ import path from "node:path";
 
 const output = path.resolve(process.argv[2] ?? "tests/fixtures/batch-grading/generated");
 const count = Number(process.argv[3] ?? 30);
-if (!Number.isInteger(count) || count < 30 || count > 120) throw new Error("Fixture count must be an integer from 30 to 120");
+const sameContent = process.argv.includes("--same-content");
+if (!Number.isInteger(count) || count < 1 || count > 120) throw new Error("Fixture count must be an integer from 1 to 120");
 await mkdir(output, { recursive: true });
 for (let index = 1; index <= count; index += 1) {
   const number = `2026${String(index).padStart(4, "0")}`;
   const name = `合成学生${index}`;
-  const topic = ["生成式AI学习助手", "校园节能分析", "公共数据可视化", "数字素养调研"][index % 4];
+  const topic = sameContent ? "生成式AI学习助手" : ["生成式AI学习助手", "校园节能分析", "公共数据可视化", "数字素养调研"][index % 4];
   const content = [
     `# ${topic}研究报告`,
     "",
-    `作者：${name}`,
-    `学号：${number}`,
+    `作者：${sameContent ? "合成学生" : name}`,
+    `学号：${sameContent ? "20260001" : number}`,
     "",
     "## 问题与目标",
     "",
@@ -25,10 +26,10 @@ for (let index = 1; index <= count; index += 1) {
     "",
     "## 结果与反思",
     "",
-    `第 ${index} 号样例给出结构化结论，并指出证据范围与后续改进方向。`,
+    sameContent ? "测试样例给出结构化结论，并指出证据范围与后续改进方向。" : `第 ${index} 号样例给出结构化结论，并指出证据范围与后续改进方向。`,
     "",
   ].join("\n");
   await writeFile(path.join(output, `${number}_${name}_${topic}.md`), content, "utf8");
 }
-console.log(`Generated ${count} synthetic Markdown reports in ${output}`);
+console.log(`Generated ${count} synthetic Markdown reports in ${output}${sameContent ? " (same content)" : ""}`);
 

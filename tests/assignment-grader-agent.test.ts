@@ -21,7 +21,7 @@ async function fixture() {
   const source = path.join(root, "report.md");
   await writeFile(source, "# 报告\n\n内容完整\n\n![图表](assets/chart.png)\n", "utf8");
   const sessions = new GradingSessionService(root, rubrics);
-  const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: 1, studentName: "张晓明", studentNumber: "20260001", originalPath: source, originalFilename: "report.md", autoStartAfterConversion: false, revisionAssets: [{ path: "assets/chart.png", bytes: new Uint8Array([1, 2, 3]) }] });
+  const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: 1, studentName: "张晓明", studentNumber: "20260001", originalPath: source, originalFilename: "report.md", autoStartAfterConversion: false, revisionAssets: [{ path: "assets/chart.png", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) }] });
   await sessions.lockSubmissionForGrading(session.id);
   const results = new GradingResultService(root, sessions, rubrics);
   const knowledge = { listDirectory: async () => [], search: async () => [], readLines: async () => ({ path: "course.md", startLine: 1, endLine: 1, content: "course" }) };

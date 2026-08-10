@@ -3349,3 +3349,9 @@ code {
     grid-template-columns: 1fr;
   }
 }
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: #c62828;
+  box-shadow: 0 0 0 2px rgb(198 40 40 / 15%);
+}

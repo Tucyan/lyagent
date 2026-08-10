@@ -16,6 +16,7 @@ import {
 import {
   GradingConflictError,
   GradingSessionService,
+  SubmissionAssetError,
 } from "../services/grading-session-service.js";
 import type { DocumentConversionClient } from "../services/document-conversion-client.js";
 import type { SubmissionConversionOptions } from "../services/submission-conversion-service.js";
@@ -27,6 +28,7 @@ import {
 } from "../services/student-identity-service.js";
 import type { RubricService } from "../services/rubric-service.js";
 import { GradingBatchService } from "../services/grading-batch-service.js";
+import { GradingBatchUploadService } from "../services/grading-batch-upload-service.js";
 
 const sessionParams = z.object({ id: z.string().uuid() });
 const runParams = z.object({ id: z.string().uuid(), runId: z.string().uuid() });
@@ -70,9 +72,22 @@ const createBatchSchema = z.object({
   assignmentId: z.string().uuid(),
   rubricVersion: z.number().int().positive(),
   concurrency: z.number().int().min(1).max(8),
-  sessionIds: z.array(z.string().uuid()).min(30).max(120),
+  sessionIds: z.array(z.string().uuid()).min(1).max(120),
 });
 const batchAnswerSchema = z.object({ answer: z.string().trim().min(1).max(8_000) });
+const batchUploadParams = z.object({ id: z.string().uuid() });
+const batchUploadItemParams = z.object({ id: z.string().uuid(), itemId: z.string().uuid() });
+const createBatchUploadSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  assignmentId: z.string().uuid(),
+  rubricVersion: z.number().int().positive(),
+  concurrency: z.number().int().min(1).max(8),
+  items: z.array(z.object({ filename: z.string().trim().min(1).max(240) })).min(1).max(120),
+});
+const batchUploadIdentitySchema = z.object({
+  studentName: z.string().trim().min(1).max(120),
+  studentNumber: z.string().trim().min(1).max(80),
+});
 const csvExportSchema = z.object({
   scope: z.discriminatedUnion("kind", [
     z.object({
@@ -209,10 +224,36 @@ export function registerGradingApi(
         }),
       )
     : undefined;
+  const uploads = new GradingBatchUploadService(options.workspaceRoot, {
+    resolveIdentity: (input) => resolveStudentIdentity({
+      ...input,
+      ...(options.identityClient ? { client: options.identityClient } : {}),
+    }),
+    createSession: (input) => sessions.createSession(input),
+    getSession: (id) => sessions.getSession(id),
+    deleteSession: (id) => sessions.deleteSession(id),
+    async processConversion(id) {
+      if (!conversions) throw new GradingConflictError("报告转换服务尚未配置");
+      return conversions.process(id);
+    },
+    retryConversion: (id) => sessions.retryConversion(id),
+    async resolveTitle(id) {
+      if (!titles)
+        throw new GradingConflictError("请填写作业名称或配置名称识别模型");
+      return titles.resolve(id);
+    },
+    createBatch: (input) => batches.createBatch(input),
+    getBatch: (id) => batches.getBatch(id),
+  });
 
   app.register(async (scoped) => {
     await scoped.register(multipart, {
-      limits: { files: 1, fileSize: 10 * 1024 * 1024, fields: 10 },
+      limits: {
+        files: 101,
+        fileSize: 10 * 1024 * 1024,
+        fields: 12,
+        parts: 113,
+      },
     });
 
     scoped.get("/api/grading/rubrics", async () => {
@@ -231,6 +272,72 @@ export function registerGradingApi(
       }
       return available;
     });
+
+    scoped.post("/api/grading/batch-uploads", async (request, reply) =>
+      reply.code(201).send(await uploads.createUpload(createBatchUploadSchema.parse(request.body))),
+    );
+    scoped.get("/api/grading/batch-uploads/:id", async (request) =>
+      uploads.getUpload(batchUploadParams.parse(request.params).id),
+    );
+    scoped.put("/api/grading/batch-uploads/:id/items/:itemId/file", async (request, reply) => {
+      const { id, itemId } = batchUploadItemParams.parse(request.params);
+      let report: { filename: string; bytes: Buffer } | undefined;
+      const uploadedAssets: Array<{ filename: string; bytes: Buffer }> = [];
+      const fields: Record<string, string> = {};
+      for await (const part of request.parts()) {
+        if (part.type === "file") {
+          if (part.fieldname === "file") {
+            if (report)
+              throw new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "只能上传一个主报告文件", "file");
+            report = { filename: part.filename, bytes: await part.toBuffer() };
+          } else if (part.fieldname === "asset") {
+            uploadedAssets.push({ filename: part.filename, bytes: await part.toBuffer() });
+          } else {
+            await part.toBuffer();
+            throw new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "文件字段必须是 file 或 asset", part.fieldname);
+          }
+        } else fields[part.fieldname] = String(part.value ?? "");
+      }
+      if (!report)
+        return reply.code(400).send({ code: "VALIDATION_ERROR", message: "A submission file is required", issues: [{ path: "file", message: "A submission file is required" }] });
+      let manifest: string[];
+      try {
+        manifest = z.array(z.string().min(1).max(240)).max(100).parse(JSON.parse(fields.assetManifest || "[]"));
+      } catch {
+        throw new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "附件清单必须是有效的 JSON 路径数组", "assetManifest");
+      }
+      if (manifest.length !== uploadedAssets.length)
+        throw new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "附件清单与上传的 asset 文件数量不一致", "assetManifest");
+      const item = await uploads.storeItemFile(id, itemId, {
+        filename: report.filename,
+        bytes: report.bytes,
+        assets: uploadedAssets.map((asset, index) => ({ path: manifest[index]!, bytes: asset.bytes })),
+      });
+      if (item.status === "pending") uploads.startProcessing(id, itemId);
+      return reply.code(202).send(item);
+    });
+    scoped.patch("/api/grading/batch-uploads/:id/items/:itemId/identity", async (request, reply) => {
+      const { id, itemId } = batchUploadItemParams.parse(request.params);
+      const item = await uploads.patchIdentity(id, itemId, batchUploadIdentitySchema.parse(request.body));
+      uploads.startProcessing(id, itemId);
+      return reply.code(202).send(item);
+    });
+    scoped.post("/api/grading/batch-uploads/:id/items/:itemId/retry", async (request, reply) => {
+      const { id, itemId } = batchUploadItemParams.parse(request.params);
+      return reply.code(202).send(await uploads.retryItem(id, itemId));
+    });
+    scoped.delete("/api/grading/batch-uploads/:id/items/:itemId", async (request) => {
+      const { id, itemId } = batchUploadItemParams.parse(request.params);
+      return uploads.removeItem(id, itemId);
+    });
+    scoped.post("/api/grading/batch-uploads/:id/commit", async (request, reply) => {
+      if (!options.gradingAgentFactory)
+        return reply.code(503).send({ code: "GRADING_MODEL_NOT_CONFIGURED", message: "Configure the grading model before creating a batch" });
+      return reply.code(201).send(await uploads.commitUpload(batchUploadParams.parse(request.params).id));
+    });
+    scoped.delete("/api/grading/batch-uploads/:id", async (request) =>
+      uploads.cancelUpload(batchUploadParams.parse(request.params).id),
+    );
 
     scoped.get("/api/grading/batches", async (request) => {
       const query = batchListSchema.parse(request.query);
@@ -280,10 +387,27 @@ export function registerGradingApi(
       const parts = request.parts();
       const fields: Record<string, string> = {};
       let upload: { filename: string; bytes: Buffer } | undefined;
+      const assetUploads: Array<{ filename: string; bytes: Buffer }> = [];
       for await (const part of parts) {
         if (part.type === "file") {
-          if (upload) throw new Error("Only one submission file is allowed");
-          upload = { filename: part.filename, bytes: await part.toBuffer() };
+          if (part.fieldname === "file") {
+            if (upload)
+              throw new SubmissionAssetError(
+                "SUBMISSION_ASSET_MANIFEST_INVALID",
+                "只能上传一个主报告文件",
+                "file",
+              );
+            upload = { filename: part.filename, bytes: await part.toBuffer() };
+          } else if (part.fieldname === "asset") {
+            assetUploads.push({ filename: part.filename, bytes: await part.toBuffer() });
+          } else {
+            await part.toBuffer();
+            throw new SubmissionAssetError(
+              "SUBMISSION_ASSET_MANIFEST_INVALID",
+              "文件字段必须是 file 或 asset",
+              part.fieldname,
+            );
+          }
         } else fields[part.fieldname] = String(part.value ?? "");
       }
       if (!upload)
@@ -303,6 +427,23 @@ export function registerGradingApi(
           autoStartAfterConversion: z.enum(["true", "false"]).default("false"),
         })
         .parse(fields);
+      let assetManifest: string[] = [];
+      try {
+        const decoded = fields.assetManifest ? JSON.parse(fields.assetManifest) : [];
+        assetManifest = z.array(z.string().min(1).max(240)).max(100).parse(decoded);
+      } catch {
+        throw new SubmissionAssetError(
+          "SUBMISSION_ASSET_MANIFEST_INVALID",
+          "附件清单必须是有效的 JSON 路径数组",
+          "assetManifest",
+        );
+      }
+      if (assetManifest.length !== assetUploads.length)
+        throw new SubmissionAssetError(
+          "SUBMISSION_ASSET_MANIFEST_INVALID",
+          "附件清单与上传的 asset 文件数量不一致",
+          "assetManifest",
+        );
       if (!values.submissionTitle && !titles)
         return reply
           .code(503)
@@ -347,6 +488,10 @@ export function registerGradingApi(
           originalPath: tempPath,
           originalFilename: upload.filename,
           autoStartAfterConversion: values.autoStartAfterConversion === "true",
+          revisionAssets: assetUploads.map((asset, index) => ({
+            path: assetManifest[index]!,
+            bytes: asset.bytes,
+          })),
         });
         if (session.conversionStatus !== "ready") {
           if (!conversions)
@@ -706,6 +851,7 @@ export function registerGradingApi(
     })().catch(() => undefined);
   }
   void batches.recover().catch(() => undefined);
+  void uploads.recover().catch(() => undefined);
 
   return {
     async cancel(runId) {
@@ -716,6 +862,7 @@ export function registerGradingApi(
       }
     },
     close() {
+      uploads.close();
       batches.close();
       runs.close();
       sessions.close();
@@ -748,5 +895,7 @@ function contentType(assetPath: string): string {
   const extension = path.extname(assetPath).toLowerCase();
   if (extension === ".png") return "image/png";
   if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".gif") return "image/gif";
+  if (extension === ".webp") return "image/webp";
   return "application/octet-stream";
 }

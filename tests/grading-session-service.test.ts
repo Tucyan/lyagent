@@ -108,6 +108,101 @@ describe("GradingSessionService", () => {
     service.close();
   });
 
+  it("stores nested Markdown image assets and includes their content in the submission hash", async () => {
+    const { root, assignment, frozen, service } = await setup();
+    const source = path.join(root, "nested-assets.md");
+    await writeFile(source, "# 报告\n\n![图表](assets/charts/chart.png)\n", "utf8");
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const first = await service.createSession({
+      assignmentId: assignment.id,
+      rubricVersion: frozen.version,
+      studentName: "张晓明",
+      studentNumber: "20260001",
+      originalPath: source,
+      originalFilename: "20260001_张晓明_报告.md",
+      autoStartAfterConversion: false,
+      revisionAssets: [{ path: "assets/charts/chart.png", bytes: png }],
+    });
+    const second = await service.createSession({
+      assignmentId: assignment.id,
+      rubricVersion: frozen.version,
+      studentName: "李华",
+      studentNumber: "20260002",
+      originalPath: source,
+      originalFilename: "20260002_李华_报告.md",
+      autoStartAfterConversion: false,
+      revisionAssets: [{ path: "assets/charts/chart.png", bytes: new Uint8Array([...png, 2]) }],
+    });
+
+    expect(await service.readSubmissionAsset(first.id, "assets/charts/chart.png")).toEqual(png);
+    expect(first.submissionHash).not.toBe(second.submissionHash);
+    service.close();
+  });
+
+  it("rejects missing, duplicate, forged, and SVG Markdown assets with stable codes", async () => {
+    const { root, assignment, frozen, service } = await setup();
+    const source = path.join(root, "unsafe-assets.md");
+    const create = (markdown: string, assets: Array<{ path: string; bytes: Uint8Array }>) =>
+      writeFile(source, markdown, "utf8").then(() => service.createSession({
+        assignmentId: assignment.id,
+        rubricVersion: frozen.version,
+        studentName: "张晓明",
+        studentNumber: "20260001",
+        originalPath: source,
+        originalFilename: "report.md",
+        autoStartAfterConversion: false,
+        revisionAssets: assets,
+      }));
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    await expect(create("![缺失](assets/missing.png)", [])).rejects.toMatchObject({ code: "SUBMISSION_ASSET_MISSING" });
+    await expect(create("# 报告", [
+      { path: "assets/chart.png", bytes: png },
+      { path: "assets/chart.png", bytes: png },
+    ])).rejects.toMatchObject({ code: "SUBMISSION_ASSET_DUPLICATE_PATH" });
+    await expect(create("![伪造](assets/chart.png)", [
+      { path: "assets/chart.png", bytes: new TextEncoder().encode("not a png") },
+    ])).rejects.toMatchObject({ code: "SUBMISSION_ASSET_CONTENT_MISMATCH" });
+    await expect(create("![SVG](assets/chart.svg)", [
+      { path: "assets/chart.svg", bytes: new TextEncoder().encode("<svg/>") },
+    ])).rejects.toMatchObject({ code: "SUBMISSION_ASSET_TYPE_UNSUPPORTED" });
+    service.close();
+  });
+
+  it("enforces Markdown asset count, per-file size, and total size limits", async () => {
+    const { root, assignment, frozen, service } = await setup();
+    const source = path.join(root, "asset-limits.md");
+    await writeFile(source, "# 报告", "utf8");
+    const create = (assets: Array<{ path: string; bytes: Uint8Array }>) => service.createSession({
+      assignmentId: assignment.id,
+      rubricVersion: frozen.version,
+      studentName: "张晓明",
+      studentNumber: "20260001",
+      originalPath: source,
+      originalFilename: "report.md",
+      autoStartAfterConversion: false,
+      revisionAssets: assets,
+    });
+    const tinyPng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    await expect(create(Array.from({ length: 101 }, (_, index) => ({
+      path: `assets/image-${index}.png`,
+      bytes: tinyPng,
+    })))).rejects.toMatchObject({ code: "SUBMISSION_ASSET_COUNT_EXCEEDED" });
+
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    oversized.set(tinyPng);
+    await expect(create([{ path: "assets/large.png", bytes: oversized }]))
+      .rejects.toMatchObject({ code: "SUBMISSION_ASSET_TOO_LARGE" });
+
+    const chunk = new Uint8Array(9 * 1024 * 1024);
+    chunk.set(tinyPng);
+    await expect(create(Array.from({ length: 6 }, (_, index) => ({
+      path: `assets/large-${index}.png`,
+      bytes: chunk,
+    })))).rejects.toMatchObject({ code: "SUBMISSION_ASSET_TOTAL_TOO_LARGE" });
+    service.close();
+  });
+
   it("persists manual submission titles and marks omitted titles pending", async () => {
     const { root, rubrics, assignment, frozen, service } = await setup();
     const source = path.join(root, "report.md");
@@ -430,7 +525,7 @@ describe("GradingSessionService", () => {
         originalFilename: "report.md",
         autoStartAfterConversion: false,
       }),
-    ).rejects.toThrow(/imported submission asset/i);
+    ).rejects.toMatchObject({ code: "SUBMISSION_ASSET_MISSING" });
     service.close();
   });
 
@@ -474,11 +569,14 @@ describe("GradingSessionService", () => {
         autoStartAfterConversion: false,
         revisionAssets: [{ path: "assets/chart.png", bytes }],
       });
-    const first = await create(new Uint8Array([1, 2, 3]));
-    const second = await create(new Uint8Array([4, 5, 6]));
+    const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const firstBytes = new Uint8Array([...signature, 1, 2, 3]);
+    const secondBytes = new Uint8Array([...signature, 4, 5, 6]);
+    const first = await create(firstBytes);
+    const second = await create(secondBytes);
     expect(
       await service.readSubmissionAsset(first.id, "assets/chart.png"),
-    ).toEqual(new Uint8Array([1, 2, 3]));
+    ).toEqual(firstBytes);
     const editedMarkdown = "# Report edited\n\n![图表](assets/chart.png)\n";
     const firstEdited = await service.saveSubmission(
       first.id,

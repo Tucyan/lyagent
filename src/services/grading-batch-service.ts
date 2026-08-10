@@ -176,13 +176,21 @@ export class GradingBatchService {
     rubricVersion: number;
     concurrency: number;
     sessionIds: string[];
+    sourceUploadId?: string;
   }): Promise<GradingBatch> {
+    if (input.sourceUploadId) {
+      const source = this.database.prepare(
+        "SELECT committed_batch_id FROM grading_batch_uploads WHERE id = ?",
+      ).get(input.sourceUploadId) as { committed_batch_id: string | null } | undefined;
+      if (!source) throw new GradingBatchConflictError("The batch upload draft was not found");
+      if (source.committed_batch_id) return this.getBatchSummary(source.committed_batch_id);
+    }
     const title = input.title.trim();
     if (!title || title.length > 120) throw new GradingBatchError("Batch title must contain between 1 and 120 characters");
     if (!Number.isInteger(input.concurrency) || input.concurrency < 1 || input.concurrency > 8)
       throw new GradingBatchError("Batch concurrency must be an integer from 1 to 8");
-    if (input.sessionIds.length < 30 || input.sessionIds.length > 120)
-      throw new GradingBatchError("A grading batch must contain between 30 and 120 reports");
+    if (input.sessionIds.length < 1 || input.sessionIds.length > 120)
+      throw new GradingBatchError("A grading batch must contain between 1 and 120 reports");
     if (new Set(input.sessionIds).size !== input.sessionIds.length)
       throw new GradingBatchConflictError("A grading session can appear only once in a batch");
     const members = await Promise.all(input.sessionIds.map((id) => this.dependencies.getSession(id)));
@@ -225,6 +233,17 @@ export class GradingBatchService {
       );
       for (const member of members)
         statement.run(randomUUID(), id, member.id, member.studentName, member.studentNumber, member.submissionTitle, now, now);
+      if (input.sourceUploadId) {
+        const committed = this.database.prepare(
+          `UPDATE grading_batch_uploads SET status = 'committed', committed_batch_id = ?, updated_at = ?
+           WHERE id = ? AND status = 'draft' AND committed_batch_id IS NULL`,
+        ).run(id, now, input.sourceUploadId);
+        if (committed.changes !== 1)
+          throw new GradingBatchConflictError("The batch upload draft was already committed");
+        this.database.prepare(
+          "UPDATE grading_batch_upload_items SET status = 'committed', updated_at = ? WHERE upload_id = ?",
+        ).run(now, input.sourceUploadId);
+      }
     });
     try { insert.immediate(); }
     catch (error: unknown) {
@@ -506,10 +525,10 @@ export class GradingBatchService {
         await this.settleJob(jobId, "cancelled", {
           ...(result.runId ? { runId: result.runId } : {}),
         }, fence);
-      } else await this.failJob(jobId, result.errorCode ?? "GRADING_RUN_FAILED", fence);
+      } else await this.failJob(jobId, result.errorCode ?? "GRADING_MODEL_REQUEST_FAILED", fence);
     } catch {
       const current = await this.getJob(jobId);
-      if (current.status === "running") await this.failJob(jobId, "GRADING_RUN_FAILED", fence).catch(() => undefined);
+      if (current.status === "running") await this.failJob(jobId, "GRADING_MODEL_REQUEST_FAILED", fence).catch(() => undefined);
     } finally {
       clearInterval(interval);
     }

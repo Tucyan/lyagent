@@ -4,6 +4,16 @@ import { GradingSessionError, type GradingSession, type GradingSessionService } 
 
 export type SubmissionTitleAgentFactory = (sessionId: string, runId: string) => PiAssignmentGrader;
 
+export class SubmissionTitleError extends GradingSessionError {
+  constructor(
+    readonly code: "SUBMISSION_TITLE_MODEL_FAILED" | "SUBMISSION_TITLE_TOOL_MISSING",
+    message: string,
+  ) {
+    super(message);
+    this.name = "SubmissionTitleError";
+  }
+}
+
 export class SubmissionTitleService {
   private readonly active = new Map<string, Promise<GradingSession>>();
 
@@ -27,12 +37,24 @@ export class SubmissionTitleService {
       const outcome = await this.createAgent(sessionId, runId).run({ kind: "name", message: "请识别并保存当前学生作业名称。" }, undefined, undefined);
       const session = await this.sessions.getSession(sessionId);
       if (outcome.kind !== "title" || session.submissionTitleStatus !== "resolved" || session.submissionTitle !== outcome.title) {
-        throw new GradingSessionError("Submission naming tool was not called successfully");
+        throw new SubmissionTitleError(
+          "SUBMISSION_TITLE_TOOL_MISSING",
+          "作业名称识别未返回有效结果，请重试",
+        );
       }
       return session;
     } catch (error: unknown) {
-      await this.sessions.markSubmissionTitleFailed(sessionId);
-      throw error;
+      const safe = error instanceof SubmissionTitleError
+        ? error
+        : new SubmissionTitleError(
+            "SUBMISSION_TITLE_MODEL_FAILED",
+            "作业名称识别失败，请重试",
+          );
+      await this.sessions.markSubmissionTitleFailed(sessionId, {
+        code: safe.code,
+        message: safe.message,
+      });
+      throw safe;
     }
   }
 }

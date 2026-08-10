@@ -1,16 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
   applyGradingEvent,
+  buildAssetManifest,
   clampGradingPreviewPercent,
   conversionPresentation,
+  gradingSessionStatusLabel,
   initialLiveMessage,
   normalizeGradingExportOptions,
   parseGradingExportOptions,
+  resolveGradingSessionScope,
+  resolveGradingRubricKey,
   rubricSelectionKey,
   shouldPollConversion,
+  shouldPollSessionPreparation,
 } from "../web/src/pages/grading-page-model.js";
 
 describe("grading workbench presentation", () => {
+  it("builds an assets-rooted manifest from a selected directory", () => {
+    expect(buildAssetManifest([
+      { name: "chart.png", webkitRelativePath: "assets/charts/chart.png" },
+      { name: "photo.jpg", webkitRelativePath: "assets/photo.jpg" },
+    ])).toEqual(["assets/charts/chart.png", "assets/photo.jpg"]);
+    expect(() => buildAssetManifest([
+      { name: "chart.png", webkitRelativePath: "images/chart.png" },
+    ])).toThrow(/assets/i);
+    expect(() => buildAssetManifest([
+      { name: "chart.png", webkitRelativePath: "assets/chart.png" },
+      { name: "chart.png", webkitRelativePath: "assets/chart.png" },
+    ])).toThrow(/duplicate/i);
+  });
+
   it("clamps the resizable preview pane", () => {
     expect(clampGradingPreviewPercent(10)).toBe(28);
     expect(clampGradingPreviewPercent(44)).toBe(44);
@@ -72,6 +91,29 @@ describe("grading workbench presentation", () => {
       studentNumber: true,
       totalScore: true,
     });
+  });
+
+  it("falls back to the first frozen rubric when the cached selection is stale", () => {
+    const rubrics = [
+      { assignmentId: "current", version: 2 },
+      { assignmentId: "older", version: 1 },
+    ];
+    expect(resolveGradingRubricKey(rubrics, "deleted:1")).toBe("current:2");
+    expect(resolveGradingRubricKey(rubrics, "older:1")).toBe("older:1");
+    expect(resolveGradingRubricKey([], "deleted:1")).toBe("");
+  });
+
+  it("keeps the current session list scope while frozen rubrics are still loading", () => {
+    expect(
+      resolveGradingSessionScope(
+        {
+          assignmentId: "assignment-current",
+          rubricVersion: 3,
+        },
+        [],
+        "stale:1",
+      ),
+    ).toEqual({ assignmentId: "assignment-current", version: 3 });
   });
 
   it("presents converter waiting, parse failure, and rejected output with distinct actions", () => {
@@ -160,5 +202,29 @@ describe("grading workbench presentation", () => {
     expect(
       shouldPollConversion({ conversionStatus: "conversion_failed" }),
     ).toBe(false);
+  });
+
+  it("keeps polling while naming is active and labels every preparation state", () => {
+    expect(shouldPollSessionPreparation({
+      conversionStatus: "ready",
+      submissionTitleStatus: "pending",
+    })).toBe(true);
+    expect(shouldPollSessionPreparation({
+      conversionStatus: "ready",
+      submissionTitleStatus: "resolving",
+    })).toBe(true);
+    expect(shouldPollSessionPreparation({
+      conversionStatus: "ready",
+      submissionTitleStatus: "resolved",
+    })).toBe(false);
+    expect(shouldPollSessionPreparation({
+      conversionStatus: "ready",
+      submissionTitleStatus: "failed",
+    })).toBe(false);
+    expect(gradingSessionStatusLabel({ conversionStatus: "queued", submissionTitleStatus: "pending" })).toBe("等待转换");
+    expect(gradingSessionStatusLabel({ conversionStatus: "running", submissionTitleStatus: "pending" })).toBe("等待转换");
+    expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "resolving" })).toBe("正在识别");
+    expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "failed" })).toBe("识别失败");
+    expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "resolved" })).toBe("已就绪");
   });
 });

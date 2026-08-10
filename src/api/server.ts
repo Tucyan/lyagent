@@ -22,10 +22,12 @@ import { StudentIdentityError, type StudentIdentityClient } from "../services/st
 import type { DocumentConversionClient } from "../services/document-conversion-client.js";
 import type { SubmissionConversionOptions } from "../services/submission-conversion-service.js";
 import type { GradingAgentBuilder } from "./grading-routes.js";
-import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
+import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, SubmissionAssetError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
 import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequiredError } from "../services/grading-result-service.js";
 import { GradingResultValidationError } from "../schemas/grading.js";
 import { GradingBatchConflictError, GradingBatchError } from "../services/grading-batch-service.js";
+import { SubmissionTitleError } from "../services/submission-title-service.js";
+import { GradingBatchUploadError } from "../services/grading-batch-upload-service.js";
 import { ModelConfigService, ModelConfigurationError } from "../services/model-config-service.js";
 import { modelBaseUrlSchema } from "../config/model-base-url.js";
 import { modelProviderIdSchema } from "../config/app-config.js";
@@ -143,7 +145,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   if (startupCourses.length === 1) await rubrics.bindUnboundAssignments(startupCourses[0]!.id);
 
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof ZodError) return reply.code(400).send({ code: "VALIDATION_ERROR", message: "Request validation failed", issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) });
+    if (error instanceof ZodError) return reply.code(400).send({ code: "VALIDATION_ERROR", message: "请求参数无效，请检查标出的字段", issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) });
     if (error instanceof KnowledgeAccessError) return reply.code(error.code === "ACTIVE_RELEASE_NOT_FOUND" ? 409 : 422).send({ code: error.code, message: error.message });
     if (error instanceof SessionNotFoundError) return reply.code(404).send({ code: "SESSION_NOT_FOUND", message: error.message });
     if (error instanceof KnowledgeReleaseError) return reply.code(error.message.includes("changed") ? 409 : 422).send({ code: error.message.includes("changed") ? "CONFLICT" : "KNOWLEDGE_ERROR", message: error.message });
@@ -155,17 +157,52 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
       return reply.code(422).send({ code: "RUBRIC_STATE_ERROR", message: "The rubric request is not valid for the current session state" });
     }
     if (error instanceof UnsupportedSubmissionTypeError) return reply.code(415).send({ code: error.code, message: error.message });
-    if (error instanceof StudentIdentityError) return reply.code(422).send({ code: "STUDENT_IDENTITY_ERROR", message: error.message });
+    if (error instanceof StudentIdentityError) return reply.code(422).send({
+      code: error.code,
+      message: error.message,
+      issues: [
+        { path: "studentName", message: "请同时填写学生姓名与学号" },
+        { path: "studentNumber", message: "请同时填写学生姓名与学号" },
+      ],
+    });
+    if (error instanceof SubmissionAssetError) return reply.code(422).send({
+      code: error.code,
+      message: error.message,
+      issues: [{ path: error.assetPath, message: error.message }],
+    });
+    if (error instanceof SubmissionTitleError) return reply.code(422).send({
+      code: error.code,
+      message: error.message,
+    });
     if (error instanceof GradingSessionNotFoundError) return reply.code(404).send({ code: "GRADING_SESSION_NOT_FOUND", message: error.message });
     if (error instanceof GradingConflictError || error instanceof GradingDraftConflictError) return reply.code(409).send({ code: "GRADING_CONFLICT", message: error.message });
     if (error instanceof GradingBatchConflictError) return reply.code(409).send({ code: "GRADING_BATCH_CONFLICT", message: error.message });
     if (error instanceof GradingBatchError) return reply.code(422).send({ code: "GRADING_BATCH_ERROR", message: error.message });
+    if (error instanceof GradingBatchUploadError) {
+      const status = error.code.endsWith("NOT_FOUND") ? 404
+        : ["BATCH_UPLOAD_COMMITTED", "BATCH_UPLOAD_NOT_READY"].includes(error.code) ? 409
+          : 422;
+      return reply.code(status).send({ code: error.code, message: error.message });
+    }
     if (error instanceof GradingResultValidationError) return reply.code(422).send({ code: "GRADING_RESULT_INVALID", message: error.message });
-    if (error instanceof ModelConfigurationError) return reply.code(422).send({ code: "MODEL_CONFIGURATION_FAILED", message: "The model configuration could not be verified" });
+    if (error instanceof ModelConfigurationError) return reply.code(422).send({ code: "MODEL_CONFIGURATION_FAILED", reason: error.reason, message: "The model configuration could not be verified" });
     if (error instanceof GradingReviewRequiredError || error instanceof GradingResultServiceError || error instanceof GradingSessionError) return reply.code(422).send({ code: "GRADING_ERROR", message: error.message });
     const requestError = error as NodeJS.ErrnoException & { statusCode?: unknown };
+    const multipartErrors: Record<string, { code: string; message: string; path: string }> = {
+      FST_REQ_FILE_TOO_LARGE: { code: "MULTIPART_FILE_TOO_LARGE", message: "上传文件超过允许大小", path: "file" },
+      FST_FILES_LIMIT: { code: "MULTIPART_FILE_COUNT_EXCEEDED", message: "上传文件数量超过允许上限", path: "file" },
+      FST_FIELDS_LIMIT: { code: "MULTIPART_FIELD_COUNT_EXCEEDED", message: "上传字段数量超过允许上限", path: "request" },
+      FST_PARTS_LIMIT: { code: "MULTIPART_PART_COUNT_EXCEEDED", message: "上传内容数量超过允许上限", path: "request" },
+    };
+    const multipartError = requestError.code ? multipartErrors[requestError.code] : undefined;
+    if (multipartError)
+      return reply.code(typeof requestError.statusCode === "number" ? requestError.statusCode : 400).send({
+        code: multipartError.code,
+        message: multipartError.message,
+        issues: [{ path: multipartError.path, message: multipartError.message }],
+      });
     if (typeof requestError.statusCode === "number" && requestError.statusCode >= 400 && requestError.statusCode < 500) {
-      return reply.code(requestError.statusCode).send({ code: requestError.code ?? "REQUEST_ERROR", message: "Request validation failed" });
+      return reply.code(requestError.statusCode).send({ code: requestError.code ?? "REQUEST_ERROR", message: "请求内容无效，请检查上传字段与文件" });
     }
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return reply.code(404).send({ code: "NOT_FOUND", message: "The requested resource does not exist" });
     return reply.code(500).send({ code: "INTERNAL_ERROR", message: "Unexpected server error" });

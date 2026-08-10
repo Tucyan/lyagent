@@ -47,6 +47,15 @@ export type GradingStatus =
   | "cancelled";
 export type SubmissionTitleStatus =
   "provided" | "pending" | "resolving" | "resolved" | "failed";
+export type SubmissionTitleErrorCode =
+  | "SUBMISSION_TITLE_MODEL_FAILED"
+  | "SUBMISSION_TITLE_TOOL_MISSING"
+  | "LEGACY_SUBMISSION_TITLE_FAILURE";
+export interface SubmissionTitleErrorDetails {
+  code: SubmissionTitleErrorCode;
+  message: string;
+  lastFailedAt: string;
+}
 
 export interface GradingSession {
   id: string;
@@ -61,6 +70,7 @@ export interface GradingSession {
   title: string;
   submissionTitle?: string;
   submissionTitleStatus: SubmissionTitleStatus;
+  submissionTitleError?: SubmissionTitleErrorDetails;
   autoStartAfterConversion: boolean;
   conversionStatus: ConversionStatus;
   conversionAttemptCount: number;
@@ -86,6 +96,9 @@ interface SessionRow {
   title: string;
   submission_title: string | null;
   submission_title_status: SubmissionTitleStatus;
+  submission_title_error_code: SubmissionTitleErrorCode | null;
+  submission_title_error_message: string | null;
+  submission_title_last_failed_at: string | null;
   auto_start: number;
   conversion_status: ConversionStatus;
   conversion_attempt_count: number;
@@ -106,6 +119,28 @@ export class GradingSessionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "GradingSessionError";
+  }
+}
+
+export type SubmissionAssetErrorCode =
+  | "SUBMISSION_ASSET_MANIFEST_INVALID"
+  | "SUBMISSION_ASSET_PATH_INVALID"
+  | "SUBMISSION_ASSET_DUPLICATE_PATH"
+  | "SUBMISSION_ASSET_TYPE_UNSUPPORTED"
+  | "SUBMISSION_ASSET_CONTENT_MISMATCH"
+  | "SUBMISSION_ASSET_COUNT_EXCEEDED"
+  | "SUBMISSION_ASSET_TOO_LARGE"
+  | "SUBMISSION_ASSET_TOTAL_TOO_LARGE"
+  | "SUBMISSION_ASSET_MISSING";
+
+export class SubmissionAssetError extends GradingSessionError {
+  constructor(
+    readonly code: SubmissionAssetErrorCode,
+    message: string,
+    readonly assetPath = "assets",
+  ) {
+    super(message);
+    this.name = "SubmissionAssetError";
   }
 }
 
@@ -167,6 +202,16 @@ const supportedExtensions = new Set([
   ".jpeg",
   ".md",
 ]);
+const submissionAssetExtensions = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+]);
+const maxSubmissionAssets = 100;
+const maxSubmissionAssetBytes = 10 * 1024 * 1024;
+const maxSubmissionAssetTotalBytes = 50 * 1024 * 1024;
 
 export class GradingSessionService {
   private readonly database: Database.Database;
@@ -183,6 +228,7 @@ export class GradingSessionService {
     this.filesystem = new SafeFilesystem(root, {
       allowedExtensions: new Set([
         ...supportedExtensions,
+        ...submissionAssetExtensions,
         ".json",
         ".txt",
         ".jsonl",
@@ -230,6 +276,12 @@ export class GradingSessionService {
     const extension = path.extname(filename).toLowerCase();
     if (!supportedExtensions.has(extension))
       throw new UnsupportedSubmissionTypeError(extension);
+    if (extension !== ".md" && (input.revisionAssets?.length ?? 0) > 0)
+      throw new SubmissionAssetError(
+        "SUBMISSION_ASSET_MANIFEST_INVALID",
+        "只有 Markdown 报告可以上传图片附件",
+        "assetManifest",
+      );
     const sourceStat = await stat(input.originalPath);
     if (
       !sourceStat.isFile() ||
@@ -250,6 +302,15 @@ export class GradingSessionService {
     );
     const originalBytes = await readFile(input.originalPath);
     validateFileSignature(extension, originalBytes);
+    const markdown = extension === ".md" ? originalBytes.toString("utf8") : undefined;
+    const revisionAssets = extension === ".md" ? input.revisionAssets ?? [] : [];
+    if (markdown !== undefined) {
+      validateSubmissionAssets(revisionAssets);
+      validateMarkdown(
+        markdown,
+        revisionAssets.map(({ path: assetPath }) => assetPath),
+      );
+    }
     const originalHash = sha256(originalBytes);
     const id = randomUUID();
     const batchId = randomUUID();
@@ -267,17 +328,11 @@ export class GradingSessionService {
     let submissionHash: string | undefined;
     let storedAssets: string[] = [];
     if (extension === ".md") {
-      const markdown = originalBytes.toString("utf8");
-      const revisionAssets = input.revisionAssets ?? [];
       storedAssets = revisionAssets.map(({ path: assetPath }) => assetPath);
-      for (const assetPath of storedAssets)
-        if (!/^assets\/[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(assetPath))
-          throw new GradingSessionError("Revision asset path is invalid");
-      validateMarkdown(markdown, storedAssets);
       submissionVersion = 1;
       await this.filesystem.writeText(
         `${base}/converted/submission-v1.md`,
-        markdown,
+        markdown!,
       );
       const assetHashes: string[] = [];
       for (const asset of revisionAssets) {
@@ -287,7 +342,7 @@ export class GradingSessionService {
         );
         assetHashes.push(`${asset.path}:${sha256(Buffer.from(asset.bytes))}`);
       }
-      submissionHash = hashSubmission(originalHash, markdown, assetHashes);
+      submissionHash = hashSubmission(originalHash, markdown!, assetHashes);
       conversionStatus = "ready";
       if (input.autoStartAfterConversion) gradingStatus = "queued";
     }
@@ -417,7 +472,10 @@ export class GradingSessionService {
       throw new GradingConflictError("Submission title has already been set");
     const result = this.database
       .prepare(
-        "UPDATE grading_sessions SET submission_title = ?, submission_title_status = 'resolved', updated_at = ? WHERE id = ? AND deletion_pending = 0 AND submission_title_status IN ('pending', 'resolving', 'failed')",
+        `UPDATE grading_sessions SET submission_title = ?, submission_title_status = 'resolved',
+         submission_title_error_code = NULL, submission_title_error_message = NULL,
+         submission_title_last_failed_at = NULL, updated_at = ?
+         WHERE id = ? AND deletion_pending = 0 AND submission_title_status IN ('pending', 'resolving', 'failed')`,
       )
       .run(normalized, this.now(), sessionId);
     if (result.changes !== 1)
@@ -430,7 +488,10 @@ export class GradingSessionService {
   ): Promise<GradingSession> {
     const result = this.database
       .prepare(
-        "UPDATE grading_sessions SET submission_title_status = 'resolving', updated_at = ? WHERE id = ? AND deletion_pending = 0 AND submission_title_status IN ('pending', 'failed')",
+        `UPDATE grading_sessions SET submission_title_status = 'resolving',
+         submission_title_error_code = NULL, submission_title_error_message = NULL,
+         submission_title_last_failed_at = NULL, updated_at = ?
+         WHERE id = ? AND deletion_pending = 0 AND submission_title_status IN ('pending', 'failed')`,
       )
       .run(this.now(), sessionId);
     if (result.changes !== 1)
@@ -440,7 +501,16 @@ export class GradingSessionService {
     return this.getSession(sessionId);
   }
 
-  async markSubmissionTitleFailed(sessionId: string): Promise<GradingSession> {
+  async markSubmissionTitleFailed(
+    sessionId: string,
+    failure: {
+      code: SubmissionTitleErrorCode;
+      message: string;
+    } = {
+      code: "LEGACY_SUBMISSION_TITLE_FAILURE",
+      message: "作业名称识别失败，请重试",
+    },
+  ): Promise<GradingSession> {
     const session = await this.getSession(sessionId);
     if (
       session.submissionTitleStatus === "provided" ||
@@ -449,9 +519,11 @@ export class GradingSessionService {
       return session;
     this.database
       .prepare(
-        "UPDATE grading_sessions SET submission_title_status = 'failed', updated_at = ? WHERE id = ?",
+        `UPDATE grading_sessions SET submission_title_status = 'failed',
+         submission_title_error_code = ?, submission_title_error_message = ?,
+         submission_title_last_failed_at = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(this.now(), sessionId);
+      .run(failure.code, failure.message, this.now(), this.now(), sessionId);
     return this.getSession(sessionId);
   }
 
@@ -625,12 +697,10 @@ export class GradingSessionService {
   ): Promise<GradingSession> {
     const session = await this.getSession(sessionId);
     if (session.conversionStatus === "ready") return session;
+    validateSubmissionAssets(imported.assets);
     const allowedAssets = imported.assets.map(
       ({ path: assetPath }) => assetPath,
     );
-    for (const assetPath of allowedAssets)
-      if (!/^assets\/[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(assetPath))
-        throw new GradingSessionError("Converted asset path is invalid");
     validateMarkdown(imported.markdown, allowedAssets);
     const base = this.submissionBase(
       session.assignmentId,
@@ -790,8 +860,7 @@ export class GradingSessionService {
     assetPath: string,
   ): Promise<Uint8Array> {
     const session = await this.getSession(sessionId);
-    if (!/^assets\/[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(assetPath))
-      throw new GradingSessionError("Submission asset path is invalid");
+    validateSubmissionAssetPath(assetPath);
     return new Uint8Array(
       await this.filesystem.readBytes(
         `${this.submissionBase(session.assignmentId, session.batchId, session.studentKey)}/converted/${assetPath}`,
@@ -1037,6 +1106,9 @@ export class GradingSessionService {
         title TEXT NOT NULL,
         submission_title TEXT,
         submission_title_status TEXT NOT NULL DEFAULT 'pending',
+        submission_title_error_code TEXT,
+        submission_title_error_message TEXT,
+        submission_title_last_failed_at TEXT,
         auto_start INTEGER NOT NULL CHECK (auto_start IN (0, 1)),
         conversion_status TEXT NOT NULL,
         conversion_attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -1098,6 +1170,18 @@ export class GradingSessionService {
       this.database.exec(
         "ALTER TABLE grading_sessions ADD COLUMN submission_title_status TEXT NOT NULL DEFAULT 'pending'",
       );
+    if (!columns.has("submission_title_error_code"))
+      this.database.exec(
+        "ALTER TABLE grading_sessions ADD COLUMN submission_title_error_code TEXT",
+      );
+    if (!columns.has("submission_title_error_message"))
+      this.database.exec(
+        "ALTER TABLE grading_sessions ADD COLUMN submission_title_error_message TEXT",
+      );
+    if (!columns.has("submission_title_last_failed_at"))
+      this.database.exec(
+        "ALTER TABLE grading_sessions ADD COLUMN submission_title_last_failed_at TEXT",
+      );
     if (!columns.has("conversion_attempt_count"))
       this.database.exec(
         "ALTER TABLE grading_sessions ADD COLUMN conversion_attempt_count INTEGER NOT NULL DEFAULT 0",
@@ -1127,7 +1211,18 @@ export class GradingSessionService {
         "ALTER TABLE grading_sessions ADD COLUMN deletion_pending INTEGER NOT NULL DEFAULT 0 CHECK (deletion_pending IN (0, 1))",
       );
     this.database.exec(
-      "UPDATE grading_sessions SET submission_title_status = 'failed' WHERE submission_title_status = 'resolving'",
+      `UPDATE grading_sessions SET submission_title_status = 'failed',
+       submission_title_error_code = COALESCE(submission_title_error_code, 'LEGACY_SUBMISSION_TITLE_FAILURE'),
+       submission_title_error_message = COALESCE(submission_title_error_message, '作业名称识别被应用重启中断，请重试'),
+       submission_title_last_failed_at = COALESCE(submission_title_last_failed_at, updated_at)
+       WHERE submission_title_status = 'resolving'`,
+    );
+    this.database.exec(
+      `UPDATE grading_sessions SET
+       submission_title_error_code = COALESCE(submission_title_error_code, 'LEGACY_SUBMISSION_TITLE_FAILURE'),
+       submission_title_error_message = COALESCE(submission_title_error_message, '作业名称识别失败，请重试'),
+       submission_title_last_failed_at = COALESCE(submission_title_last_failed_at, updated_at)
+       WHERE submission_title_status = 'failed'`,
     );
     this.database.exec(`UPDATE grading_sessions SET
       conversion_status = CASE
@@ -1142,7 +1237,7 @@ export class GradingSessionService {
       END,
       conversion_last_failed_at = updated_at
       WHERE conversion_status = 'failed'`);
-    this.database.pragma("user_version = 4");
+    this.database.pragma("user_version = 5");
   }
 
   private insertSession(session: GradingSession): void {
@@ -1150,10 +1245,11 @@ export class GradingSessionService {
       .prepare(
         `INSERT INTO grading_sessions (
       id, course_id, assignment_id, rubric_version, rubric_hash, batch_id, student_key, student_name, student_number, title,
-      submission_title, submission_title_status, auto_start, conversion_status, conversion_attempt_count,
+      submission_title, submission_title_status, submission_title_error_code, submission_title_error_message,
+      submission_title_last_failed_at, auto_start, conversion_status, conversion_attempt_count,
       conversion_error_code, conversion_error_message, conversion_retryable, conversion_last_failed_at, conversion_next_retry_at,
       grading_status, active_run_id, deletion_pending, submission_version, submission_hash, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
@@ -1168,6 +1264,9 @@ export class GradingSessionService {
         session.title,
         session.submissionTitle ?? null,
         session.submissionTitleStatus,
+        null,
+        null,
+        null,
         session.autoStartAfterConversion ? 1 : 0,
         session.conversionStatus,
         session.conversionAttemptCount,
@@ -1241,6 +1340,17 @@ function fromRow(row: SessionRow): GradingSession {
       ? {}
       : { submissionTitle: row.submission_title }),
     submissionTitleStatus: row.submission_title_status,
+    ...(row.submission_title_error_code === null ||
+    row.submission_title_error_message === null ||
+    row.submission_title_last_failed_at === null
+      ? {}
+      : {
+          submissionTitleError: {
+            code: row.submission_title_error_code,
+            message: row.submission_title_error_message,
+            lastFailedAt: row.submission_title_last_failed_at,
+          },
+        }),
     autoStartAfterConversion: row.auto_start === 1,
     conversionStatus: row.conversion_status,
     conversionAttemptCount: row.conversion_attempt_count,
@@ -1323,10 +1433,122 @@ function validateMarkdown(
   )) {
     const target = match.groups?.target ?? "";
     if (!allowedAssets.includes(target))
-      throw new GradingSessionError(
-        "Markdown image must reference an imported submission asset",
+      throw new SubmissionAssetError(
+        "SUBMISSION_ASSET_MISSING",
+        "Markdown 图片引用的附件不存在",
+        target,
       );
   }
+}
+
+export function validateSubmissionAssets(
+  assets: Array<{ path: string; bytes: Uint8Array }>,
+): void {
+  if (assets.length > maxSubmissionAssets)
+    throw new SubmissionAssetError(
+      "SUBMISSION_ASSET_COUNT_EXCEEDED",
+      `附件数量不能超过 ${maxSubmissionAssets} 个`,
+    );
+  let totalBytes = 0;
+  const seen = new Set<string>();
+  for (const asset of assets) {
+    validateSubmissionAssetPath(asset.path);
+    if (seen.has(asset.path))
+      throw new SubmissionAssetError(
+        "SUBMISSION_ASSET_DUPLICATE_PATH",
+        "附件清单包含重复路径",
+        asset.path,
+      );
+    seen.add(asset.path);
+    if (asset.bytes.byteLength > maxSubmissionAssetBytes)
+      throw new SubmissionAssetError(
+        "SUBMISSION_ASSET_TOO_LARGE",
+        "单个附件不能超过 10 MiB",
+        asset.path,
+      );
+    totalBytes += asset.bytes.byteLength;
+    if (totalBytes > maxSubmissionAssetTotalBytes)
+      throw new SubmissionAssetError(
+        "SUBMISSION_ASSET_TOTAL_TOO_LARGE",
+        "附件总量不能超过 50 MiB",
+      );
+    validateSubmissionAssetSignature(asset.path, asset.bytes);
+  }
+}
+
+export function referencedMarkdownAssetPaths(markdown: string): string[] {
+  const paths: string[] = [];
+  for (const match of markdown.matchAll(
+    /!\[[^\]]*\]\((?<target>[^)\s]+)(?:\s+["'][^"']*["'])?\)/g,
+  )) {
+    const target = match.groups?.target ?? "";
+    if (target.startsWith("assets/") && !paths.includes(target)) paths.push(target);
+  }
+  return paths;
+}
+
+function validateSubmissionAssetPath(assetPath: string): void {
+  if (
+    typeof assetPath !== "string" ||
+    assetPath.length > 240 ||
+    assetPath.includes("\\") ||
+    path.posix.isAbsolute(assetPath) ||
+    path.win32.isAbsolute(assetPath)
+  )
+    throw new SubmissionAssetError(
+      "SUBMISSION_ASSET_PATH_INVALID",
+      "附件路径必须是 assets/ 下的安全相对路径",
+      String(assetPath),
+    );
+  const segments = assetPath.split("/");
+  if (
+    segments.length < 2 ||
+    segments[0] !== "assets" ||
+    segments.some(
+      (segment) =>
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        segment.includes(":"),
+    )
+  )
+    throw new SubmissionAssetError(
+      "SUBMISSION_ASSET_PATH_INVALID",
+      "附件路径必须是 assets/ 下的安全相对路径",
+      assetPath,
+    );
+  const extension = path.posix.extname(assetPath).toLowerCase();
+  if (!submissionAssetExtensions.has(extension))
+    throw new SubmissionAssetError(
+      "SUBMISSION_ASSET_TYPE_UNSUPPORTED",
+      "附件只支持 PNG、JPEG、GIF 或 WebP 图片",
+      assetPath,
+    );
+}
+
+function validateSubmissionAssetSignature(
+  assetPath: string,
+  bytes: Uint8Array,
+): void {
+  const extension = path.posix.extname(assetPath).toLowerCase();
+  const starts = (...values: number[]) =>
+    values.every((value, index) => bytes[index] === value);
+  const ascii = (start: number, end: number) =>
+    Buffer.from(bytes.subarray(start, end)).toString("ascii");
+  const valid =
+    (extension === ".png" &&
+      starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) ||
+    ([".jpg", ".jpeg"].includes(extension) && starts(0xff, 0xd8, 0xff)) ||
+    (extension === ".gif" && ["GIF87a", "GIF89a"].includes(ascii(0, 6))) ||
+    (extension === ".webp" &&
+      ascii(0, 4) === "RIFF" &&
+      ascii(8, 12) === "WEBP");
+  if (!valid)
+    throw new SubmissionAssetError(
+      "SUBMISSION_ASSET_CONTENT_MISMATCH",
+      "附件内容与图片扩展名不匹配",
+      assetPath,
+    );
 }
 
 function decodeNumericHtmlEntities(value: string): string {

@@ -20,7 +20,7 @@ async function fixture(submissionTitle?: string) {
   const source = path.join(root, "filename-topic.md"); await writeFile(source, "# 正文主题\n", "utf8");
   const sessions = new GradingSessionService(root, rubrics);
   const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: 1, studentName: "张晓明", studentNumber: "20260001", ...(submissionTitle ? { submissionTitle } : {}), originalPath: source, originalFilename: "文件名主题.md", autoStartAfterConversion: false });
-  return { sessions, session };
+  return { root, rubrics, sessions, session };
 }
 
 describe("SubmissionTitleService", () => {
@@ -48,8 +48,11 @@ describe("SubmissionTitleService", () => {
 
     const pending = await fixture();
     const service = new SubmissionTitleService(pending.sessions, () => ({ async run() { return { kind: "reply", reply: "只是文本" }; } }));
-    await expect(service.resolve(pending.session.id)).rejects.toThrow(/naming tool/i);
-    expect(await pending.sessions.getSession(pending.session.id)).toMatchObject({ submissionTitleStatus: "failed" });
+    await expect(service.resolve(pending.session.id)).rejects.toMatchObject({ code: "SUBMISSION_TITLE_TOOL_MISSING" });
+    expect(await pending.sessions.getSession(pending.session.id)).toMatchObject({
+      submissionTitleStatus: "failed",
+      submissionTitleError: { code: "SUBMISSION_TITLE_TOOL_MISSING" },
+    });
     pending.sessions.close();
   });
 
@@ -87,5 +90,40 @@ describe("SubmissionTitleService", () => {
     release();
     await resolving;
     pending.sessions.close();
+  });
+
+  it("persists a safe naming failure across restart and clears it on retry", async () => {
+    const pending = await fixture();
+    const failed = new SubmissionTitleService(pending.sessions, () => ({
+      async run() { throw new Error("provider secret response"); },
+    }));
+    await expect(failed.resolve(pending.session.id)).rejects.toMatchObject({
+      code: "SUBMISSION_TITLE_MODEL_FAILED",
+    });
+    const stored = await pending.sessions.getSession(pending.session.id);
+    expect(stored).toMatchObject({
+      submissionTitleStatus: "failed",
+      submissionTitleError: {
+        code: "SUBMISSION_TITLE_MODEL_FAILED",
+        message: "作业名称识别失败，请重试",
+      },
+    });
+    expect(JSON.stringify(stored)).not.toContain("provider secret response");
+    pending.sessions.close();
+
+    const restored = new GradingSessionService(pending.root, pending.rubrics);
+    expect(await restored.getSession(pending.session.id)).toMatchObject({
+      submissionTitleError: { code: "SUBMISSION_TITLE_MODEL_FAILED" },
+    });
+    const retry = new SubmissionTitleService(restored, () => ({
+      async run() {
+        await restored.resolveSubmissionTitle(pending.session.id, "正文主题");
+        return { kind: "title" as const, title: "正文主题" };
+      },
+    }));
+    const resolved = await retry.resolve(pending.session.id);
+    expect(resolved).toMatchObject({ submissionTitleStatus: "resolved" });
+    expect(resolved).not.toHaveProperty("submissionTitleError");
+    restored.close();
   });
 });
