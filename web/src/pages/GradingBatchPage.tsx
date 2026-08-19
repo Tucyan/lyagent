@@ -3,9 +3,14 @@ import { apiErrorFromResponse, withJsonHeaders } from "../lib/api";
 import {
   batchActions,
   batchProgress,
+  batchReviewHref,
   batchStatusLabel,
   batchUploadItemStatusLabel,
   canCommitBatchUpload,
+  canConfirmBatchJob,
+  canRetryBatchJob,
+  formatBatchConfidence,
+  formatBatchScore,
   shouldPollBatch,
   shouldPollBatchUpload,
   type BatchJobCounts,
@@ -16,7 +21,10 @@ type FrozenRubric = { assignmentId: string; title: string; version: number };
 type BatchJob = {
   id: string; sessionId: string; studentName: string; studentNumber: string;
   submissionTitle: string; status: string; attemptCount: number; maxAttempts: number;
-  lastErrorCode?: string; question?: string;
+  lastErrorCode?: string; question?: string; resultVersion?: number;
+  score?: { earned: number; possible: number };
+  confidence?: { overall: number; minimum: number; lowCount: number };
+  reviewStatus?: "needs_review" | "confirmed"; reviewReasons?: string[];
 };
 type Batch = {
   id: string; title: string; assignmentId: string; rubricVersion: number; status: string;
@@ -230,8 +238,29 @@ export function GradingBatchPage() {
     } catch (error) { setNotice((error as Error).message); }
     finally { setBusy(false); }
   };
+  const confirmJob = async (job: BatchJob) => {
+    if (!detail || !canConfirmBatchJob(job)) return;
+    if (!window.confirm(`确认将 ${job.studentName} 的当前成绩正式入库？`)) return;
+    setBusy(true);
+    try {
+      await api(`/api/grading/batches/${detail.id}/jobs/${job.id}/confirm`, {
+        method: "POST",
+        body: JSON.stringify({
+          expectedVersion: job.resultVersion,
+          reviewNote: "教师在批次列表正式确认成绩",
+          acknowledgedReasons: job.reviewReasons ?? [],
+        }),
+      });
+      await Promise.all([refreshDetail(detail.id), refreshList()]);
+      setNotice(`${job.studentName} 的成绩已正式确认。`);
+    } catch (error) { setNotice((error as Error).message); }
+    finally { setBusy(false); }
+  };
   const progress = detail ? batchProgress(detail) : undefined;
   const actions = detail ? batchActions(detail) : undefined;
+  const firstReviewJob = detail?.jobs?.find(({ reviewStatus }) => reviewStatus === "needs_review")
+    ?? detail?.jobs?.find(({ resultVersion }) => resultVersion !== undefined)
+    ?? detail?.jobs?.[0];
 
   return <div className="batch-grading-page">
     <header className="batch-grading-header">
@@ -267,7 +296,8 @@ export function GradingBatchPage() {
           <div className="batch-progress"><i style={{ width: `${progress?.percent ?? 0}%` }} /></div>
           <div className="batch-controls">{actions?.canStart && <button disabled={busy} onClick={() => void command("start")}>启动批改</button>}{actions?.canPause && <button disabled={busy} onClick={() => void command("pause")}>暂停领取</button>}{actions?.canResume && <button disabled={busy} onClick={() => void command("resume")}>恢复批改</button>}{actions?.canExport && <a className="button-link" href={`/api/grading/batches/${detail.id}/export.csv`}>导出班级 CSV</a>}</div>
           <div className="batch-counts">{Object.entries(detail.counts).filter(([, count]) => count > 0).map(([status, count]) => <span key={status}>{batchStatusLabel(status)} <strong>{count}</strong></span>)}</div>
-          <div className="batch-job-table"><table><thead><tr><th>学生</th><th>作业</th><th>状态</th><th>尝试</th><th>操作</th></tr></thead><tbody>{detail.jobs?.map((job) => <tr key={job.id}><td>{job.studentName}<small>{job.studentNumber}</small></td><td><a href={`/grading?session=${encodeURIComponent(job.sessionId)}`}>{job.submissionTitle}</a></td><td><span className={`batch-status ${job.status}`}>{batchStatusLabel(job.status)}</span>{job.lastErrorCode && <small>{job.lastErrorCode}</small>}</td><td>{job.attemptCount}/{job.maxAttempts}</td><td>{job.status === "failed" && job.attemptCount < job.maxAttempts ? <button disabled={busy} onClick={() => void jobCommand(job, "retry")}>重试</button> : job.status === "waiting_for_teacher" ? <div className="batch-answer"><span>{job.question}</span><input aria-label={`回答 ${job.studentName}`} value={answers[job.id] ?? ""} onChange={(event) => setAnswers({ ...answers, [job.id]: event.target.value })} /><button disabled={busy || !(answers[job.id] ?? "").trim()} onClick={() => void jobCommand(job, "answer")}>回答</button></div> : "—"}</td></tr>)}</tbody></table></div>
+          <div className="batch-review-entry"><a className="button-link" href={batchReviewHref(detail.id, firstReviewJob?.sessionId)}>Review</a></div>
+          <div className="batch-job-table"><table><thead><tr><th>学生</th><th>作业</th><th>状态</th><th>分数</th><th>置信度</th><th>尝试</th><th>操作</th></tr></thead><tbody>{detail.jobs?.map((job) => <tr key={job.id}><td>{job.studentName}<small>{job.studentNumber}</small></td><td><a href={batchReviewHref(detail.id, job.sessionId)}>{job.submissionTitle}</a></td><td><span className={`batch-status ${job.status}`}>{batchStatusLabel(job.status)}</span>{job.lastErrorCode && <small>{job.lastErrorCode}</small>}</td><td>{formatBatchScore(job)}</td><td>{formatBatchConfidence(job)}</td><td>{job.attemptCount}/{job.maxAttempts}</td><td><div className="batch-row-actions">{canRetryBatchJob(job) && <button disabled={busy} onClick={() => void jobCommand(job, "retry")}>重试</button>}{canConfirmBatchJob(job) && <button className="primary-button" disabled={busy} onClick={() => void confirmJob(job)}>确认</button>}{job.status === "waiting_for_teacher" && <div className="batch-answer"><span>{job.question}</span><input aria-label={`回答 ${job.studentName}`} value={answers[job.id] ?? ""} onChange={(event) => setAnswers({ ...answers, [job.id]: event.target.value })} /><button disabled={busy || !(answers[job.id] ?? "").trim()} onClick={() => void jobCommand(job, "answer")}>回答</button></div>}{!canRetryBatchJob(job) && !canConfirmBatchJob(job) && job.status !== "waiting_for_teacher" && "—"}</div></td></tr>)}</tbody></table></div>
         </section> : !uploadDraft && <section className="batch-empty"><h2>选择或创建批次</h2><p>批量任务拥有独立队列，不会改变单份批改会话的交互。</p></section>}
       </main>
     </div>

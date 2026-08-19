@@ -1102,7 +1102,7 @@ function decisionEntries(decisions: Record<string, unknown>) {
       : [],
   );
 }
-function DecisionCards({
+export function DecisionCards({
   decisions,
   sessionId,
 }: {
@@ -1187,7 +1187,7 @@ function DecisionCards({
     </section>
   );
 }
-function DecisionEditor({
+export function DecisionEditor({
   decisions,
   onChange,
 }: {

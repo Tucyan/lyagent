@@ -113,3 +113,24 @@ it("presents Docling converter status and attribution without legacy MinerU word
   expect(source).toMatch(/Qwen（Chat Completions）/);
   expect(source).toMatch(/OpenAI（按 URL 自动识别）/);
 });
+
+it("uses client-side navigation for internal links after the startup model check", async () => {
+  const source = await readFile(path.resolve("web", "src", "App.tsx"), "utf8");
+  const navigationSource = await readFile(path.resolve("web", "src", "lib", "app-navigation.ts"), "utf8");
+  const rubricSource = await readFile(path.resolve("web", "src", "pages", "RubricPage.tsx"), "utf8");
+  const qaSidebarSource = await readFile(path.resolve("web", "src", "components", "ChatSidebar.tsx"), "utf8");
+  const qaPageSource = await readFile(path.resolve("web", "src", "pages", "CourseQaPage.tsx"), "utf8");
+
+  expect(source).toContain('document.addEventListener("click"');
+  expect(source).toContain('window.addEventListener("popstate"');
+  expect(source).toContain("navigateWithinApp");
+  expect(navigationSource).toContain("window.history.pushState");
+  expect(navigationSource).toContain('new PopStateEvent("popstate")');
+  expect(source).toContain('url.pathname.startsWith("/api/")');
+  expect(rubricSource).toContain("navigateWithinApp");
+  expect(rubricSource).not.toContain("window.location.assign");
+  expect(qaSidebarSource).toContain("navigateWithinApp");
+  expect(qaSidebarSource).not.toContain("location.assign");
+  expect(qaPageSource).toContain('window.addEventListener("popstate"');
+  expect(qaPageSource).toContain('query.get("session")');
+});

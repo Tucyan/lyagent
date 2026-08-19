@@ -132,7 +132,7 @@ Web /rubrics
 
 ## 教师工作台
 
-根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计，`/setup` 与`/settings/models`复用模型设置表单。主模型尚未配置时，浏览器进入首次设置页，除健康检查和模型设置外的核心API返回`SETUP_REQUIRED`。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
+根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计，`/setup` 与`/settings/models`复用模型设置表单。主模型尚未配置时，浏览器进入首次设置页，除健康检查和模型设置外的核心API返回`SETUP_REQUIRED`。模型配置只在应用首次启动时检查；配置完成后的同源页面链接、侧栏切换和会话链接统一使用 History API 导航，并监听浏览器前进/后退，不重新挂载启动检查。API下载、外部链接以及模型设置保存后的安全重启仍使用浏览器原生导航。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
 
 Dashboard 只返回课程元数据、active release 元数据、文档/会话计数和截断后的会话摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。评分表与单份批改入口已启用；批量任务、运维和企业微信仍是后续里程碑。
 
@@ -165,6 +165,8 @@ channels/api → core/agents/tools → services → db/filesystem/provider inter
 ## M5 批量批改边界
 
 `/grading/batches` 是独立于 M4 单份会话页的批量操作界面。批次只编排已有的单份批改会话：每个学生仍由自己的 M4 会话、转换结果、草稿和 Agent 工具上下文隔离，批量协调器不合并学生正文，也不扩大 Agent 的文件权限。
+
+批次详情从各会话当前草稿或正式结果动态补充分数、整体置信度和 Review 状态，不在 SQLite 重复保存评分事实。`/grading/batches/review?batch=…&session=…` 提供批次内页内复核：左侧会话列表与报告/评分双栏共用同一 SPA，浏览器前进后退可恢复选择；教师可拖动双栏分界线、版本化修改结构化评分、重新批改或正式确认。重新批改只创建下一次受限尝试，正式确认仍由 `GradingResultService` 校验复核原因并发布不可变结果。
 
 批量文件先进入 SQLite 驱动的上传草稿和受控 `batch-uploads/` staging。每项独立推进身份、转换、命名与就绪状态，进程重启后从持久状态恢复；只有全部保留项就绪时，正式批次、job 预留和草稿 `committed` 状态才在同一 immediate 事务中提交。Markdown 共享附件由程序按实际引用筛选后复制到各自会话，Agent 仍只看到当前会话的受控路径。
 

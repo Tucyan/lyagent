@@ -5,7 +5,7 @@
   "type": "module",
   "description": "课程辅助智能体 MVP",
   "scripts": {
-    "dev": "concurrently -k \"tsx watch src/main.ts\" \"vite --config web/vite.config.ts\"",
+    "dev": "concurrently -k --restart-tries -1 --restart-after 250 \"tsx src/dev.ts\" \"vite --config web/vite.config.ts\"",
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsc -p tsconfig.json",
     "build:web": "vite build --config web/vite.config.ts",

@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { appendRubricProcess, appendRubricReply, assertRubricStreamSucceeded, assignmentIdFromSearch, clampPreviewPercent, loadRubricSession, rubricCompletionNotice, rubricDeleteWarning, rubricPreviewSections, shouldFollowRubricStream } from "../web/src/pages/rubric-page-model.js";
 
 describe("rubric page selection", () => {
+  it("loads courses, exposes a course picker, and submits the selected course", async () => {
+    const source = await readFile(path.resolve("web", "src", "pages", "RubricPage.tsx"), "utf8");
+
+    expect(source).toContain('api<Course[]>("/api/courses")');
+    expect(source).toContain('aria-label="选择课程"');
+    expect(source).toContain('api<Course>("/api/courses"');
+    expect(source).toContain('JSON.stringify({ courseId, title');
+  });
+
   it("reads the selected assignment ID from the session link", () => {
     expect(assignmentIdFromSearch("?assignment=8f3d57c5-3e91-4a17-8a62-31a3dfa0ddf1")).toBe("8f3d57c5-3e91-4a17-8a62-31a3dfa0ddf1");
   });

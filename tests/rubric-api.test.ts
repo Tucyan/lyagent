@@ -61,6 +61,20 @@ describe("rubric HTTP API", () => {
     await app.close();
   });
 
+  it("creates a rubric for the explicitly selected course in a multi-course workspace", async () => {
+    const app = await serverForTest();
+    const selectedCourse = (await app.inject({ method: "POST", url: "/api/courses", payload: { name: "Selected course" } })).json() as { id: string };
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/rubrics/assignments",
+      payload: { courseId: selectedCourse.id, title: "Selected course rubric", totalScore: 100, requirements: "Test", sources: [] },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ courseId: selectedCourse.id, title: "Selected course rubric" });
+    await app.close();
+  });
+
   it("continues and persists a rubric reply after the page stream disconnects", async () => {
     let finish!: () => void;
     const ready = new Promise<void>((resolve) => { finish = resolve; });

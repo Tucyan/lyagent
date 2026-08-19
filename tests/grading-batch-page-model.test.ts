@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { batchActions, batchProgress, batchStatusLabel, batchUploadItemStatusLabel, canCommitBatchUpload, shouldPollBatch, shouldPollBatchUpload, waitForBatchSessionsReady } from "../web/src/pages/grading-batch-page-model.js";
+import { batchActions, batchProgress, batchReviewHref, batchStatusLabel, batchUploadItemStatusLabel, canCommitBatchUpload, canConfirmBatchJob, canRetryBatchJob, formatBatchConfidence, formatBatchScore, shouldPollBatch, shouldPollBatchUpload, waitForBatchSessionsReady } from "../web/src/pages/grading-batch-page-model.js";
 
 describe("batch grading page model", () => {
   it("derives progress and legal controls from persistent batch state", () => {
@@ -15,6 +15,19 @@ describe("batch grading page model", () => {
   it("allows a small batch with ten reports to start", () => {
     const counts = { pending: 10, running: 0, waiting_for_teacher: 0, needs_review: 0, completed: 0, failed: 0, cancelled: 0 };
     expect(batchActions({ status: "draft", totalJobs: 10, counts }).canStart).toBe(true);
+  });
+
+  it("formats review facts and exposes only legal review actions", () => {
+    const needsReview = { status: "needs_review", attemptCount: 1, maxAttempts: 3, resultVersion: 2, reviewStatus: "needs_review" as const };
+    expect(formatBatchScore({ score: { earned: 87, possible: 100 } })).toBe("87/100");
+    expect(formatBatchScore({})).toBe("—");
+    expect(formatBatchConfidence({ confidence: { overall: 0.823 } })).toBe("82%");
+    expect(formatBatchConfidence({})).toBe("—");
+    expect(canRetryBatchJob(needsReview)).toBe(true);
+    expect(canRetryBatchJob({ ...needsReview, attemptCount: 3 })).toBe(false);
+    expect(canConfirmBatchJob(needsReview)).toBe(true);
+    expect(canConfirmBatchJob({ ...needsReview, reviewStatus: "confirmed" })).toBe(false);
+    expect(batchReviewHref("batch 1", "session/1")).toBe("/grading/batches/review?batch=batch+1&session=session%2F1");
   });
 
   it("polls active upload items and commits only when every retained item is ready", () => {

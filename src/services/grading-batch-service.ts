@@ -40,6 +40,11 @@ export interface GradingBatchJob {
   leaseExpiresAt?: string;
   lastErrorCode?: string;
   question?: string;
+  score?: { earned: number; possible: number };
+  confidence?: { overall: number; minimum: number; lowCount: number };
+  reviewStatus?: "needs_review" | "confirmed";
+  reviewReasons?: string[];
+  resultVersion?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -266,7 +271,31 @@ export class GradingBatchService {
   }
 
   async getBatch(batchId: string): Promise<GradingBatchDetail> {
-    return { ...(await this.getBatchSummary(batchId)), jobs: this.listJobs(batchId) };
+    const jobs = await Promise.all(this.listJobs(batchId).map(async (job) => {
+      const source = await this.dependencies.readResult(job.sessionId);
+      if (!source) return job;
+      const result = source.result as {
+        score?: { earned?: unknown; possible?: unknown };
+        confidence?: { overall?: unknown; minimum?: unknown; lowCount?: unknown };
+        review?: { reasons?: unknown };
+      };
+      if (typeof result.score?.earned !== "number" || typeof result.score.possible !== "number"
+        || typeof result.confidence?.overall !== "number" || typeof result.confidence.minimum !== "number"
+        || typeof result.confidence.lowCount !== "number") return job;
+      return {
+        ...job,
+        score: { earned: result.score.earned, possible: result.score.possible },
+        confidence: {
+          overall: result.confidence.overall,
+          minimum: result.confidence.minimum,
+          lowCount: result.confidence.lowCount,
+        },
+        reviewStatus: source.reviewStatus,
+        reviewReasons: Array.isArray(result.review?.reasons) ? result.review.reasons.filter((reason): reason is string => typeof reason === "string") : [],
+        resultVersion: source.version,
+      };
+    }));
+    return { ...(await this.getBatchSummary(batchId)), jobs };
   }
 
   async getJob(jobId: string): Promise<GradingBatchJob> {
@@ -355,12 +384,12 @@ export class GradingBatchService {
 
   async retryJob(jobId: string, options: { schedule?: boolean } = {}): Promise<GradingBatchJob> {
     const job = await this.getJob(jobId);
-    if (job.status !== "failed") throw new GradingBatchConflictError("Only a failed job can retry");
+    if (!["failed", "needs_review"].includes(job.status)) throw new GradingBatchConflictError("Only a failed or needs-review job can retry");
     if (job.attemptCount >= job.maxAttempts) throw new GradingBatchConflictError("The grading job retry limit has been reached");
     this.database.prepare(
       `UPDATE grading_batch_jobs SET status = 'pending', run_id = NULL, lease_owner = NULL,
-       lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'failed'`,
-    ).run(this.now(), jobId);
+       lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?`,
+    ).run(this.now(), jobId, job.status);
     const batch = await this.getBatchSummary(job.batchId);
     if (batch.status === "completed") this.updateBatchStatus(job.batchId, "completed", "running");
     if (options.schedule !== false && (await this.getBatchSummary(job.batchId)).status === "running") this.schedule(job.batchId);

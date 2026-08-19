@@ -185,7 +185,8 @@ describe("grading API", () => {
           asked = true;
           return { kind: "question", question: { question: "附件是否为必交项？", options: ["是", "否"] } };
         }
-        const stored = await services.results.submitDraft(sessionId, 0, {
+        const currentDraft = await services.results.readDraft(sessionId);
+        const stored = await services.results.submitDraft(sessionId, currentDraft?.version ?? 0, {
           schemaVersion: "1.0",
           mode: "additive",
           criteria: [{
@@ -264,6 +265,28 @@ describe("grading API", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(detail).toMatchObject({ status: "completed", counts: { waiting_for_teacher: 0, needs_review: 30, failed: 0 } });
+    const confirmJob = detail.jobs.find((job: { status: string }) => job.status === "needs_review");
+    expect(confirmJob).toMatchObject({
+      score: { earned: 8, possible: 10 },
+      confidence: { overall: 0.9 },
+      reviewStatus: "needs_review",
+      resultVersion: 1,
+    });
+    const wrongBatchId = `${batch.id.slice(0, -1)}${batch.id.endsWith("0") ? "1" : "0"}`;
+    const mismatchedConfirm = await app.inject({
+      method: "POST",
+      url: `/api/grading/batches/${wrongBatchId}/jobs/${confirmJob.id}/confirm`,
+      payload: { expectedVersion: confirmJob.resultVersion, reviewNote: "批次复核确认", acknowledgedReasons: confirmJob.reviewReasons },
+    });
+    expect(mismatchedConfirm.statusCode).toBe(404);
+    const confirmed = await app.inject({
+      method: "POST",
+      url: `/api/grading/batches/${batch.id}/jobs/${confirmJob.id}/confirm`,
+      payload: { expectedVersion: confirmJob.resultVersion, reviewNote: "批次复核确认", acknowledgedReasons: confirmJob.reviewReasons },
+    });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    detail = (await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}` })).json();
+    expect(detail.counts).toMatchObject({ needs_review: 29, completed: 1 });
     const exported = await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}/export.csv` });
     expect(exported.statusCode, exported.body).toBe(200);
     expect(exported.headers["content-disposition"]).toContain("batch-grading-summary.csv");

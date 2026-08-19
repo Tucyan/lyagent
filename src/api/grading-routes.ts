@@ -369,6 +369,19 @@ export function registerGradingApi(
       if (job.batchId !== batchId) return reply.code(404).send({ code: "BATCH_JOB_NOT_FOUND" });
       return reply.code(202).send(await batches.retryJob(jobId));
     });
+    scoped.post("/api/grading/batches/:batchId/jobs/:jobId/confirm", async (request, reply) => {
+      const { batchId, jobId } = batchJobParams.parse(request.params);
+      const job = await batches.getJob(jobId);
+      if (job.batchId !== batchId) return reply.code(404).send({ code: "BATCH_JOB_NOT_FOUND" });
+      const payload = confirmSchema.parse(request.body);
+      const confirmed = await results.confirm(job.sessionId, {
+        expectedVersion: payload.expectedVersion,
+        reviewNote: payload.reviewNote,
+        acknowledgedReasons: payload.acknowledgedReasons as ReviewReason[],
+      });
+      await batches.refreshResultsAndRebuildSummary(batchId);
+      return confirmed;
+    });
     scoped.post("/api/grading/batches/:batchId/jobs/:jobId/answer", async (request, reply) => {
       const { batchId, jobId } = batchJobParams.parse(request.params);
       const job = await batches.getJob(jobId);

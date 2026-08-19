@@ -37,8 +37,8 @@ export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeServi
 export type RubricDesignerFactory = (assignmentId: string, rubricService: RubricService) => PiRubricDesigner;
 
 class RubricCourseBindingError extends Error {
-  constructor() {
-    super("Exactly one course is required to create a rubric assignment");
+  constructor(message = "请选择要绑定的课程") {
+    super(message);
     this.name = "RubricCourseBindingError";
   }
 }
@@ -103,6 +103,7 @@ const contentEditSchema = z.object({
   content: z.string().max(10 * 1024 * 1024),
 });
 const rubricAssignmentSchema = z.object({
+  courseId: z.string().uuid().optional(),
   title: z.string().trim().min(1).max(120),
   totalScore: z.number().positive(),
   requirements: z.string().trim().max(100_000).default(""),
@@ -254,9 +255,12 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.get("/api/dashboard", async () => dashboard.snapshot());
   app.get("/api/rubrics/assignments", async () => rubrics.listAssignments());
   app.post("/api/rubrics/assignments", async (request, reply) => {
+    const input = rubricAssignmentSchema.parse(request.body);
     const courses = await materials.listCourses();
-    if (courses.length !== 1) throw new RubricCourseBindingError();
-    return reply.code(201).send(await rubrics.createAssignment({ ...rubricAssignmentSchema.parse(request.body), courseId: courses[0]!.id }));
+    const courseId = input.courseId ?? (courses.length === 1 ? courses[0]!.id : undefined);
+    if (!courseId) throw new RubricCourseBindingError();
+    if (!courses.some((course) => course.id === courseId)) throw new RubricCourseBindingError("所选课程不存在或已被移除，请刷新后重试");
+    return reply.code(201).send(await rubrics.createAssignment({ ...input, courseId }));
   });
   app.get("/api/rubrics/assignments/:assignmentId", async (request) => rubrics.getAssignment(rubricAssignmentIdSchema.parse(request.params).assignmentId));
   app.get("/api/rubrics/assignments/:assignmentId/session", async (request) => (await rubrics.getDesignSession(rubricAssignmentIdSchema.parse(request.params).assignmentId)) ?? null);

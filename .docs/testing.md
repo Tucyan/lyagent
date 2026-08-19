@@ -36,7 +36,7 @@ M4测试覆盖评分三种模式的程序重算、精确等级/等级区间/连�
 
 设置`RUN_REAL_AI=1`和本地`DEEPSEEK_API_KEY`后，`tests/grading-real-provider.test.ts`会调用真实身份识别与批改Agent，要求提交全部16条规则并得到程序重算的85/100。普通检查不会运行该测试。
 
-课程答疑测试必须断言：staging 与跨课程内容不可读、引用已读取且落在 active release 内、资料不足不带引用、网络引用来自本会话已搜索且已读取的结果、以及 SSE 工具活动不包含推理、Prompt、原文、绝对路径或密钥。网页读取测试还必须覆盖私网地址与重定向拦截。
+课程答疑测试必须断言：staging 与跨课程内容不可读、引用已读取且落在 active release 内、资料不足不带引用、网络引用来自本会话已搜索且已读取的结果、以及 SSE 工具活动不包含推理、Prompt、原文、绝对路径或密钥。页面必须区分未选择课程、课程资料加载中、已选课程但没有 active release、模型未设置和可以提问五种输入状态，不得把“尚未发布资料”误报为“未选择课程”。网页读取测试还必须覆盖私网地址与重定向拦截。
 
 评分表测试必须断言：作业要求或非空参考资料至少存在一项、无来源推荐不调用模型、已选制度和完成轮次会话可恢复、重进不自动请求推荐、咨询类消息产生流式且可持久化的回复并保持草稿内容与版本不变、非回复类Provider原始文本不进入SSE或持久化记录、Agent只能使用当前Assignment的固定工具、无模型时可创建人工首版草稿、草稿写入有版本冲突保护、冻结崩溃可恢复、冻结版本不可变且可创建修订、预览与Markdown包含等级和重叠规则，以及删除会话会同时移除参考资料、聊天记录、当前草稿和全部冻结正式版本。答疑和评分表都必须覆盖页面流断开后后台继续完成并持久化；显式停止必须通过运行ID取消且不保存未完成轮次。`tests/rubric-real-provider.test.ts`只在显式设置`RUN_REAL_AI=1`时使用当前本地配置运行真实Provider验收。
 
@@ -98,10 +98,12 @@ M5 批量批改的定向回归覆盖状态机、会话预留与租约 fencing、
 Windows Release 回归还覆盖持久化上传草稿、逐项失败隔离、刷新/重启恢复、身份补填、替换/移除、共享 `assets/` 引用筛选、事务性幂等提交，以及没有 active knowledge release 时提交完整批改草稿。运行错误断言稳定安全码，并确认事件中不包含原始供应商错误。
 
 ```powershell
-npm test -- --run tests/grading-state-machine.test.ts tests/grading-concurrency.test.ts tests/grading-recovery.test.ts tests/summary-service.test.ts tests/grading-batch-acceptance.test.ts tests/grading-batch-page-model.test.ts tests/grading-api.test.ts tests/grading-run-service.test.ts tests/web-assets.test.ts
+npm test -- --run tests/grading-state-machine.test.ts tests/grading-concurrency.test.ts tests/grading-recovery.test.ts tests/summary-service.test.ts tests/grading-batch-acceptance.test.ts tests/grading-batch-page-model.test.ts tests/grading-batch-page-source.test.ts tests/grading-batch-review-page-model.test.ts tests/grading-batch-review-page-source.test.ts tests/grading-api.test.ts tests/grading-run-service.test.ts tests/web-assets.test.ts
 ```
 
 合成报告由 `scripts/generate-batch-grading-fixtures.ts` 生成，身份均为虚构数据。浏览器验收使用 `scripts/run-batch-grading-acceptance-server.ts` 的确定性 grader，在 `/grading/batches` 真实上传至少 30 份文件并验证并发 4、暂停/恢复和 CSV 下载；该脚本不作为模型质量验证，也不访问真实学生数据。
+
+批次 Review 回归还必须覆盖：表格分数/整体置信度、待复核重试、批次归属不匹配的确认拒绝、正式确认后的计数同步、`batch/session` 查询参数与前进后退、默认选择待复核项、25%–75% 拖拽边界、结构化评分修改及审计备注。浏览器验收在 `/grading/batches/review` 切换至少两名合成学生，确认不会重新挂载应用或出现“正在检查模型设置…”空白页。
 
 定向测试：
 

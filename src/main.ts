@@ -17,7 +17,7 @@ import { resolveWorkspaceIdentity } from "./config/workspace-identity.js";
 
 const workspaceIdentity = await resolveWorkspaceIdentity(path.resolve(process.env.COURSE_AGENT_WORKSPACE ?? "workspace"));
 const workspaceRoot = workspaceIdentity.canonicalRoot;
-const port = Number.parseInt(process.env.PORT ?? "3000", 10);
+const port = Number.parseInt(process.env.PORT ?? "3010", 10);
 const doclingDevice = process.env.COURSE_AGENT_DOCLING_DEVICE === "cpu" ? "cpu" : "auto";
 const logger = pino({ name: "course-agent", level: process.env.LOG_LEVEL ?? "info" });
 const credentialStore = new FileCredentialStore(defaultSecretRoot(workspaceIdentity.hash), new WindowsDpapiProtector());

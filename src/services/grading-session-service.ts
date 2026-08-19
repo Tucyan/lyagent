@@ -1067,7 +1067,13 @@ export class GradingSessionService {
     )
       throw new GradingSessionError("Submission conversion is not ready");
     if (session.gradingStatus === "queued") return session;
-    const allowedStatuses = ["not_started", "failed", "cancelled", ...(options.resumeWaitingForTeacher ? ["waiting_for_teacher"] : [])];
+    const allowedStatuses = [
+      "not_started",
+      "failed",
+      "cancelled",
+      ...(options.resumeWaitingForTeacher ? ["waiting_for_teacher"] : []),
+      ...(options.allowBatchReservation ? ["draft_ready", "needs_review"] : []),
+    ];
     if (!allowedStatuses.includes(session.gradingStatus))
       throw new GradingConflictError(
         "The submission cannot be queued in its current state",

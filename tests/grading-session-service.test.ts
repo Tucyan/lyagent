@@ -656,6 +656,27 @@ describe("GradingSessionService", () => {
     service.close();
   });
 
+  it("allows a batch-reserved needs-review session to queue for regrading", async () => {
+    const { root, assignment, frozen, service } = await setup();
+    const source = path.join(root, "review-retry.md");
+    await writeFile(source, "# Report\n", "utf8");
+    const session = await service.createSession({
+      assignmentId: assignment.id,
+      rubricVersion: frozen.version,
+      studentName: "复核学生",
+      studentNumber: "20260099",
+      originalPath: source,
+      originalFilename: "review-retry.md",
+      autoStartAfterConversion: false,
+    });
+    await service.lockSubmissionForGrading(session.id);
+    await service.setGradingStatus(session.id, "needs_review");
+
+    await expect(service.lockSubmissionForGrading(session.id, { allowBatchReservation: true }))
+      .resolves.toMatchObject({ gradingStatus: "queued" });
+    service.close();
+  });
+
   it("restores persisted sessions without recreating them", async () => {
     const { root, rubrics, assignment, frozen, service } = await setup();
     const source = path.join(root, "report.pdf");

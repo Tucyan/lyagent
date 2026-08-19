@@ -24,7 +24,15 @@ function sessions(count = 30): BatchSessionSummary[] {
   }));
 }
 
-async function setup(now = "2026-08-05T08:00:00.000Z") {
+async function setup(
+  now = "2026-08-05T08:00:00.000Z",
+  readResult: (sessionId: string) => Promise<{
+    reviewStatus: "needs_review" | "confirmed";
+    version: number;
+    result: unknown;
+    updatedAt: string;
+  } | undefined> = async () => undefined,
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), "grading-batch-state-"));
   roots.push(root);
   let current = now;
@@ -37,7 +45,7 @@ async function setup(now = "2026-08-05T08:00:00.000Z") {
   const service = new GradingBatchService(root, {
     getSession: async (id) => known.get(id)!,
     execute: async () => ({ status: "failed", errorCode: "EXPECTED_TEST_FAILURE" }),
-    readResult: async () => undefined,
+    readResult,
   }, {
     now: () => current,
     workerId: "worker-a",
@@ -56,6 +64,36 @@ afterEach(async () => {
 });
 
 describe("GradingBatchService state machine", () => {
+  it("enriches batch jobs with the current score, confidence, and review reasons", async () => {
+    const { service } = await setup("2026-08-05T08:00:00.000Z", async (sessionId) => sessionId === "session-1" ? {
+      reviewStatus: "needs_review",
+      version: 2,
+      updatedAt: "2026-08-05T08:01:00.000Z",
+      result: {
+        score: { earned: 87, possible: 100 },
+        confidence: { overall: 0.82, minimum: 0.64, lowCount: 1 },
+        review: { requiresReview: true, reasons: ["LOW_CONFIDENCE"] },
+      },
+    } : undefined);
+    const batch = await service.createBatch({
+      title: "复核摘要",
+      assignmentId: "assignment-1",
+      rubricVersion: 1,
+      concurrency: 1,
+      sessionIds: ["session-1"],
+    });
+
+    const job = (await service.getBatch(batch.id)).jobs[0];
+    service.close();
+    expect(job).toMatchObject({
+      score: { earned: 87, possible: 100 },
+      confidence: { overall: 0.82, minimum: 0.64, lowCount: 1 },
+      reviewStatus: "needs_review",
+      reviewReasons: ["LOW_CONFIDENCE"],
+      resultVersion: 2,
+    });
+  });
+
   it("allows duplicate assignment titles but rejects duplicate student numbers", async () => {
     const first = await setup();
     first.known.get("session-2")!.submissionTitle = first.known.get("session-1")!.submissionTitle!;
@@ -161,6 +199,29 @@ describe("GradingBatchService state machine", () => {
       if (attempt < 3) await service.retryJob(claimed.id, { schedule: false });
     }
     await expect(service.retryJob(job.id)).rejects.toThrow(/retry limit/i);
+    service.close();
+  });
+
+  it("requeues a needs-review job for a fresh bounded grading attempt", async () => {
+    const { service, root } = await setup();
+    const batch = await service.createBatch({
+      title: "重新批改",
+      assignmentId: "assignment-1",
+      rubricVersion: 1,
+      concurrency: 1,
+      sessionIds: ["session-1"],
+    });
+    const job = (await service.getBatch(batch.id)).jobs[0]!;
+    const database = new Database(path.join(root, "grading.sqlite"));
+    database.prepare("UPDATE grading_batch_jobs SET status = 'needs_review', attempt_count = 1 WHERE id = ?").run(job.id);
+    database.prepare("UPDATE grading_batches SET status = 'completed' WHERE id = ?").run(batch.id);
+    database.close();
+
+    await expect(service.retryJob(job.id, { schedule: false })).resolves.toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+    });
+    expect((await service.getBatch(batch.id)).status).toBe("running");
     service.close();
   });
 

@@ -8,6 +8,38 @@ export type BatchJobCounts = {
   cancelled: number;
 };
 
+export type BatchReviewJob = {
+  status: string;
+  attemptCount: number;
+  maxAttempts: number;
+  resultVersion?: number;
+  reviewStatus?: "needs_review" | "confirmed";
+  score?: { earned: number; possible: number };
+  confidence?: { overall: number };
+};
+
+export function formatBatchScore(job: Pick<BatchReviewJob, "score">): string {
+  return job.score ? `${job.score.earned}/${job.score.possible}` : "—";
+}
+
+export function formatBatchConfidence(job: Pick<BatchReviewJob, "confidence">): string {
+  return job.confidence ? `${Math.round(job.confidence.overall * 100)}%` : "—";
+}
+
+export function canRetryBatchJob(job: Pick<BatchReviewJob, "status" | "attemptCount" | "maxAttempts">): boolean {
+  return ["failed", "needs_review"].includes(job.status) && job.attemptCount < job.maxAttempts;
+}
+
+export function canConfirmBatchJob(job: Pick<BatchReviewJob, "resultVersion" | "reviewStatus">): boolean {
+  return job.reviewStatus === "needs_review" && Number.isInteger(job.resultVersion);
+}
+
+export function batchReviewHref(batchId: string, sessionId?: string): string {
+  const params = new URLSearchParams({ batch: batchId });
+  if (sessionId) params.set("session", sessionId);
+  return `/grading/batches/review?${params.toString()}`;
+}
+
 export function batchProgress(batch: { totalJobs: number; counts: BatchJobCounts }) {
   const settled = batch.counts.waiting_for_teacher + batch.counts.needs_review + batch.counts.completed + batch.counts.failed + batch.counts.cancelled;
   return { settled, percent: batch.totalJobs ? Math.round(settled / batch.totalJobs * 100) : 0 };
