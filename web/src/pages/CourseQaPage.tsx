@@ -5,6 +5,8 @@ import { ChatComposer } from "../components/ChatComposer";
 import { ChatSidebar, type QaCourse, type QaSessionSummary } from "../components/ChatSidebar";
 import { ToolActivity, type ToolStep } from "../components/ToolActivity";
 import { ApiError, apiErrorFromResponse, withJsonHeaders } from "../lib/api";
+import { navigateWithinApp } from "../lib/app-navigation";
+import { LatestRequestGate } from "../lib/async-state";
 import { consumeSse } from "../lib/consume-sse";
 import { appendProcessText, shouldOpenProcess } from "../lib/qa-presentation";
 import { courseQaComposerState, type KnowledgeStatus } from "./course-qa-page-model";
@@ -41,31 +43,64 @@ export function CourseQaPage() {
   const [sessionActionError, setSessionActionError] = useState("");
   const controller = useRef<AbortController | undefined>(undefined);
   const agentRunId = useRef<string | undefined>(undefined);
+  const courseGate = useRef(new LatestRequestGate());
+  const sessionGate = useRef(new LatestRequestGate());
+  const sourceGate = useRef(new LatestRequestGate());
+  const streamGate = useRef(new LatestRequestGate());
+  const courseIdRef = useRef(courseId);
+  const sessionIdRef = useRef(sessionId);
+  courseIdRef.current = courseId;
+  sessionIdRef.current = sessionId;
   const [streamingMessageId, setStreamingMessageId] = useState<string>();
   const streaming = Boolean(streamingMessageId);
   const currentCourse = courses.find((course) => course.id === courseId);
 
   const refreshCourse = async (id: string) => {
-    if (!id) { setActive(undefined); setSessions([]); setKnowledgeStatus("idle"); return; }
+    const lease = courseGate.current.begin();
+    if (!id) {
+      if (lease.isCurrent()) {
+        setActive(undefined);
+        setSessions([]);
+        setKnowledgeStatus("idle");
+      }
+      return undefined;
+    }
     setKnowledgeStatus("loading");
     const [nextActive, nextSessions] = await Promise.all([api<ActiveKnowledge>(`/api/courses/${id}/qa/active`), api<QaSessionSummary[]>(`/api/courses/${id}/qa/sessions`)]);
+    if (!lease.isCurrent() || id !== courseIdRef.current) return undefined;
     setActive(nextActive); setSessions(nextSessions); setKnowledgeStatus("ready"); setNotice(allowWebSearch ? "课程资料优先；可使用网络补充当前信息" : "仅依据已发布课程资料回答");
+    return { nextActive, nextSessions };
   };
 
-  useEffect(() => { Promise.all([api<QaCourse[]>("/api/courses"), api<{ configured: boolean }>("/api/system/model")]).then(([nextCourses, model]) => { setCourses(nextCourses); setModelReady(model.configured); const first = courseId || nextCourses[0]?.id || ""; setCourseId(first); }).catch((error: Error) => setNotice(error.message)); }, []);
+  useEffect(() => { Promise.all([api<QaCourse[]>("/api/courses"), api<{ configured: boolean }>("/api/system/model")]).then(([nextCourses, model]) => { setCourses(nextCourses); setModelReady(model.configured); const first = courseIdRef.current || nextCourses[0]?.id || ""; if (first && !courseIdRef.current) navigateWithinApp(`/qa?course=${encodeURIComponent(first)}`, true); }).catch((error: Error) => setNotice(error.message)); }, []);
   useEffect(() => {
     const syncLocation = () => {
       const nextQuery = new URLSearchParams(window.location.search);
       const nextCourseId = nextQuery.get("course") ?? "";
-      if (nextCourseId) setCourseId(nextCourseId);
-      setSessionId(nextQuery.get("session") ?? "");
+      const nextSessionId = nextQuery.get("session") ?? "";
+      controller.current?.abort();
+      controller.current = undefined;
+      agentRunId.current = undefined;
+      streamGate.current.invalidate();
+      sourceGate.current.invalidate();
+      courseIdRef.current = nextCourseId;
+      sessionIdRef.current = nextSessionId;
+      setCourseId(nextCourseId);
+      setSessionId(nextSessionId);
+      setStreamingMessageId(undefined);
+      setMessages([]);
       setSource(undefined);
       setSidebarOpen(false);
     };
     window.addEventListener("popstate", syncLocation);
-    return () => window.removeEventListener("popstate", syncLocation);
+    return () => {
+      window.removeEventListener("popstate", syncLocation);
+      controller.current?.abort();
+      streamGate.current.invalidate();
+    };
   }, []);
   useEffect(() => { refreshCourse(courseId).catch((error: Error) => {
+    if (courseId !== courseIdRef.current) return;
     setActive(undefined);
     setSessions([]);
     if (error instanceof ApiError && error.code === "ACTIVE_RELEASE_NOT_FOUND") {
@@ -76,10 +111,31 @@ export function CourseQaPage() {
       setNotice(error.message);
     }
   }); }, [courseId]);
-  useEffect(() => { if (!courseId || !sessionId) { setMessages([]); return; } if (streaming) return; api<Session>(`/api/courses/${courseId}/qa/sessions/${sessionId}`).then((session) => setMessages(session.messages.map((message, index) => ({ ...message, id: `${session.id}-${index}` })))).catch((error: Error) => setNotice(error.message)); }, [courseId, sessionId, streaming]);
+  useEffect(() => {
+    const lease = sessionGate.current.begin();
+    if (!courseId || !sessionId) {
+      if (lease.isCurrent()) setMessages([]);
+      return;
+    }
+    if (streaming) return;
+    void api<Session>(`/api/courses/${courseId}/qa/sessions/${sessionId}`)
+      .then((session) => {
+        if (!lease.isCurrent() || courseId !== courseIdRef.current || sessionId !== sessionIdRef.current) return;
+        setMessages(session.messages.map((message, index) => ({ ...message, id: `${session.id}-${index}` })));
+      })
+      .catch((error: Error) => {
+        if (lease.isCurrent()) setNotice(error.message);
+      });
+  }, [courseId, sessionId, streaming]);
 
   const examples = useMemo(() => active?.documents.slice(0, 3).map((document) => `请解释“${document.title}”中的核心概念`) ?? [], [active]);
-  const beginNewChat = () => { setSessionId(""); setMessages([]); setSource(undefined); setNotice(active ? "可以开始新的课程答疑" : "请先选择已发布课程"); };
+  const beginNewChat = () => {
+    navigateWithinApp(courseId ? `/qa?course=${encodeURIComponent(courseId)}` : "/qa");
+    setNotice(active ? "可以开始新的课程答疑" : "请先选择已发布课程");
+  };
+  const selectCourse = (id: string) => {
+    navigateWithinApp(id ? `/qa?course=${encodeURIComponent(id)}` : "/qa");
+  };
   const renameSession = async () => {
     if (!courseId || !sessionToRename) return;
     const title = renameTitle.trim();
@@ -97,10 +153,7 @@ export function CourseQaPage() {
       const response = await fetch(`/api/courses/${courseId}/qa/sessions/${sessionToDelete.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "删除会话失败");
       if (sessionId === sessionToDelete.id) {
-        setSessionId("");
-        setMessages([]);
-        setSource(undefined);
-        history.replaceState(null, "", `/qa?course=${encodeURIComponent(courseId)}`);
+        navigateWithinApp(`/qa?course=${encodeURIComponent(courseId)}`, true);
       }
       await refreshCourse(courseId);
       setSessionToDelete(undefined);
@@ -110,36 +163,59 @@ export function CourseQaPage() {
   const send = async () => {
     const question = input.trim();
     if (!question || !courseId || !active || !modelReady || controller.current) return;
+    const requestCourseId = courseId;
     setInput("");
     let nextSessionId = sessionId;
     const assistantId = crypto.randomUUID();
     let receivedFinal = false;
+    let streamFailure: string | undefined;
     setStreamingMessageId(assistantId);
     try {
-      if (!nextSessionId) { nextSessionId = (await api<{ id: string }>(`/api/courses/${courseId}/qa/sessions`, { method: "POST" })).id; setSessionId(nextSessionId); }
+      if (!nextSessionId) {
+        nextSessionId = (await api<{ id: string }>(`/api/courses/${requestCourseId}/qa/sessions`, { method: "POST" })).id;
+        if (courseIdRef.current !== requestCourseId) return;
+        navigateWithinApp(`/qa?course=${encodeURIComponent(requestCourseId)}&session=${encodeURIComponent(nextSessionId)}`, true);
+      }
+      const requestSessionId = nextSessionId;
+      const lease = streamGate.current.begin();
+      setStreamingMessageId(assistantId);
       setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", content: question }, { id: assistantId, role: "assistant", content: "", steps: [] }]);
       const aborter = new AbortController();
       controller.current = aborter;
-      const response = await fetch(`/api/courses/${courseId}/qa/sessions/${nextSessionId}/messages/stream`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, allowWebSearch }), signal: aborter.signal });
+      const response = await fetch(`/api/courses/${requestCourseId}/qa/sessions/${requestSessionId}/messages/stream`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, allowWebSearch }), signal: aborter.signal });
       if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "答疑请求失败");
       agentRunId.current = response.headers.get("x-agent-run-id") ?? undefined;
-      await consumeSse(response, (_event, raw) => {
+      const result = await consumeSse(response, (_event, raw) => {
+        if (!lease.isCurrent() || requestCourseId !== courseIdRef.current || requestSessionId !== sessionIdRef.current) return;
         const event = raw as StreamEvent;
+        if (event.type === "final") receivedFinal = true;
+        if (event.type === "error") streamFailure = event.message ?? "答疑未能完成";
         setMessages((items) => items.map((message) => {
           if (message.id !== assistantId) return message;
           if (event.type === "tool_start" && event.id && event.label && event.summary) return { ...message, steps: [...(message.steps ?? []), { id: event.id, label: event.label, summary: event.summary, status: "running" }] };
           if (event.type === "tool_end" && event.id) return { ...message, steps: (message.steps ?? []).map((step) => step.id === event.id ? { ...step, status: event.status === "failed" ? "failed" : "completed" } : step) };
           if (event.type === "answer_delta" && event.delta) return { ...message, process: appendProcessText(message.process, event.delta) };
-          if (event.type === "final") { receivedFinal = true; return { ...message, content: event.answer ?? message.content, citations: event.citations, insufficient: event.insufficient }; }
-          if (event.type === "error") return { ...message, content: event.message ?? "答疑未能完成" };
+          if (event.type === "final") return { ...message, content: event.answer ?? message.content, citations: event.citations, insufficient: event.insufficient };
+          if (event.type === "error") return { ...message, content: streamFailure ?? "答疑未能完成" };
           return message;
         }));
       });
-      setSessions(await api<QaSessionSummary[]>(`/api/courses/${courseId}/qa/sessions`));
+      if (!result.terminalEvent) throw new Error("答疑连接已中断，请重试");
+      if (streamFailure) throw new Error(streamFailure);
+      const nextSessions = await api<QaSessionSummary[]>(`/api/courses/${requestCourseId}/qa/sessions`);
+      if (lease.isCurrent() && requestCourseId === courseIdRef.current) setSessions(nextSessions);
     } catch (error) {
-      setMessages((items) => items.map((message) => message.role === "assistant" && !message.citations && !message.insufficient ? { ...message, stopped: error instanceof DOMException && error.name === "AbortError" } : message));
-      if (!(error instanceof DOMException && error.name === "AbortError") && !receivedFinal) setNotice((error as Error).message);
-    } finally { controller.current = undefined; agentRunId.current = undefined; setStreamingMessageId(undefined); }
+      if (requestCourseId === courseIdRef.current && nextSessionId === sessionIdRef.current) {
+        setMessages((items) => items.map((message) => message.id === assistantId ? { ...message, stopped: error instanceof DOMException && error.name === "AbortError" } : message));
+        if (!(error instanceof DOMException && error.name === "AbortError") && !receivedFinal) setNotice((error as Error).message);
+      }
+    } finally {
+      if (requestCourseId === courseIdRef.current && nextSessionId === sessionIdRef.current) {
+        controller.current = undefined;
+        agentRunId.current = undefined;
+        setStreamingMessageId(undefined);
+      }
+    }
   };
   const stopCurrentRun = async () => {
     const runId = agentRunId.current;
@@ -152,7 +228,14 @@ export function CourseQaPage() {
   const openCitation = async (citation: Citation) => {
     if (citation.type === "web") { window.open(citation.url, "_blank", "noopener,noreferrer"); return; }
     if (!courseId) return;
-    try { setSource({ citation, content: (await api<{ content: string }>(`/api/courses/${courseId}/qa/active/content?path=${encodeURIComponent(citation.path)}&startLine=${citation.startLine}&endLine=${citation.endLine}`)).content }); } catch (error) { setNotice((error as Error).message); }
+    const requestCourseId = courseId;
+    const lease = sourceGate.current.begin();
+    try {
+      const result = await api<{ content: string }>(`/api/courses/${requestCourseId}/qa/active/content?path=${encodeURIComponent(citation.path)}&startLine=${citation.startLine}&endLine=${citation.endLine}`);
+      if (lease.isCurrent() && requestCourseId === courseIdRef.current) setSource({ citation, content: result.content });
+    } catch (error) {
+      if (lease.isCurrent()) setNotice((error as Error).message);
+    }
   };
 
   const isCurrentAssistantMessage = (message: QaMessage) => streaming && message.id === streamingMessageId;
@@ -160,7 +243,7 @@ export function CourseQaPage() {
 
   return <div className="qa-shell">
     <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="打开会话侧栏">☰</button>
-    <ChatSidebar courses={courses} courseId={courseId} sessions={sessions} activeSessionId={sessionId || undefined} onCourseChange={(id) => { setCourseId(id); beginNewChat(); }} onNewChat={beginNewChat} onRename={(session) => { setSessionToRename(session); setRenameTitle(session.summary); setSessionActionError(""); }} onDelete={(session) => { setSessionToDelete(session); setSessionActionError(""); }} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    <ChatSidebar courses={courses} courseId={courseId} sessions={sessions} activeSessionId={sessionId || undefined} onCourseChange={selectCourse} onNewChat={beginNewChat} onRename={(session) => { setSessionToRename(session); setRenameTitle(session.summary); setSessionActionError(""); }} onDelete={(session) => { setSessionToDelete(session); setSessionActionError(""); }} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
     <main className="qa-main">
       <header className="qa-header"><span>{currentCourse?.name ?? "课程答疑"}</span><small>{notice}</small></header>
       <section className="message-list" aria-live="polite">

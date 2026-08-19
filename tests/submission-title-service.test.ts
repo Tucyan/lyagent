@@ -24,6 +24,36 @@ async function fixture(submissionTitle?: string) {
 }
 
 describe("SubmissionTitleService", () => {
+  it("starts a retry and returns the resolving snapshot before the Agent finishes", async () => {
+    const pending = await fixture();
+    await pending.sessions.markSubmissionTitleFailed(pending.session.id);
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const service = new SubmissionTitleService(pending.sessions, () => ({
+      async run() {
+        await waiting;
+        await pending.sessions.resolveSubmissionTitle(pending.session.id, "正文主题");
+        return { kind: "title" as const, title: "正文主题" };
+      },
+    }));
+
+    await expect(service.start(pending.session.id)).resolves.toMatchObject({
+      submissionTitleStatus: "resolving",
+    });
+    expect(await pending.sessions.getSession(pending.session.id)).toMatchObject({
+      submissionTitleStatus: "resolving",
+    });
+
+    release();
+    await expect(service.resolve(pending.session.id)).resolves.toMatchObject({
+      submissionTitleStatus: "resolved",
+      submissionTitle: "正文主题",
+    });
+    pending.sessions.close();
+  });
+
   it("requires one successful naming outcome for an omitted title", async () => {
     const { sessions, session } = await fixture();
     const run = vi.fn(async () => {

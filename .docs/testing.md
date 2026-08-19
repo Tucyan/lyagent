@@ -97,6 +97,8 @@ M5 批量批改的定向回归覆盖状态机、会话预留与租约 fencing、
 
 Windows Release 回归还覆盖持久化上传草稿、逐项失败隔离、刷新/重启恢复、身份补填、替换/移除、共享 `assets/` 引用筛选、事务性幂等提交，以及没有 active knowledge release 时提交完整批改草稿。运行错误断言稳定安全码，并确认事件中不包含原始供应商错误。
 
+前端状态同步回归由 `tests/frontend-async-state.test.ts`、`tests/consume-sse.test.ts` 及各页面 `*-source.test.ts` 覆盖：最新请求归属、串行轮询、轮询停止后的错误抑制、SSE 终态、操作中标签、路由切换取消、编辑草稿保护，以及批次 Review 自动刷新当前会话。实机验收按 `docs/acceptance/windows-release-frontend-state-sync.md` 记录。
+
 ```powershell
 npm test -- --run tests/grading-state-machine.test.ts tests/grading-concurrency.test.ts tests/grading-recovery.test.ts tests/summary-service.test.ts tests/grading-batch-acceptance.test.ts tests/grading-batch-page-model.test.ts tests/grading-batch-page-source.test.ts tests/grading-batch-review-page-model.test.ts tests/grading-batch-review-page-source.test.ts tests/grading-api.test.ts tests/grading-run-service.test.ts tests/web-assets.test.ts
 ```

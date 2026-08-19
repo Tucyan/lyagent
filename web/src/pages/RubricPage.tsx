@@ -5,6 +5,7 @@ import { RubricDocument, RubricEditor, type RubricMode, type RubricValue } from 
 import { ToolActivity, type ToolStep } from "../components/ToolActivity";
 import { withJsonHeaders } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
+import { LatestRequestGate, type RequestLease } from "../lib/async-state";
 import { consumeSse } from "../lib/consume-sse";
 import { appendRubricProcess, appendRubricReply, assertRubricStreamSucceeded, assignmentIdFromSearch, clampPreviewPercent, loadRubricSession, rubricCompletionNotice, rubricDeleteWarning, shouldFollowRubricStream } from "./rubric-page-model";
 
@@ -63,6 +64,12 @@ export function RubricPage() {
   const splitRef = useRef<HTMLElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const followStreamRef = useRef(true);
+  const assignmentGate = useRef(new LatestRequestGate());
+  const versionsGate = useRef(new LatestRequestGate());
+  const streamGate = useRef(new LatestRequestGate());
+  const streamControllerRef = useRef<AbortController | undefined>(undefined);
+  const selectedAssignmentIdRef = useRef(selectedAssignmentId);
+  selectedAssignmentIdRef.current = selectedAssignmentId;
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [previewVersion, setPreviewVersion] = useState<"draft" | number>("draft");
   const [editing, setEditing] = useState(false);
@@ -84,17 +91,25 @@ export function RubricPage() {
     });
     return next;
   };
-  const refreshVersions = async (assignmentId: string) => {
+  const refreshVersions = async (assignmentId: string, owner?: RequestLease) => {
+    const lease = versionsGate.current.begin();
     const next = await api<FrozenRubric[]>(`/api/rubrics/assignments/${assignmentId}/versions`);
+    if (
+      !lease.isCurrent() ||
+      assignmentId !== selectedAssignmentIdRef.current ||
+      (owner && !owner.isCurrent())
+    ) return undefined;
     setVersions(next);
     return next;
   };
   const refreshSessionState = async (assignmentId: string) => {
+    const lease = assignmentGate.current.begin();
     const [nextDraft, nextSession, nextVersions] = await Promise.all([
       api<RubricDraft | null>(`/api/rubrics/assignments/${assignmentId}/draft`),
       api<RubricSession | null>(`/api/rubrics/assignments/${assignmentId}/session`),
       api<FrozenRubric[]>(`/api/rubrics/assignments/${assignmentId}/versions`),
     ]);
+    if (!lease.isCurrent() || assignmentId !== selectedAssignmentIdRef.current) return undefined;
     setDraft(nextDraft ?? undefined);
     setSelectedMode(nextSession?.selectedMode);
     setMessages(storedMessages(nextSession));
@@ -111,6 +126,35 @@ export function RubricPage() {
   }, [selectedAssignmentId]);
 
   useEffect(() => {
+    const syncRoute = () => {
+      const nextAssignmentId = assignmentIdFromSearch(window.location.search);
+      if (nextAssignmentId === selectedAssignmentIdRef.current) return;
+      selectedAssignmentIdRef.current = nextAssignmentId;
+      streamControllerRef.current?.abort();
+      streamControllerRef.current = undefined;
+      streamGate.current.invalidate();
+      assignmentGate.current.invalidate();
+      versionsGate.current.invalidate();
+      setAssignment(undefined);
+      setRecommendations([]);
+      setSelectedMode(undefined);
+      setDraft(undefined);
+      setVersions([]);
+      setMessages([]);
+      setSubmitting(false);
+      setStreamingMessageId(undefined);
+    };
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
+  }, []);
+
+  useEffect(() => {
+    streamControllerRef.current?.abort();
+    streamControllerRef.current = undefined;
+    streamGate.current.invalidate();
+    setSubmitting(false);
+    setStreamingMessageId(undefined);
+    const lease = assignmentGate.current.begin();
     if (!selectedAssignmentId) {
       setAssignment(undefined);
       setSelectedMode(undefined);
@@ -136,6 +180,7 @@ export function RubricPage() {
         session: () => api<RubricSession | null>(`/api/rubrics/assignments/${selectedAssignmentId}/session`),
         recommendations: () => api<{ options: Recommendation[] }>(`/api/rubrics/assignments/${selectedAssignmentId}/recommendations`),
         onCore: (nextAssignment, nextDraft, nextSession) => {
+          if (!lease.isCurrent() || selectedAssignmentId !== selectedAssignmentIdRef.current) return;
           loadedDraft = nextDraft;
           setAssignment(nextAssignment);
           setDraft(nextDraft ?? undefined);
@@ -146,15 +191,25 @@ export function RubricPage() {
           setNotice(nextSession ? "已恢复评分会话和历史记录，不会自动调用 AI。" : "请选择评分制度后开始设计。");
         },
         onRecommendations: (recommendation) => {
+          if (!lease.isCurrent() || selectedAssignmentId !== selectedAssignmentIdRef.current) return;
           setRecommendations(recommendation.options);
           setNotice("请选择评分制度；选择后会直接生成第一版草稿，无需填写备注。");
         },
       }),
-      refreshVersions(selectedAssignmentId),
+      refreshVersions(selectedAssignmentId, lease),
     ]).then(([, nextVersions]) => {
-      if (!loadedDraft && nextVersions[0]) setPreviewVersion(nextVersions[0].version);
-    }).catch((error: Error) => setNotice(error.message));
+      if (!lease.isCurrent() || selectedAssignmentId !== selectedAssignmentIdRef.current) return;
+      if (!loadedDraft && nextVersions?.[0]) setPreviewVersion(nextVersions[0].version);
+    }).catch((error: Error) => {
+      if (lease.isCurrent()) setNotice(error.message);
+    });
   }, [selectedAssignmentId]);
+
+  useEffect(() => () => {
+    streamControllerRef.current?.abort();
+    streamGate.current.invalidate();
+    assignmentGate.current.invalidate();
+  }, []);
 
   useEffect(() => {
     if (!dragging) return;
@@ -220,14 +275,20 @@ export function RubricPage() {
 
   const runAgentRequest = async (url: string, init: RequestInit, teacherMessage: string) => {
     if (!selectedAssignmentId) return;
+    const requestAssignmentId = selectedAssignmentId;
+    const lease = streamGate.current.begin();
+    const aborter = new AbortController();
+    streamControllerRef.current = aborter;
     const assistantId = crypto.randomUUID();
     followStreamRef.current = true;
     setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", content: teacherMessage }, { id: assistantId, role: "assistant", content: "", tools: [] }]);
     setStreamingMessageId(assistantId);
-    const response = await fetch(url, withJsonHeaders(init));
+    try {
+    const response = await fetch(url, withJsonHeaders({ ...init, signal: aborter.signal }));
     if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "设计请求失败");
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
       const manual = await response.json() as { selectedMode?: RubricMode; message?: string; draft?: RubricDraft };
+      if (!lease.isCurrent() || requestAssignmentId !== selectedAssignmentIdRef.current) return;
       if (manual.selectedMode) setSelectedMode(manual.selectedMode);
       if (manual.draft) { setDraft(manual.draft); setPreviewVersion("draft"); }
       setMessages((items) => items.filter((message) => message.id !== assistantId));
@@ -236,89 +297,131 @@ export function RubricPage() {
     }
     let streamFailure: string | undefined;
     let completedKind: StreamEvent["kind"];
-    await consumeSse(response, (eventName, raw) => {
+    const result = await consumeSse(response, (eventName, raw) => {
+      if (!lease.isCurrent() || requestAssignmentId !== selectedAssignmentIdRef.current) return;
       const event = raw as StreamEvent;
-      if (eventName === "process_delta" && event.delta) updateStreamingAssistant(assistantId, (message) => ({ ...message, process: appendRubricProcess(message.process ?? "", event.delta!) }));
-      if (eventName === "reply_delta" && event.delta) updateStreamingAssistant(assistantId, (message) => ({ ...message, content: appendRubricReply(message.content, event.delta!) }));
-      if (eventName === "tool_start" && event.id && event.label && event.summary) updateStreamingAssistant(assistantId, (message) => ({ ...message, tools: [...(message.tools ?? []), { id: event.id!, label: event.label!, summary: event.summary!, status: "running" }] }));
-      if (eventName === "tool_end" && event.id) updateStreamingAssistant(assistantId, (message) => ({ ...message, tools: (message.tools ?? []).map((tool) => tool.id === event.id ? { ...tool, status: event.status === "failed" ? "failed" : "completed" } : tool) }));
-      if (eventName === "question" && event.question) updateStreamingAssistant(assistantId, (message) => ({ ...message, content: event.question!.question, options: event.question!.options }));
-      if (eventName === "reply" && event.reply) updateStreamingAssistant(assistantId, (message) => ({ ...message, content: event.reply! }));
-      if (eventName === "draft") void api<RubricDraft | null>(`/api/rubrics/assignments/${selectedAssignmentId}/draft`).then((nextDraft) => setDraft(nextDraft ?? undefined));
-      if (eventName === "final") {
+      const eventType = event.type ?? eventName;
+      if (eventType === "process_delta" && event.delta) updateStreamingAssistant(assistantId, (message) => ({ ...message, process: appendRubricProcess(message.process ?? "", event.delta!) }));
+      if (eventType === "reply_delta" && event.delta) updateStreamingAssistant(assistantId, (message) => ({ ...message, content: appendRubricReply(message.content, event.delta!) }));
+      if (eventType === "tool_start" && event.id && event.label && event.summary) updateStreamingAssistant(assistantId, (message) => ({ ...message, tools: [...(message.tools ?? []), { id: event.id!, label: event.label!, summary: event.summary!, status: "running" }] }));
+      if (eventType === "tool_end" && event.id) updateStreamingAssistant(assistantId, (message) => ({ ...message, tools: (message.tools ?? []).map((tool) => tool.id === event.id ? { ...tool, status: event.status === "failed" ? "failed" : "completed" } : tool) }));
+      if (eventType === "question" && event.question) updateStreamingAssistant(assistantId, (message) => ({ ...message, content: event.question!.question, options: event.question!.options }));
+      if (eventType === "reply" && event.reply) updateStreamingAssistant(assistantId, (message) => ({ ...message, content: event.reply! }));
+      if (eventType === "draft") void api<RubricDraft | null>(`/api/rubrics/assignments/${requestAssignmentId}/draft`).then((nextDraft) => {
+        if (lease.isCurrent() && requestAssignmentId === selectedAssignmentIdRef.current) setDraft(nextDraft ?? undefined);
+      }).catch((error: Error) => {
+        if (lease.isCurrent() && requestAssignmentId === selectedAssignmentIdRef.current) setNotice(error.message);
+      });
+      if (eventType === "final") {
         completedKind = event.kind;
         updateStreamingAssistant(assistantId, (message) => ({ ...message, content: message.content || (event.kind === "draft" ? "评分表草稿已更新，可以在右侧预览并继续修改。" : event.message ?? "本轮处理已完成。") }));
       }
-      if (eventName === "error") {
+      if (eventType === "error") {
         streamFailure = event.message ?? "评分表设计未能完成。";
         updateStreamingAssistant(assistantId, (message) => ({ ...message, content: streamFailure! }));
       }
     });
+    if (!result.terminalEvent) throw new Error("评分表设计连接已中断，请重试");
     assertRubricStreamSucceeded(streamFailure);
-    await refreshSessionState(selectedAssignmentId);
+    if (!lease.isCurrent() || requestAssignmentId !== selectedAssignmentIdRef.current) return;
+    await refreshSessionState(requestAssignmentId);
     await refreshAssignments();
-    setNotice(rubricCompletionNotice(completedKind));
+    if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice(rubricCompletionNotice(completedKind));
+    } finally {
+      if (streamControllerRef.current === aborter)
+        streamControllerRef.current = undefined;
+    }
   };
 
   const chooseMode = async (mode: RubricMode) => {
     if (!selectedAssignmentId) return;
+    const requestAssignmentId = selectedAssignmentId;
     setSubmitting(true);
     setSelectedMode(mode);
     setNotice(`已选择${modeLabel[mode]}，Agent 正在生成第一版草稿…`);
     try { await runAgentRequest(`/api/rubrics/assignments/${selectedAssignmentId}/mode/stream`, { method: "PUT", body: JSON.stringify({ mode }) }, firstDraftRequest); }
-    catch (error) { setNotice((error as Error).message); await refreshSessionState(selectedAssignmentId).catch(() => undefined); }
-    finally { setSubmitting(false); setStreamingMessageId(undefined); }
+    catch (error) {
+      if (requestAssignmentId === selectedAssignmentIdRef.current) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) setNotice((error as Error).message);
+        await refreshSessionState(requestAssignmentId).catch(() => undefined);
+      }
+    }
+    finally {
+      if (requestAssignmentId === selectedAssignmentIdRef.current) {
+        setSubmitting(false);
+        setStreamingMessageId(undefined);
+      }
+    }
   };
 
   const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const text = chatInput.trim();
     if (!selectedAssignmentId || !selectedMode || !text) return;
+    const requestAssignmentId = selectedAssignmentId;
     setChatInput("");
     setSubmitting(true);
     try { await runAgentRequest(`/api/rubrics/assignments/${selectedAssignmentId}/messages/stream`, { method: "POST", body: JSON.stringify({ message: text }) }, text); }
-    catch (error) { setNotice((error as Error).message); await refreshSessionState(selectedAssignmentId).catch(() => undefined); }
-    finally { setSubmitting(false); setStreamingMessageId(undefined); }
+    catch (error) {
+      if (requestAssignmentId === selectedAssignmentIdRef.current) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) setNotice((error as Error).message);
+        await refreshSessionState(requestAssignmentId).catch(() => undefined);
+      }
+    }
+    finally {
+      if (requestAssignmentId === selectedAssignmentIdRef.current) {
+        setSubmitting(false);
+        setStreamingMessageId(undefined);
+      }
+    }
   };
 
   const saveManualDraft = async () => {
     if (!selectedAssignmentId || !draft || !editedRubric) return;
+    const requestAssignmentId = selectedAssignmentId;
     setSubmitting(true);
     try {
-      const saved = await api<RubricDraft>(`/api/rubrics/assignments/${selectedAssignmentId}/draft`, { method: "PUT", body: JSON.stringify({ expectedVersion: draft.version, rubric: editedRubric }) });
+      const saved = await api<RubricDraft>(`/api/rubrics/assignments/${requestAssignmentId}/draft`, { method: "PUT", body: JSON.stringify({ expectedVersion: draft.version, rubric: editedRubric }) });
+      if (requestAssignmentId !== selectedAssignmentIdRef.current) return;
       setDraft(saved); setEditing(false); setValidation(undefined); setFreezeReady(false); setNotice(`人工修改已保存为草稿 v${saved.version}。`);
-    } catch (error) { setNotice((error as Error).message); }
-    finally { setSubmitting(false); }
+    } catch (error) { if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice((error as Error).message); }
+    finally { if (requestAssignmentId === selectedAssignmentIdRef.current) setSubmitting(false); }
   };
 
   const validateForFreeze = async () => {
     if (!selectedAssignmentId || !draft) return;
+    const requestAssignmentId = selectedAssignmentId;
     setSubmitting(true);
     try {
-      const result = await api<RubricValidation>(`/api/rubrics/assignments/${selectedAssignmentId}/validate`, { method: "POST", body: JSON.stringify({ rubric: draft.rubric }) });
+      const result = await api<RubricValidation>(`/api/rubrics/assignments/${requestAssignmentId}/validate`, { method: "POST", body: JSON.stringify({ rubric: draft.rubric }) });
+      if (requestAssignmentId !== selectedAssignmentIdRef.current) return;
       setValidation(result); setFreezeReady(result.errors.length === 0); setNotice(result.errors.length ? "评分表仍有错误，修正后才能冻结。" : "校验通过，请确认冻结为正式版本。");
-    } catch (error) { setFreezeReady(false); setNotice((error as Error).message); }
-    finally { setSubmitting(false); }
+    } catch (error) { if (requestAssignmentId === selectedAssignmentIdRef.current) { setFreezeReady(false); setNotice((error as Error).message); } }
+    finally { if (requestAssignmentId === selectedAssignmentIdRef.current) setSubmitting(false); }
   };
 
   const freezeDraft = async () => {
     if (!selectedAssignmentId || !draft || !validation || validation.errors.length > 0) return;
+    const requestAssignmentId = selectedAssignmentId;
     setSubmitting(true);
     try {
-      const frozen = await api<FrozenRubric>(`/api/rubrics/assignments/${selectedAssignmentId}/freeze`, { method: "POST", body: JSON.stringify({ expectedVersion: draft.version, acknowledgedWarningCodes: validation.warnings.map((warning) => warning.code) }) });
-      setDraft(undefined); setEditing(false); setFreezeReady(false); setValidation(undefined); setPreviewVersion(frozen.version); await refreshVersions(selectedAssignmentId); await refreshAssignments(); setNotice(`评分表 v${frozen.version} 已冻结，可正式应用。`);
-    } catch (error) { setNotice((error as Error).message); }
-    finally { setSubmitting(false); }
+      const frozen = await api<FrozenRubric>(`/api/rubrics/assignments/${requestAssignmentId}/freeze`, { method: "POST", body: JSON.stringify({ expectedVersion: draft.version, acknowledgedWarningCodes: validation.warnings.map((warning) => warning.code) }) });
+      if (requestAssignmentId !== selectedAssignmentIdRef.current) return;
+      setDraft(undefined); setEditing(false); setFreezeReady(false); setValidation(undefined); setPreviewVersion(frozen.version); await refreshVersions(requestAssignmentId); await refreshAssignments(); if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice(`评分表 v${frozen.version} 已冻结，可正式应用。`);
+    } catch (error) { if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice((error as Error).message); }
+    finally { if (requestAssignmentId === selectedAssignmentIdRef.current) setSubmitting(false); }
   };
 
   const createRevision = async (version: number) => {
     if (!selectedAssignmentId) return;
+    const requestAssignmentId = selectedAssignmentId;
     setSubmitting(true);
     try {
-      const revision = await api<RubricDraft>(`/api/rubrics/assignments/${selectedAssignmentId}/versions/${version}/revisions`, { method: "POST" });
+      const revision = await api<RubricDraft>(`/api/rubrics/assignments/${requestAssignmentId}/versions/${version}/revisions`, { method: "POST" });
+      if (requestAssignmentId !== selectedAssignmentIdRef.current) return;
       setDraft(revision); setPreviewVersion("draft"); setEditing(false); setValidation(undefined); setNotice(`已从冻结版本 v${version} 创建新的可编辑修订草稿。`);
-    } catch (error) { setNotice((error as Error).message); }
-    finally { setSubmitting(false); }
+    } catch (error) { if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice((error as Error).message); }
+    finally { if (requestAssignmentId === selectedAssignmentIdRef.current) setSubmitting(false); }
   };
 
   const deleteAssignment = async () => {
@@ -328,7 +431,7 @@ export function RubricPage() {
     try {
       const response = await fetch(`/api/rubrics/assignments/${assignmentToDelete.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "删除评分会话失败");
-      const deletedSelectedAssignment = assignmentToDelete.id === selectedAssignmentId;
+      const deletedSelectedAssignment = assignmentToDelete.id === selectedAssignmentIdRef.current;
       setAssignmentToDelete(undefined);
       if (deletedSelectedAssignment) {
         navigateWithinApp("/rubrics");

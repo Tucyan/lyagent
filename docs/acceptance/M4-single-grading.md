@@ -35,6 +35,9 @@
 4. 在名称仍为 `pending/resolving` 时确认页面继续轮询；失败后显示安全错误并可“重试名称识别”。切换会话、评分表和创建修订不得重新挂载应用，浏览器前进/后退应恢复详情。
 5. 在课程没有 active knowledge release 时完成一次完整草稿提交；知识工具应返回 `ACTIVE_RELEASE_NOT_FOUND`，批改仍依据冻结评分表和学生作业继续。
 6. 运行失败只显示 `GRADING_MODEL_REQUEST_FAILED`、`GRADING_TOOL_CALL_MISSING`、`GRADING_DRAFT_VALIDATION_FAILED`、`GRADING_KNOWLEDGE_UNAVAILABLE` 或 `GRADING_RUN_INTERRUPTED` 等安全码，不出现供应商原始响应。
+7. 名称识别失败后点击“重试名称识别”，按钮应立即变为“正在重试…”，旧错误消失且按钮禁用；切换会话再返回时由持久化状态继续显示真实进度。
+8. 在名称准备轮询期间编辑 Markdown，确认轮询不会覆盖未保存输入；快速切换两个会话及前进/后退时不得闪回旧学生、旧作业或模型设置检查页。
+9. 开始/停止批改、重试转换、保存修订、创建修订和确认结果时按钮显示对应“正在…”状态；失败后恢复可点击并在页头显示安全提示。
 
 ## 自动化证据
 

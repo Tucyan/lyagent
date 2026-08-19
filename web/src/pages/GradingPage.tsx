@@ -9,6 +9,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { consumeSse } from "../lib/consume-sse";
 import { ApiError, apiErrorFromResponse, withJsonHeaders } from "../lib/api";
+import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import type { RubricValue } from "../components/RubricPreviewEditor";
 import {
   applyGradingEvent,
@@ -23,6 +24,7 @@ import {
   resolveGradingRubricKey,
   rubricSelectionKey,
   shouldPollSessionPreparation,
+  submissionTitlePresentation,
   type GradingExportOptions,
   type GradingToolStep,
   type LiveGradingMessage,
@@ -131,12 +133,28 @@ export function GradingPage() {
     [renameTitle, setRenameTitle] = useState(""),
     [sessionToDelete, setSessionToDelete] = useState<GradingSession>(),
     [sessionActionError, setSessionActionError] = useState("");
+  const [retryingTitle, setRetryingTitle] = useState<string>();
+  const [sessionOperations, setSessionOperations] = useState<string[]>([]);
   const [exportOptions, setExportOptions] = useState<GradingExportOptions>(() =>
     parseGradingExportOptions(localStorage.getItem("grading-csv-columns")),
   );
   const splitRef = useRef<HTMLElement>(null);
+  const detailGate = useRef(new LatestRequestGate());
+  const listGate = useRef(new LatestRequestGate());
+  const pageLoadGate = useRef(new LatestRequestGate());
+  const runGate = useRef(new LatestRequestGate());
+  const selectedIdRef = useRef(selectedId);
+  const editingRef = useRef(editing);
+  const markdownSessionRef = useRef<string | undefined>(undefined);
+  const operationKeysRef = useRef(new Set<string>());
+  selectedIdRef.current = selectedId;
+  editingRef.current = editing;
   const navigateWithinGrading = (search: URLSearchParams) => {
     const suffix = search.toString();
+    const nextSessionId = search.get("session") ?? undefined;
+    selectedIdRef.current = nextSessionId;
+    detailGate.current.invalidate();
+    setDetail((current) => current?.id === nextSessionId ? current : undefined);
     window.history.pushState(null, "", `/grading${suffix ? `?${suffix}` : ""}`);
     setLocationSearch(window.location.search);
   };
@@ -153,34 +171,52 @@ export function GradingPage() {
   const selectedRubric = rubrics.find(
     (rubric) => rubricSelectionKey(rubric) === selectedRubricKey,
   );
-  const refreshList = async (currentSession?: GradingSession) => {
+  const refreshList = async (
+    currentSession?: Pick<GradingSession, "assignmentId" | "rubricVersion">,
+  ) => {
+    const lease = listGate.current.begin();
     const rubric = resolveGradingSessionScope(
       currentSession,
       rubrics,
       selectedRubricKey,
     );
-    setSessions(
-      rubric
-        ? await api<GradingSession[]>(
-            `/api/grading/sessions?assignmentId=${encodeURIComponent(rubric.assignmentId)}&rubricVersion=${rubric.version}`,
-          )
-        : [],
-    );
+    const next = rubric
+      ? await api<GradingSession[]>(
+          `/api/grading/sessions?assignmentId=${encodeURIComponent(rubric.assignmentId)}&rubricVersion=${rubric.version}`,
+        )
+      : [];
+    if (!lease.isCurrent()) return undefined;
+    setSessions(next);
+    return next;
   };
   const refreshDetail = async (id = selectedId) => {
+    const lease = detailGate.current.begin();
     if (!id) {
-      setDetail(undefined);
-      return;
+      if (lease.isCurrent()) setDetail(undefined);
+      return undefined;
     }
     const next = await api<SessionDetail>(`/api/grading/sessions/${id}`);
+    if (!lease.isCurrent() || id !== selectedIdRef.current) return undefined;
     setDetail(next);
-    setMarkdown(next.submission?.markdown ?? "");
+    const editing = editingRef.current;
+    if (markdownSessionRef.current !== next.id) {
+      setMarkdown(next.submission?.markdown ?? "");
+      markdownSessionRef.current = next.id;
+    } else if (!editing) {
+      setMarkdown(next.submission?.markdown ?? "");
+    }
     if (next.draft || next.confirmed) setPreviewMode("result");
     return next;
   };
 
   useEffect(() => {
-    const updateLocation = () => setLocationSearch(window.location.search);
+    const updateLocation = () => {
+      const nextSessionId = new URLSearchParams(window.location.search).get("session") ?? undefined;
+      selectedIdRef.current = nextSessionId;
+      detailGate.current.invalidate();
+      setDetail((current) => current?.id === nextSessionId ? current : undefined);
+      setLocationSearch(window.location.search);
+    };
     window.addEventListener("popstate", updateLocation);
     return () => window.removeEventListener("popstate", updateLocation);
   }, []);
@@ -188,37 +224,47 @@ export function GradingPage() {
     setCreating(!selectedId && !query.has("rubric"));
   }, [locationSearch]);
   useEffect(() => {
+    const lease = pageLoadGate.current.begin();
     void (async () => {
       try {
         const [nextRubrics, nextDetail] = await Promise.all([
           api<FrozenRubric[]>("/api/grading/rubrics"),
           refreshDetail(),
         ]);
+        if (!lease.isCurrent()) return;
         setRubrics(nextRubrics);
+        const requestedRubricKey = new URLSearchParams(locationSearch).get("rubric")
+          ?? selectedRubricKey;
         const key = resolveGradingRubricKey(
           nextRubrics,
           nextDetail
             ? `${nextDetail.assignmentId}:${nextDetail.rubricVersion}`
-            : selectedRubricKey,
+            : requestedRubricKey,
         );
         setSelectedRubricKey(key);
         if (key) localStorage.setItem("grading-rubric", key);
         const rubric = nextRubrics.find(
           (item) => rubricSelectionKey(item) === key,
         );
-        setSessions(
-          rubric
-            ? await api<GradingSession[]>(
-                `/api/grading/sessions?assignmentId=${encodeURIComponent(rubric.assignmentId)}&rubricVersion=${rubric.version}`,
-              )
-            : [],
+        await refreshList(
+          nextDetail ??
+            (rubric
+              ? {
+                  assignmentId: rubric.assignmentId,
+                  rubricVersion: rubric.version,
+                }
+              : undefined),
         );
+        if (!lease.isCurrent()) return;
         setNotice("会话状态已恢复；不会自动重新调用模型。");
       } catch (error) {
-        setNotice((error as Error).message);
+        if (lease.isCurrent()) setNotice((error as Error).message);
       }
     })();
-  }, [selectedId]);
+    return () => {
+      if (lease.isCurrent()) pageLoadGate.current.invalidate();
+    };
+  }, [locationSearch]);
   useEffect(() => {
     localStorage.setItem("grading-csv-columns", JSON.stringify(exportOptions));
   }, [exportOptions]);
@@ -227,23 +273,16 @@ export function GradingPage() {
   }, [detail?.draft?.version]);
   useEffect(() => {
     if (!detail || !shouldPollSessionPreparation(detail)) return;
-    let cancelled = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
+    return startSerialPolling(
+      async () => {
         const next = await refreshDetail(detail.id);
-        await refreshList(next);
-        if (!cancelled && next && shouldPollSessionPreparation(next))
-          timer = window.setTimeout(() => void poll(), 1_000);
-      } catch (error) {
-        if (!cancelled) setNotice((error as Error).message);
-      }
-    };
-    timer = window.setTimeout(() => void poll(), 1_000);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
+        if (next) await refreshList(next);
+      },
+      {
+        intervalMs: 1_000,
+        onError: (error) => setNotice((error as Error).message),
+      },
+    );
   }, [
     detail?.id,
     detail?.conversionStatus,
@@ -271,91 +310,169 @@ export function GradingPage() {
   }, [dragging]);
 
   const followRun = async (sessionId: string, runId: string) => {
+    const lease = runGate.current.begin();
     setLive((current) =>
       current?.runId === runId ? current : initialLiveMessage(runId),
     );
     let after = 0;
     let terminal = false;
-    while (!terminal) {
+    while (!terminal && lease.isCurrent()) {
       const response = await fetch(
         `/api/grading/sessions/${sessionId}/runs/${runId}/events?after=${after}&follow=true`,
       );
       if (!response.ok) throw new Error("无法连接批改事件流");
-      await consumeSse(response, (type, value) => {
+      const result = await consumeSse(response, (type, value) => {
+        if (!lease.isCurrent() || selectedIdRef.current !== sessionId) return;
         const event = value as Record<string, unknown>;
+        const eventType = typeof event.type === "string" ? event.type : type;
         if (typeof event.sequence === "number")
           after = Math.max(after, event.sequence);
-        terminal = ["final", "error", "cancelled"].includes(type);
+        terminal = ["final", "error", "cancelled"].includes(eventType);
         setLive((current) =>
-          applyGradingEvent(current ?? initialLiveMessage(runId), type, event),
+          applyGradingEvent(current ?? initialLiveMessage(runId), eventType, event),
         );
       });
+      if (result.terminalEvent) terminal = true;
+      else throw new Error("批改连接已中断，请重试");
     }
-    await Promise.all([refreshDetail(sessionId), refreshList()]);
+    if (lease.isCurrent() && selectedIdRef.current === sessionId)
+      await Promise.all([refreshDetail(sessionId), refreshList()]);
   };
+  const runSessionOperation = async <T,>(
+    name: string,
+    sessionId: string,
+    operation: () => Promise<T>,
+  ): Promise<T | undefined> => {
+    const key = `${sessionId}:${name}`;
+    if (operationKeysRef.current.has(key)) return undefined;
+    operationKeysRef.current.add(key);
+    setSessionOperations((current) =>
+      current.includes(key) ? current : [...current, key],
+    );
+    try {
+      return await operation();
+    } catch (error) {
+      if (selectedIdRef.current === sessionId)
+        setNotice((error as Error).message);
+      return undefined;
+    } finally {
+      operationKeysRef.current.delete(key);
+      setSessionOperations((current) =>
+        current.filter((item) => item !== key),
+      );
+    }
+  };
+  const isSessionOperationBusy = (name: string, sessionId = detail?.id) =>
+    Boolean(sessionId && sessionOperations.includes(`${sessionId}:${name}`));
   const startRun = async (kind: "grade" | "chat", text: string) => {
     if (!detail) return;
-    const run = await api<{ id: string }>(
-      kind === "grade"
-        ? `/api/grading/sessions/${detail.id}/runs`
-        : `/api/grading/sessions/${detail.id}/messages`,
-      { method: "POST", body: JSON.stringify({ message: text }) },
-    );
-    setMessage("");
-    await followRun(detail.id, run.id);
+    const sessionId = detail.id;
+    await runSessionOperation("run", sessionId, async () => {
+      const run = await api<{ id: string }>(
+        kind === "grade"
+          ? `/api/grading/sessions/${sessionId}/runs`
+          : `/api/grading/sessions/${sessionId}/messages`,
+        { method: "POST", body: JSON.stringify({ message: text }) },
+      );
+      if (selectedIdRef.current === sessionId) setMessage("");
+      await followRun(sessionId, run.id);
+    });
   };
   const cancelRun = async () => {
-    if (!live || live.complete) return;
-    await api(`/api/agent-runs/${live.runId}/cancel`, { method: "POST" });
-    setNotice("本次运行已停止。");
+    if (!detail || !live || live.complete) return;
+    const sessionId = detail.id;
+    await runSessionOperation("cancel", sessionId, async () => {
+      await api(`/api/agent-runs/${live.runId}/cancel`, { method: "POST" });
+      if (selectedIdRef.current === sessionId) setNotice("本次运行已停止。");
+    });
   };
   const retryConversion = async () => {
     if (!detail) return;
-    await api(`/api/grading/sessions/${detail.id}/conversion/retry`, {
-      method: "POST",
+    const sessionId = detail.id;
+    await runSessionOperation("conversion", sessionId, async () => {
+      await api(`/api/grading/sessions/${sessionId}/conversion/retry`, {
+        method: "POST",
+      });
+      if (selectedIdRef.current === sessionId)
+        await Promise.all([refreshDetail(sessionId), refreshList()]);
     });
-    await Promise.all([refreshDetail(detail.id), refreshList()]);
   };
   const retrySubmissionTitle = async () => {
-    if (!detail) return;
-    await api(`/api/grading/sessions/${detail.id}/title/retry`, {
-      method: "POST",
-    });
-    await Promise.all([refreshDetail(detail.id), refreshList()]);
+    if (!detail || retryingTitle === detail.id) return;
+    const sessionId = detail.id;
+    setRetryingTitle(sessionId);
+    setNotice("作业名称正在重新识别…");
+    setDetail((current) => current?.id === sessionId
+      ? { ...current, submissionTitleStatus: "resolving", submissionTitleError: undefined }
+      : current);
+    setSessions((current) => current.map((session) => session.id === sessionId
+      ? { ...session, submissionTitleStatus: "resolving", submissionTitleError: undefined }
+      : session));
+    try {
+      const next = await api<GradingSession>(
+        `/api/grading/sessions/${sessionId}/title/retry`,
+        { method: "POST" },
+      );
+      if (selectedIdRef.current === sessionId) {
+        setDetail((current) => current?.id === sessionId
+          ? { ...current, ...next }
+          : current);
+        await refreshList(next);
+      }
+    } catch (error) {
+      setRetryingTitle((current) => current === sessionId ? undefined : current);
+      if (selectedIdRef.current === sessionId) {
+        setNotice((error as Error).message);
+        await refreshDetail(sessionId).catch(() => undefined);
+      }
+    }
   };
   const createRevision = async () => {
     if (!detail) return;
-    const revision = await api<{ id: string }>(
-      `/api/grading/sessions/${detail.id}/revisions`,
-      { method: "POST" },
-    );
-    navigateToSession(revision.id);
+    const sessionId = detail.id;
+    await runSessionOperation("revision", sessionId, async () => {
+      const revision = await api<{ id: string }>(
+        `/api/grading/sessions/${sessionId}/revisions`,
+        { method: "POST" },
+      );
+      if (selectedIdRef.current === sessionId) navigateToSession(revision.id);
+    });
   };
   const saveSubmission = async () => {
     if (!detail?.submissionVersion) return;
-    await api(`/api/grading/sessions/${detail.id}/submission`, {
-      method: "PUT",
-      body: JSON.stringify({
-        expectedVersion: detail.submissionVersion,
-        markdown,
-      }),
+    const sessionId = detail.id;
+    const expectedVersion = detail.submissionVersion;
+    await runSessionOperation("save", sessionId, async () => {
+      await api(`/api/grading/sessions/${sessionId}/submission`, {
+        method: "PUT",
+        body: JSON.stringify({ expectedVersion, markdown }),
+      });
+      if (selectedIdRef.current === sessionId) {
+        editingRef.current = false;
+        setEditing(false);
+        await refreshDetail(sessionId);
+        await refreshList();
+      }
     });
-    setEditing(false);
-    await refreshDetail(detail.id);
-    await refreshList();
   };
   const confirm = async () => {
     if (!detail?.draft) return;
-    await api(`/api/grading/sessions/${detail.id}/confirm`, {
-      method: "POST",
-      body: JSON.stringify({
-        expectedVersion: detail.draft.version,
-        reviewNote,
-        acknowledgedReasons,
-      }),
+    const sessionId = detail.id;
+    const expectedVersion = detail.draft.version;
+    await runSessionOperation("confirm", sessionId, async () => {
+      await api(`/api/grading/sessions/${sessionId}/confirm`, {
+        method: "POST",
+        body: JSON.stringify({
+          expectedVersion,
+          reviewNote,
+          acknowledgedReasons,
+        }),
+      });
+      if (selectedIdRef.current === sessionId) {
+        await refreshDetail(sessionId);
+        await refreshList();
+      }
     });
-    await refreshDetail(detail.id);
-    await refreshList();
   };
   const chooseRubric = (key: string) => {
     setSelectedRubricKey(key);
@@ -441,6 +558,35 @@ export function GradingPage() {
         setNotice(error.message),
       );
   }, [detail?.activeRunId]);
+
+  useEffect(() => {
+    if (!retryingTitle) return;
+    if (selectedId !== retryingTitle) {
+      setRetryingTitle(undefined);
+      return;
+    }
+    if (
+      detail?.id === retryingTitle &&
+      !["pending", "resolving"].includes(detail.submissionTitleStatus)
+    ) setRetryingTitle(undefined);
+  }, [selectedId, retryingTitle, detail?.id, detail?.submissionTitleStatus]);
+
+  useEffect(() => {
+    runGate.current.invalidate();
+    setDetail((current) => current?.id === selectedId ? current : undefined);
+    editingRef.current = false;
+    setEditing(false);
+    setLive(undefined);
+  }, [selectedId]);
+
+  const titlePresentation = detail
+    ? submissionTitlePresentation({
+        status: detail.submissionTitleStatus,
+        title: detail.submissionTitle,
+        error: detail.submissionTitleError,
+        retrying: retryingTitle === detail.id,
+      })
+    : undefined;
 
   return (
     <div className="grading-page">
@@ -584,23 +730,21 @@ export function GradingPage() {
                     </p>
                     <p>
                       作业名称：
-                      {detail.submissionTitle ??
-                        (detail.submissionTitleStatus === "failed"
-                          ? "识别失败"
-                          : "正在识别…")}
+                      {titlePresentation?.label}
                     </p>
-                    {detail.submissionTitleError && (
+                    {titlePresentation?.error && (
                       <p className="modal-error">
-                        [{detail.submissionTitleError.code}] {detail.submissionTitleError.message}
+                        [{titlePresentation.error.code}] {titlePresentation.error.message}
                       </p>
                     )}
                   </div>
-                  {detail.submissionTitleStatus === "failed" && (
+                  {titlePresentation?.showRetry && (
                     <button
                       type="button"
+                      disabled={titlePresentation.retryDisabled}
                       onClick={() => void retrySubmissionTitle()}
                     >
-                      重试名称识别
+                      {titlePresentation.retryLabel}
                     </button>
                   )}
                   {detail.conversionStatus === "ready" &&
@@ -610,13 +754,16 @@ export function GradingPage() {
                     !detail.activeRunId && (
                       <button
                         type="button"
+                        disabled={isSessionOperationBusy("run")}
                         onClick={() =>
                           void startRun("grade", "请开始批改当前作业。")
                         }
                       >
-                        {["failed", "cancelled"].includes(detail.gradingStatus)
-                          ? "重试批改"
-                          : "开始批改"}
+                        {isSessionOperationBusy("run")
+                          ? "正在开始…"
+                          : ["failed", "cancelled"].includes(detail.gradingStatus)
+                            ? "重试批改"
+                            : "开始批改"}
                       </button>
                     )}
                 </div>
@@ -645,15 +792,25 @@ export function GradingPage() {
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
                     placeholder="询问评分依据，或明确要求 Agent 修改草稿"
-                    disabled={Boolean(live && !live.complete)}
+                    disabled={
+                      Boolean(live && !live.complete) ||
+                      isSessionOperationBusy("run")
+                    }
                   />
                   {live && !live.complete ? (
-                    <button type="button" onClick={() => void cancelRun()}>
-                      停止
+                    <button
+                      type="button"
+                      disabled={isSessionOperationBusy("cancel")}
+                      onClick={() => void cancelRun()}
+                    >
+                      {isSessionOperationBusy("cancel") ? "正在停止…" : "停止"}
                     </button>
                   ) : (
-                    <button type="submit" disabled={!message.trim()}>
-                      发送
+                    <button
+                      type="submit"
+                      disabled={!message.trim() || isSessionOperationBusy("run")}
+                    >
+                      {isSessionOperationBusy("run") ? "正在发送…" : "发送"}
                     </button>
                   )}
                 </form>
@@ -702,6 +859,11 @@ export function GradingPage() {
                   retry={retryConversion}
                   reupload={() => setCreating(true)}
                   createRevision={createRevision}
+                  operationBusy={{
+                    conversion: isSessionOperationBusy("conversion"),
+                    revision: isSessionOperationBusy("revision"),
+                    save: isSessionOperationBusy("save"),
+                  }}
                 />
               ) : (
                 <ResultPreview
@@ -713,6 +875,10 @@ export function GradingPage() {
                   confirm={confirm}
                   createRevision={createRevision}
                   refresh={() => refreshDetail(detail.id).then(() => undefined)}
+                  operationBusy={{
+                    confirm: isSessionOperationBusy("confirm"),
+                    revision: isSessionOperationBusy("revision"),
+                  }}
                 />
               )}
             </div>
@@ -867,6 +1033,7 @@ function SubmissionPreview({
   retry,
   reupload,
   createRevision,
+  operationBusy,
 }: {
   detail: SessionDetail;
   editing: boolean;
@@ -877,6 +1044,11 @@ function SubmissionPreview({
   retry(): Promise<void>;
   reupload(): void;
   createRevision(): Promise<void>;
+  operationBusy: {
+    conversion: boolean;
+    revision: boolean;
+    save: boolean;
+  };
 }) {
   if (!detail.submission) {
     const presentation = conversionPresentation(detail)!;
@@ -890,8 +1062,12 @@ function SubmissionPreview({
         )}
         <div className="conversion-actions">
           {presentation.canRetry && (
-            <button type="button" onClick={() => void retry()}>
-              立即重试
+            <button
+              type="button"
+              disabled={operationBusy.conversion}
+              onClick={() => void retry()}
+            >
+              {operationBusy.conversion ? "正在重试…" : "立即重试"}
             </button>
           )}
           {presentation.canReupload && (
@@ -911,13 +1087,22 @@ function SubmissionPreview({
       <div className="preview-actions">
         <span>提交版本 {detail.submissionVersion}</span>
         {detail.submission.locked ? (
-          <button type="button" onClick={() => void createRevision()}>
-            创建提交修订
+          <button
+            type="button"
+            disabled={operationBusy.revision}
+            onClick={() => void createRevision()}
+          >
+            {operationBusy.revision ? "正在创建…" : "创建提交修订"}
           </button>
         ) : editing ? (
           <>
             <button onClick={() => setEditing(false)}>取消</button>
-            <button onClick={() => void save()}>保存修订</button>
+            <button
+              disabled={operationBusy.save}
+              onClick={() => void save()}
+            >
+              {operationBusy.save ? "正在保存…" : "保存修订"}
+            </button>
           </>
         ) : (
           <button onClick={() => setEditing(true)}>编辑 Markdown</button>
@@ -952,6 +1137,7 @@ function ResultPreview({
   confirm,
   createRevision,
   refresh,
+  operationBusy,
 }: {
   detail: SessionDetail;
   reviewNote: string;
@@ -961,6 +1147,7 @@ function ResultPreview({
   confirm(): Promise<void>;
   createRevision(): Promise<void>;
   refresh(): Promise<void>;
+  operationBusy: { confirm: boolean; revision: boolean };
 }) {
   const draft = detail.confirmed ?? detail.draft;
   const [manual, setManual] = useState(false);
@@ -1041,8 +1228,12 @@ function ResultPreview({
             <a href={`/api/grading/sessions/${detail.id}/export.md`} download>
               导出 Markdown
             </a>
-            <button type="button" onClick={() => void createRevision()}>
-              创建结果修订
+            <button
+              type="button"
+              disabled={operationBusy.revision}
+              onClick={() => void createRevision()}
+            >
+              {operationBusy.revision ? "正在创建…" : "创建结果修订"}
             </button>
           </div>
         </section>
@@ -1080,11 +1271,12 @@ function ResultPreview({
               <button
                 onClick={() => void confirm()}
                 disabled={
-                  result.review.requiresReview &&
-                  (!reviewNote.trim() || !allAcknowledged)
+                  operationBusy.confirm ||
+                  (result.review.requiresReview &&
+                    (!reviewNote.trim() || !allAcknowledged))
                 }
               >
-                确认并发布正式结果
+                {operationBusy.confirm ? "正在确认…" : "确认并发布正式结果"}
               </button>
             </>
           )}

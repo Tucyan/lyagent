@@ -43,6 +43,58 @@ const rubric: Rubric = {
 };
 
 describe("grading API", () => {
+  it("returns the active title retry state before the naming model finishes", async () => {
+    let attempt = 0;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const titleFactory: GradingAgentBuilder = (sessionId, _runId, services) => ({
+      async run() {
+        attempt += 1;
+        if (attempt === 1) throw new Error("synthetic first failure");
+        await waiting;
+        await services.sessions.resolveSubmissionTitle(sessionId, "重试成功作业");
+        return { kind: "title" as const, title: "重试成功作业" };
+      },
+    });
+    const { app, assignmentId } = await setup(undefined, undefined, undefined, titleFactory);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=title-retry" },
+      payload: multipart("title-retry", {
+        assignmentId,
+        rubricVersion: "1",
+        studentName: "张晓明",
+        studentNumber: "20260001",
+      }, "report.md", "# 报告"),
+    });
+    expect(created.json()).toMatchObject({ submissionTitleStatus: "failed" });
+
+    const retry = app.inject({
+      method: "POST",
+      url: `/api/grading/sessions/${created.json().id}/title/retry`,
+    });
+    const response = await Promise.race([
+      retry,
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
+    ]);
+
+    expect(response).not.toBe("blocked");
+    if (response === "blocked") throw new Error("retry response remained blocked");
+    expect(response.statusCode, response.body).toBe(202);
+    expect(response.json()).toMatchObject({ submissionTitleStatus: "resolving" });
+
+    release();
+    for (let index = 0; index < 20; index += 1) {
+      const detail = (await app.inject({ method: "GET", url: `/api/grading/sessions/${created.json().id}` })).json();
+      if (detail.submissionTitleStatus === "resolved") break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await app.close();
+  });
+
   it("persists, resumes, and idempotently commits a batch upload draft", async () => {
     const grader: GradingAgentBuilder = () => ({
       async run() { return { kind: "reply", reply: "ready" }; },
@@ -869,6 +921,7 @@ async function setup(
   graderFactory?: GradingAgentBuilder,
   conversionClient?: DocumentConversionClient,
   conversionOptions?: SubmissionConversionOptions,
+  titleFactory?: GradingAgentBuilder,
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "grading-api-"));
   roots.push(root);
@@ -884,7 +937,7 @@ async function setup(
   });
   const app = await createServer({
     workspaceRoot: root,
-    submissionTitleAgentFactory,
+    submissionTitleAgentFactory: titleFactory ?? submissionTitleAgentFactory,
     ...(graderFactory ? { gradingAgentFactory: graderFactory } : {}),
     ...(conversionClient ? { conversionClient } : {}),
     ...(conversionOptions

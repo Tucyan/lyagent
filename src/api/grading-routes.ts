@@ -661,8 +661,8 @@ export function registerGradingApi(
               message: "The naming model is not configured",
             });
         const { id } = sessionParams.parse(request.params);
-        await titles.resolve(id);
-        return sessions.getSession(id);
+        const session = await titles.start(id);
+        return reply.code(202).send(session);
       },
     );
     scoped.post("/api/grading/sessions/:id/runs", async (request, reply) => {

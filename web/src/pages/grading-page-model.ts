@@ -179,6 +179,42 @@ export function gradingSessionStatusLabel(input: {
   return "已就绪";
 }
 
+export function submissionTitlePresentation(input: {
+  status: string;
+  retrying: boolean;
+  title?: string;
+  error?: { code: string; message: string };
+}): {
+  label: string;
+  retryLabel: string;
+  showRetry: boolean;
+  retryDisabled: boolean;
+  error?: { code: string; message: string };
+} {
+  if (input.title)
+    return {
+      label: input.title,
+      retryLabel: "重试名称识别",
+      showRetry: false,
+      retryDisabled: false,
+    };
+  if (input.retrying)
+    return {
+      label: "正在识别…",
+      retryLabel: "正在重试…",
+      showRetry: true,
+      retryDisabled: true,
+    };
+  const failed = input.status === "failed";
+  return {
+    label: failed ? "识别失败" : "正在识别…",
+    retryLabel: "重试名称识别",
+    showRetry: failed,
+    retryDisabled: false,
+    ...(failed && input.error ? { error: input.error } : {}),
+  };
+}
+
 export function normalizeGradingExportOptions(
   value: Partial<GradingExportOptions>,
 ): GradingExportOptions {

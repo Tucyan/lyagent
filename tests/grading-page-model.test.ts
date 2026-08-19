@@ -13,6 +13,7 @@ import {
   rubricSelectionKey,
   shouldPollConversion,
   shouldPollSessionPreparation,
+  submissionTitlePresentation,
 } from "../web/src/pages/grading-page-model.js";
 
 describe("grading workbench presentation", () => {
@@ -226,5 +227,29 @@ describe("grading workbench presentation", () => {
     expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "resolving" })).toBe("正在识别");
     expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "failed" })).toBe("识别失败");
     expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "resolved" })).toBe("已就绪");
+  });
+
+  it("presents an immediate safe retry state without the stale failure", () => {
+    expect(submissionTitlePresentation({
+      status: "failed",
+      retrying: true,
+      error: { code: "SUBMISSION_TITLE_MODEL_FAILED", message: "作业名称识别失败，请重试" },
+    })).toEqual({
+      label: "正在识别…",
+      retryLabel: "正在重试…",
+      showRetry: true,
+      retryDisabled: true,
+    });
+    expect(submissionTitlePresentation({
+      status: "failed",
+      retrying: false,
+      error: { code: "SUBMISSION_TITLE_MODEL_FAILED", message: "作业名称识别失败，请重试" },
+    })).toMatchObject({
+      label: "识别失败",
+      retryLabel: "重试名称识别",
+      showRetry: true,
+      retryDisabled: false,
+      error: { code: "SUBMISSION_TITLE_MODEL_FAILED" },
+    });
   });
 });

@@ -10,8 +10,23 @@ describe("batch review workspace source", () => {
     expect(page).toContain('role="separator"');
     expect(page).toContain("onPointerDown");
     expect(page).toContain("DecisionEditor");
-    expect(page).toContain(">保存修改</button>");
-    expect(page).toContain(">重试</button>");
-    expect(page).toContain(">确认</button>");
+    expect(page).toContain("保存中…");
+    expect(page).toContain("重试中…");
+    expect(page).toContain("确认中…");
+    expect(page).toContain("busyAction");
+  });
+
+  it("polls the batch and selected session serially without stale route writes", () => {
+    const page = readFileSync(new URL("../web/src/pages/GradingBatchReviewPage.tsx", import.meta.url), "utf8");
+
+    expect(page).toContain("LatestRequestGate");
+    expect(page).toContain("startSerialPolling");
+    expect(page).not.toContain("setInterval");
+    expect(page).toContain("batchGate");
+    expect(page).toContain("sessionGate");
+    expect(page).toContain("batchIdRef");
+    expect(page).toContain("sessionIdRef");
+    expect(page).toMatch(/startSerialPolling[\s\S]*refreshBatch[\s\S]*refreshSession/);
+    expect(page).toContain("lease.isCurrent()");
   });
 });
