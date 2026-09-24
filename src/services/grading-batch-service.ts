@@ -43,6 +43,7 @@ export interface GradingBatchJob {
   score?: { earned: number; possible: number };
   confidence?: { overall: number; minimum: number; lowCount: number };
   reviewStatus?: "needs_review" | "confirmed";
+  requiresReview?: boolean;
   reviewReasons?: string[];
   resultVersion?: number;
   createdAt: string;
@@ -277,7 +278,7 @@ export class GradingBatchService {
       const result = source.result as {
         score?: { earned?: unknown; possible?: unknown };
         confidence?: { overall?: unknown; minimum?: unknown; lowCount?: unknown };
-        review?: { reasons?: unknown };
+        review?: { requiresReview?: unknown; reasons?: unknown };
       };
       if (typeof result.score?.earned !== "number" || typeof result.score.possible !== "number"
         || typeof result.confidence?.overall !== "number" || typeof result.confidence.minimum !== "number"
@@ -291,7 +292,10 @@ export class GradingBatchService {
           lowCount: result.confidence.lowCount,
         },
         reviewStatus: source.reviewStatus,
-        reviewReasons: Array.isArray(result.review?.reasons) ? result.review.reasons.filter((reason): reason is string => typeof reason === "string") : [],
+        ...(typeof result.review?.requiresReview === "boolean" ? { requiresReview: result.review.requiresReview } : {}),
+        ...(Array.isArray(result.review?.reasons) && result.review.reasons.every((reason): reason is string => typeof reason === "string")
+          ? { reviewReasons: result.review.reasons as string[] }
+          : {}),
         resultVersion: source.version,
       };
     }));

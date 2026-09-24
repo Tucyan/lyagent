@@ -78,6 +78,7 @@ describe("GradingResultService", () => {
     const saved = await results.submitDraft(session.id, 0, draft(), { type: "agent", id: "run-1" });
     await expect(results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "", acknowledgedReasons: [] })).rejects.toBeInstanceOf(GradingReviewRequiredError);
     const confirmed = await results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "已人工复核低置信度项", acknowledgedReasons: ["LOW_CONFIDENCE"] });
+    await expect(results.readConfirmedResult(session.id)).resolves.toEqual(confirmed);
     const repeated = await results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "重复请求", acknowledgedReasons: ["LOW_CONFIDENCE"] });
     expect(repeated).toEqual(confirmed);
     expect(confirmed).toMatchObject({ reviewStatus: "confirmed", resultHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
@@ -91,6 +92,19 @@ describe("GradingResultService", () => {
     expect(markdown).toContain("缺失直接影响任务完整性，因此扣20分");
     expect(markdown).not.toContain("置信度");
     await expect(results.submitDraft(session.id, saved.version, draft(0.9, 0), { type: "teacher", id: "teacher-local" })).rejects.toThrow(/confirmed/i);
+    sessions.close();
+  });
+
+  it("rejects a confirmed score changed without updating its content hash", async () => {
+    const { root, sessions, results, session } = await setup();
+    const saved = await results.submitDraft(session.id, 0, draft(), { type: "agent", id: "run-1" });
+    await results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "已人工复核", acknowledgedReasons: ["LOW_CONFIDENCE"] });
+    const jsonPath = path.join(root, "assignments", session.assignmentId, "results", session.batchId, `${session.studentKey}.json`);
+    const confirmed = JSON.parse(await readFile(jsonPath, "utf8")) as { result: { score: { earned: number } } };
+    confirmed.result.score.earned = 100;
+    await writeFile(jsonPath, JSON.stringify(confirmed), "utf8");
+
+    await expect(results.readConfirmedResult(session.id)).rejects.toThrow(/hash|invalid|corrupt/i);
     sessions.close();
   });
 

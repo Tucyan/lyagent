@@ -16,5 +16,5 @@
     "declaration": true
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", "dist", "vendor"]
+  "exclude": ["node_modules", "dist", "vendor", "tests/grading-batch-page-rerender.test.ts"]
 }

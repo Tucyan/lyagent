@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -30,12 +30,12 @@ export class SafeFilesystem {
 
   async readText(relativePath: string): Promise<string> {
     const resolved = await this.resolveExisting(relativePath);
-    return readFile(resolved, "utf8");
+    return this.readFromOpenHandle(resolved, relativePath, "utf8");
   }
 
   async readBytes(relativePath: string): Promise<Buffer> {
     const resolved = await this.resolveExisting(relativePath);
-    return readFile(resolved);
+    return this.readFromOpenHandle(resolved, relativePath);
   }
 
   async writeText(relativePath: string, content: string): Promise<void> {
@@ -61,6 +61,29 @@ export class SafeFilesystem {
     await rm(resolved, { recursive: true, force: false });
   }
 
+  async directoryExists(relativePath: string): Promise<boolean> {
+    const resolved = this.parseRelativePath(relativePath, { allowDirectory: true });
+    await this.assertSafeExistingPath(resolved, relativePath);
+    const stat = await this.tryLstat(resolved);
+    if (!stat) return false;
+    if (!stat.isDirectory()) throw new UnsafePathError(relativePath, "target is not a directory");
+    return true;
+  }
+
+  async moveDirectory(sourceRelativePath: string, targetRelativePath: string): Promise<void> {
+    const source = this.parseRelativePath(sourceRelativePath, { allowDirectory: true });
+    const target = this.parseRelativePath(targetRelativePath, { allowDirectory: true });
+    await this.assertSafeExistingPath(source, sourceRelativePath);
+    const sourceStat = await lstat(source);
+    if (!sourceStat.isDirectory()) throw new UnsafePathError(sourceRelativePath, "source is not a directory");
+    const targetParent = path.dirname(target);
+    const targetParentRelative = path.relative(this.root, targetParent);
+    await this.ensureDirectory(targetParentRelative || ".");
+    await this.assertSafeExistingPath(targetParent, targetRelativePath);
+    if (await this.tryLstat(target)) throw new UnsafePathError(targetRelativePath, "target directory already exists");
+    await rename(source, target);
+  }
+
   async copyInto(sourceAbsolutePath: string, targetRelativePath: string): Promise<void> {
     const target = await this.resolveForWrite(targetRelativePath);
     const temporary = `${target}.tmp-${randomUUID()}`;
@@ -76,6 +99,7 @@ export class SafeFilesystem {
     if (relativePath === ".") {
       await mkdir(this.root, { recursive: true });
       await this.assertNotLink(this.root, relativePath);
+      await this.assertResolvesWithinRoot(this.root, relativePath);
       return this.root;
     }
     const resolved = this.parseRelativePath(relativePath, { allowDirectory: true });
@@ -101,6 +125,7 @@ export class SafeFilesystem {
         }
         await this.assertNotLink(current, relativePath);
       }
+      await this.assertResolvesWithinRoot(current, relativePath);
     }
     return resolved;
   }
@@ -114,6 +139,34 @@ export class SafeFilesystem {
       return (await readdir(resolved, { withFileTypes: true }))
         .filter((entry) => entry.isFile())
         .map((entry) => entry.name);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async listDirectories(relativePath: string): Promise<string[]> {
+    const resolved = this.parseRelativePath(relativePath, { allowDirectory: true });
+    try {
+      await this.assertSafeExistingPath(resolved, relativePath);
+      const stat = await this.tryLstat(resolved);
+      if (!stat) return [];
+      if (!stat.isDirectory()) throw new UnsafePathError(relativePath, "target is not a directory");
+      const entries = await readdir(resolved, { withFileTypes: true });
+      const directories: string[] = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(resolved, entry.name);
+        const candidateRelative = path.relative(this.root, candidate);
+        const candidateResolved = this.parseRelativePath(candidateRelative, { allowDirectory: true });
+        const requestedCandidate = `${relativePath}/${entry.name}`;
+        await this.assertSafeExistingPath(candidateResolved, requestedCandidate);
+        const candidateStat = await this.tryLstat(candidateResolved);
+        if (candidateStat?.isSymbolicLink())
+          throw new UnsafePathError(requestedCandidate, "contains a reparse point");
+        if (candidateStat?.isDirectory()) directories.push(entry.name);
+      }
+      return directories;
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
@@ -179,12 +232,30 @@ export class SafeFilesystem {
     const segments = relative === "" ? [] : relative.split(path.sep);
     let current = this.root;
     await this.assertNotLink(current, requestedPath);
+    const canonicalRoot = await this.tryRealpath(this.root);
+    if (!canonicalRoot) return;
     for (const segment of segments) {
       current = path.join(current, segment);
       const stat = await this.tryLstat(current);
       if (!stat) break;
       if (stat.isSymbolicLink()) throw new UnsafePathError(requestedPath, "contains a reparse point");
+      const canonicalCurrent = await this.tryRealpath(current);
+      if (!canonicalCurrent || !this.isWithin(canonicalRoot, canonicalCurrent))
+        throw new UnsafePathError(requestedPath, "resolves outside the controlled root");
     }
+  }
+
+  private async assertResolvesWithinRoot(target: string, requestedPath: string): Promise<void> {
+    const canonicalRoot = await this.tryRealpath(this.root);
+    if (!canonicalRoot) return;
+    const canonicalTarget = await this.tryRealpath(target);
+    if (canonicalTarget && !this.isWithin(canonicalRoot, canonicalTarget))
+      throw new UnsafePathError(requestedPath, "resolves outside the controlled root");
+  }
+
+  private isWithin(root: string, candidate: string): boolean {
+    const relative = path.relative(root, candidate);
+    return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
   }
 
   private async assertNotLink(target: string, requestedPath: string): Promise<void> {
@@ -208,6 +279,29 @@ export class SafeFilesystem {
       await rename(temporary, target);
     } finally {
       await rm(temporary, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async tryRealpath(target: string): Promise<string | undefined> {
+    try {
+      return await realpath(target);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  private async readFromOpenHandle(target: string, requestedPath: string, encoding: "utf8"): Promise<string>;
+  private async readFromOpenHandle(target: string, requestedPath: string): Promise<Buffer>;
+  private async readFromOpenHandle(target: string, requestedPath: string, encoding?: "utf8"): Promise<string | Buffer> {
+    const handle = await open(target, "r");
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new UnsafePathError(requestedPath, "opened target is not a regular file");
+      await this.assertSafeExistingPath(target, requestedPath);
+      return encoding ? await handle.readFile(encoding) : await handle.readFile();
+    } finally {
+      await handle.close();
     }
   }
 }

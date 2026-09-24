@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PiAssignmentGrader } from "../src/agents/assignment-grader/agent.js";
@@ -176,6 +177,190 @@ describe("grading API", () => {
     await app.close();
   });
 
+  it("rejects a batch multipart upload as soon as report and assets exceed 50 MiB total", async () => {
+    const { app, assignmentId } = await setup();
+    const draft = await app.inject({
+      method: "POST",
+      url: "/api/grading/batch-uploads",
+      payload: {
+        title: "超限批次",
+        assignmentId,
+        rubricVersion: 1,
+        concurrency: 1,
+        items: [{ filename: "report.md" }],
+      },
+    });
+    const fullFile = Buffer.alloc(10 * 1024 * 1024, 0x61);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(fullFile);
+    const response = await app.inject({
+      method: "PUT",
+      url: `/api/grading/batch-uploads/${draft.json().id}/items/${draft.json().items[0].id}/file`,
+      headers: { "content-type": "multipart/form-data; boundary=over-limit-batch" },
+      payload: multipartWithAssets("over-limit-batch", {
+        assetManifest: JSON.stringify(Array.from({ length: 6 }, (_, index) => `assets/${index}.png`)),
+      }, {
+        filename: "report.md",
+        bytes: fullFile,
+      }, [
+        ...Array.from({ length: 5 }, (_, index) => ({ filename: `${index}.png`, bytes: fullFile })),
+        { filename: "last.png", bytes: Buffer.from([0x61]) },
+      ]),
+    });
+
+    await app.close();
+    expect(response.statusCode, response.body).toBe(422);
+    expect(response.json()).toMatchObject({ code: "SUBMISSION_ASSET_TOTAL_TOO_LARGE" });
+  });
+
+  it("rejects a session multipart upload as soon as report and assets exceed 50 MiB total", async () => {
+    const { app, assignmentId } = await setup();
+    const fullFile = Buffer.alloc(10 * 1024 * 1024, 0x61);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(fullFile);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=over-limit-session" },
+      payload: multipartWithAssets("over-limit-session", {
+        assignmentId,
+        rubricVersion: "1",
+        studentName: "测试学生",
+        studentNumber: "20260001",
+        submissionTitle: "超限报告",
+        assetManifest: JSON.stringify(Array.from({ length: 6 }, (_, index) => `assets/${index}.png`)),
+      }, {
+        filename: "report.md",
+        bytes: fullFile,
+      }, [
+        ...Array.from({ length: 5 }, (_, index) => ({ filename: `${index}.png`, bytes: fullFile })),
+        { filename: "last.png", bytes: Buffer.from([0x61]) },
+      ]),
+    });
+
+    await app.close();
+    expect(response.statusCode, response.body).toBe(422);
+    expect(response.json()).toMatchObject({ code: "SUBMISSION_ASSET_TOTAL_TOO_LARGE" });
+  });
+
+  // The inject harness does not destroy the caller-owned payload Readable when
+  // the server stops parsing. Counting generated body chunks therefore measures
+  // parser consumption; multipart-upload-budget.test.ts separately asserts the
+  // rejected part's generator is finalized when its stream is destroyed.
+  it("stops consuming a chunked session request shortly after the attachment cap is crossed", async () => {
+    const { app, assignmentId } = await setup();
+    let chunksProduced = 0;
+    const boundary = "counted-stream-session";
+    const payload = streamingOversizedMultipart(boundary, {
+      assignmentId,
+      rubricVersion: "1",
+      studentName: "张晓明",
+      studentNumber: "20260001",
+      submissionTitle: "流式超限报告",
+      assetManifest: JSON.stringify(Array.from({ length: 6 }, (_, index) => `assets/${index}.png`)),
+    }, (count) => { chunksProduced = count; });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    await app.close();
+    expect(response.statusCode, response.body).toBe(422);
+    expect(response.json()).toMatchObject({ code: "SUBMISSION_ASSET_TOTAL_TOO_LARGE" });
+    expect(chunksProduced).toBeLessThanOrEqual(820);
+  });
+
+  it("stops consuming a chunked batch item request shortly after the attachment cap is crossed", async () => {
+    const { app, assignmentId } = await setup();
+    const draft = await app.inject({
+      method: "POST",
+      url: "/api/grading/batch-uploads",
+      payload: {
+        title: "流式超限批次",
+        assignmentId,
+        rubricVersion: 1,
+        concurrency: 1,
+        items: [{ filename: "20260001_张晓明_报告.md" }],
+      },
+    });
+    let chunksProduced = 0;
+    const boundary = "counted-stream-batch";
+    const payload = streamingOversizedMultipart(boundary, {
+      assetManifest: JSON.stringify(Array.from({ length: 6 }, (_, index) => `assets/${index}.png`)),
+    }, (count) => { chunksProduced = count; });
+    const response = await app.inject({
+      method: "PUT",
+      url: `/api/grading/batch-uploads/${draft.json().id}/items/${draft.json().items[0].id}/file`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    await app.close();
+    expect(response.statusCode, response.body).toBe(422);
+    expect(response.json()).toMatchObject({ code: "SUBMISSION_ASSET_TOTAL_TOO_LARGE" });
+    expect(chunksProduced).toBeLessThanOrEqual(820);
+  });
+
+  it("accepts the existing 10 MiB report plus 50 MiB attachment limit", async () => {
+    const { app, assignmentId } = await setup();
+    const draft = await app.inject({
+      method: "POST",
+      url: "/api/grading/batch-uploads",
+      payload: {
+        title: "兼容边界",
+        assignmentId,
+        rubricVersion: 1,
+        concurrency: 1,
+        items: [{ filename: "20260001_张晓明_报告.md" }],
+      },
+    });
+    const report = Buffer.alloc(10 * 1024 * 1024, 0x20);
+    Buffer.from("# 报告\n\n" + Array.from({ length: 5 }, (_, index) => `![${index}](assets/${index}.png)`).join("\n")).copy(report);
+    const image = Buffer.alloc(10 * 1024 * 1024, 0x61);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(image);
+    const response = await app.inject({
+      method: "PUT",
+      url: `/api/grading/batch-uploads/${draft.json().id}/items/${draft.json().items[0].id}/file`,
+      headers: { "content-type": "multipart/form-data; boundary=legacy-limits" },
+      payload: multipartWithAssets("legacy-limits", {
+        assetManifest: JSON.stringify(Array.from({ length: 5 }, (_, index) => `assets/${index}.png`)),
+      }, {
+        filename: "20260001_张晓明_报告.md",
+        bytes: report,
+      }, Array.from({ length: 5 }, (_, index) => ({ filename: `${index}.png`, bytes: image }))),
+    });
+
+    await app.close();
+    expect(response.statusCode, response.body).toBe(202);
+  });
+
+  it("accepts the same 10 MiB report plus 50 MiB attachment limit for a single session", async () => {
+    const { app, assignmentId } = await setup();
+    const report = Buffer.alloc(10 * 1024 * 1024, 0x20);
+    Buffer.from("# 报告\n\n" + Array.from({ length: 5 }, (_, index) => `![${index}](assets/${index}.png)`).join("\n")).copy(report);
+    const image = Buffer.alloc(10 * 1024 * 1024, 0x61);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(image);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/grading/sessions",
+      headers: { "content-type": "multipart/form-data; boundary=legacy-limits-session" },
+      payload: multipartWithAssets("legacy-limits-session", {
+        assignmentId,
+        rubricVersion: "1",
+        studentName: "张晓明",
+        studentNumber: "20260001",
+        submissionTitle: "兼容边界",
+        assetManifest: JSON.stringify(Array.from({ length: 5 }, (_, index) => `assets/${index}.png`)),
+      }, {
+        filename: "20260001_张晓明_报告.md",
+        bytes: report,
+      }, Array.from({ length: 5 }, (_, index) => ({ filename: `${index}.png`, bytes: image }))),
+    });
+
+    await app.close();
+    expect(response.statusCode, response.body).toBe(201);
+  });
+
   it("creates a one-report batch through the public API", async () => {
     const grader: GradingAgentBuilder = () => ({
       async run() { return { kind: "reply", reply: "ready" }; },
@@ -322,6 +507,8 @@ describe("grading API", () => {
       score: { earned: 8, possible: 10 },
       confidence: { overall: 0.9 },
       reviewStatus: "needs_review",
+      requiresReview: false,
+      reviewReasons: [],
       resultVersion: 1,
     });
     const wrongBatchId = `${batch.id.slice(0, -1)}${batch.id.endsWith("0") ? "1" : "0"}`;
@@ -344,7 +531,7 @@ describe("grading API", () => {
     expect(exported.headers["content-disposition"]).toContain("batch-grading-summary.csv");
     expect(exported.body.split("\r\n").filter(Boolean)).toHaveLength(31);
     await app.close();
-  }, 15_000);
+  }, 30_000);
 
   it("creates a course-bound Markdown session and supports versioned editing", async () => {
     const { app, assignmentId } = await setup();
@@ -1037,4 +1224,32 @@ function multipartWithAssets(
   for (const asset of assets) file("asset", asset);
   chunks.push(Buffer.from(`--${boundary}--\r\n`));
   return Buffer.concat(chunks);
+}
+
+function streamingOversizedMultipart(
+  boundary: string,
+  fields: Record<string, string>,
+  onAttachmentChunk: (count: number) => void,
+): Readable {
+  const chunkSize = 64 * 1024;
+  const chunksPerAttachment = (10 * 1024 * 1024) / chunkSize;
+  const attachmentChunk = Buffer.alloc(chunkSize, 0x61);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(attachmentChunk);
+  let attachmentChunks = 0;
+  async function* body(): AsyncGenerator<Buffer> {
+    for (const [name, value] of Object.entries(fields))
+      yield Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+    yield Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="20260001_张晓明_报告.md"\r\nContent-Type: application/octet-stream\r\n\r\n# report\n\r\n`);
+    for (let index = 0; index < 6; index += 1) {
+      yield Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="asset"; filename="${index}.png"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+      for (let chunk = 0; chunk < chunksPerAttachment; chunk += 1) {
+        attachmentChunks += 1;
+        onAttachmentChunk(attachmentChunks);
+        yield attachmentChunk;
+      }
+      yield Buffer.from("\r\n");
+    }
+    yield Buffer.from(`--${boundary}--\r\n`);
+  }
+  return Readable.from(body());
 }

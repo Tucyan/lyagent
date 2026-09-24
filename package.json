@@ -12,7 +12,7 @@
     "start": "node dist/src/main.js",
     "test": "vitest",
     "test:watch": "vitest --watch",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
     "check": "npm run typecheck && npm test -- --run",
     "release:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1"
   },
@@ -43,6 +43,8 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
     "concurrently": "^10.0.4",
+    "happy-dom": "^20.14.5",
+    "selfsigned": "^5.5.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",

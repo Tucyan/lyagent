@@ -8,12 +8,56 @@ export type BatchJobCounts = {
   cancelled: number;
 };
 
+export class UploadDraftRequestTracker {
+  private draftId: string | undefined;
+
+  set(draftId: string | undefined): void {
+    this.draftId = draftId;
+  }
+
+  matches(draftId: string): boolean {
+    return this.draftId === draftId;
+  }
+}
+
+export function applyUploadDraftResponse<T extends { id: string }>(
+  tracker: UploadDraftRequestTracker,
+  requestId: string,
+  response: T,
+  apply: (response: T) => void,
+): boolean {
+  if (!tracker.matches(requestId) || response.id !== requestId) return false;
+  apply(response);
+  return true;
+}
+
+export function completeCommittedUploadDraftRestore(
+  draft: { id: string; status: string; committedBatchId?: string },
+  tracker: UploadDraftRequestTracker,
+  actions: {
+    invalidateRequests: () => void;
+    removeStoredDraft: () => void;
+    clearDraft: () => void;
+    selectBatch: (id: string | undefined) => void;
+  },
+): boolean {
+  if (draft.status !== "committed") return false;
+  actions.removeStoredDraft();
+  tracker.set(undefined);
+  actions.invalidateRequests();
+  actions.clearDraft();
+  actions.selectBatch(draft.committedBatchId);
+  return true;
+}
+
 export type BatchReviewJob = {
   status: string;
   attemptCount: number;
   maxAttempts: number;
   resultVersion?: number;
   reviewStatus?: "needs_review" | "confirmed";
+  requiresReview?: boolean;
+  reviewReasons?: string[];
   score?: { earned: number; possible: number };
   confidence?: { overall: number };
 };
@@ -32,6 +76,10 @@ export function canRetryBatchJob(job: Pick<BatchReviewJob, "status" | "attemptCo
 
 export function canConfirmBatchJob(job: Pick<BatchReviewJob, "resultVersion" | "reviewStatus">): boolean {
   return job.reviewStatus === "needs_review" && Number.isInteger(job.resultVersion);
+}
+
+export function canConfirmFromBatchList(job: Pick<BatchReviewJob, "resultVersion" | "reviewStatus" | "requiresReview" | "reviewReasons">): boolean {
+  return job.requiresReview === false && job.reviewReasons?.length === 0 && job.reviewStatus !== "confirmed" && Number.isInteger(job.resultVersion);
 }
 
 export function batchReviewHref(batchId: string, sessionId?: string): string {

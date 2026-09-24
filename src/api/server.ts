@@ -139,6 +139,12 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   const planner = options.materialPlanner ?? defaultPlanner;
   const activeAgentRuns = new Map<string, AbortController>();
   app.addHook("onRequest", async (request, reply) => {
+    if (request.url.startsWith("/api/")) {
+      const origin = request.headers.origin;
+      if (!isLoopbackHost(request.headers.host)
+        || (origin !== undefined && (!isLoopbackOrigin(origin) || (options.modelApiSecurity && origin !== options.modelApiSecurity.allowedOrigin))))
+        return reply.code(403).send({ code: "FORBIDDEN", message: "API requests are allowed only from the local application" });
+    }
     if (!options.modelConfigService || !request.url.startsWith("/api/") || request.url === "/api/health" || request.url.startsWith("/api/system/model") || request.url === "/api/system/runtime") return;
     if (setupRequired) return reply.code(503).send({ code: "SETUP_REQUIRED", message: "请先完成主模型设置" });
   });
@@ -508,6 +514,28 @@ function authorizeModelWrite(request: FastifyRequest, security: ServerOptions["m
   return security.isLoopback(request)
     && request.headers.origin === security.allowedOrigin
     && request.headers["x-csrf-token"] === security.csrfToken;
+}
+
+function isLoopbackHost(authority: string | undefined): boolean {
+  if (!authority || authority.includes("@")) return false;
+  try {
+    const url = new URL(`http://${authority}`);
+    return url.username === "" && url.password === "" && url.pathname === "/" && url.search === "" && url.hash === ""
+      && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return url.protocol === "http:" && url.origin === origin && url.username === "" && url.password === ""
+      && url.pathname === "/" && url.search === "" && url.hash === ""
+      && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 function staticRubricRecommendation() {

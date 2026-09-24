@@ -14,10 +14,11 @@ import { OpenAICompatibleStudentIdentityClient } from "./services/student-identi
 import { DoclingClient } from "./services/docling-client.js";
 import { ModelConfigService } from "./services/model-config-service.js";
 import { resolveWorkspaceIdentity } from "./config/workspace-identity.js";
+import { resolveApiPort } from "./config/api-port.js";
 
 const workspaceIdentity = await resolveWorkspaceIdentity(path.resolve(process.env.COURSE_AGENT_WORKSPACE ?? "workspace"));
 const workspaceRoot = workspaceIdentity.canonicalRoot;
-const port = Number.parseInt(process.env.PORT ?? "3010", 10);
+const port = resolveApiPort(process.env);
 const doclingDevice = process.env.COURSE_AGENT_DOCLING_DEVICE === "cpu" ? "cpu" : "auto";
 const logger = pino({ name: "course-agent", level: process.env.LOG_LEVEL ?? "info" });
 const credentialStore = new FileCredentialStore(defaultSecretRoot(workspaceIdentity.hash), new WindowsDpapiProtector());

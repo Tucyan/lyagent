@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { SafeFilesystem, UnsafePathError } from "../core/safe-filesystem.js";
 
@@ -57,7 +56,29 @@ export interface KnowledgeRelease {
   courseId: string;
   importId: string;
   manifestHash: string;
+  treeHash?: string;
   createdAt: string;
+}
+
+export interface ActiveKnowledgeReleaseSnapshot {
+  release: KnowledgeRelease;
+  tree: KnowledgeTreeEntry[];
+  contentHashes: ReadonlyMap<string, string>;
+}
+
+interface ContentManifestEntry {
+  path: string;
+  sourceSectionIds: string[];
+  contentHash: string;
+}
+
+interface StoredReleaseManifest {
+  manifestHash?: string;
+  manifestIndexHash?: string;
+  contentManifestHash?: string;
+  treeHash?: string;
+  files?: string[];
+  entries?: ContentManifestEntry[];
 }
 
 export type DraftOperation =
@@ -83,6 +104,7 @@ export class KnowledgeReleaseError extends Error {
 export class MaterialService {
   public readonly root: string;
   private readonly filesystem: SafeFilesystem;
+  private readonly verifiedLegacyContentHashes = new Map<string, ReadonlyMap<string, string>>();
 
   constructor(root: string) {
     this.root = path.resolve(root);
@@ -100,10 +122,9 @@ export class MaterialService {
   }
 
   async listCourses(): Promise<Course[]> {
-    const coursesRoot = path.join(this.root, "knowledge");
     try {
-      const entries = await (await import("node:fs/promises")).readdir(coursesRoot, { withFileTypes: true });
-      const courses = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => this.getCourse(entry.name)));
+      const entries = await this.filesystem.listDirectories("knowledge");
+      const courses = await Promise.all(entries.map(async (courseId) => this.getCourse(courseId)));
       return courses.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -150,10 +171,9 @@ export class MaterialService {
 
   async listDrafts(courseId: string): Promise<ImportRecord[]> {
     await this.getCourse(courseId);
-    const importsRoot = path.join(this.root, "inbox", "materials");
     try {
-      const entries = await (await import("node:fs/promises")).readdir(importsRoot, { withFileTypes: true });
-      const drafts = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => this.readImport(entry.name)));
+      const entries = await this.filesystem.listDirectories("inbox/materials");
+      const drafts = await Promise.all(entries.map(async (importId) => this.readImport(importId)));
       return drafts
         .filter((imported) => imported.courseId === courseId && imported.status === "ready")
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -176,24 +196,23 @@ export class MaterialService {
     if (imported.status === "published") throw new KnowledgeReleaseError("Published imports cannot be edited");
     const tree = validatePlan(imported.sections, plan);
     const nextVersion = imported.draftVersion + 1;
-    const staging = this.stagingDirectory(courseId, importId);
+    const staging = this.stagingRelativeDirectory(courseId, importId);
     const temporary = `${staging}.tmp-${randomUUID()}`;
-    await rm(temporary, { recursive: true, force: true });
-    await mkdir(temporary, { recursive: true });
-    const temporaryFilesystem = new SafeFilesystem(temporary);
+    if (await this.filesystem.directoryExists(temporary)) await this.filesystem.removeDirectory(temporary);
+    await this.filesystem.ensureDirectory(temporary);
     for (const [index, document] of plan.documents.entries()) {
       const content = documentContents?.[index]
         ?? document.sectionIds.map((id) => imported.sections.find((section) => section.id === id)?.content ?? "").join("\n");
-      await temporaryFilesystem.writeText(document.path, content);
+      await this.filesystem.writeText(`${temporary}/${document.path}`, content);
     }
-    const manifestHash = await this.calculateManifestHash(temporaryFilesystem, tree);
+    const contentEntries = await this.calculateManifestEntries(temporary, tree);
+    const manifestHash = hashJson(contentEntries);
     const draft: StoredDraft = { version: nextVersion, manifestHash, tree, plan };
-    await temporaryFilesystem.writeText("index/tree.json", this.stringify(tree));
-    await temporaryFilesystem.writeText("index/manifest.json", this.stringify({ manifestHash, files: tree.map((entry) => entry.path) }));
-    await temporaryFilesystem.writeText("index/draft.json", this.stringify(draft));
-    await rm(staging, { recursive: true, force: true });
-    await mkdir(path.dirname(staging), { recursive: true });
-    await rename(temporary, staging);
+    await this.filesystem.writeText(`${temporary}/index/tree.json`, this.stringify(tree));
+    await this.filesystem.writeText(`${temporary}/index/manifest.json`, this.stringify({ manifestHash, files: tree.map((entry) => entry.path), entries: contentEntries }));
+    await this.filesystem.writeText(`${temporary}/index/draft.json`, this.stringify(draft));
+    if (await this.filesystem.directoryExists(staging)) await this.filesystem.removeDirectory(staging);
+    await this.filesystem.moveDirectory(temporary, staging);
 
     const updated: StoredImport = { ...imported, status: "ready", draftVersion: nextVersion, manifestHash, updatedAt: new Date().toISOString() };
     await this.writeImport(updated);
@@ -241,13 +260,14 @@ export class MaterialService {
       throw new KnowledgeReleaseError(`Draft document does not exist: ${relativePath}`);
     }
 
-    const draftFilesystem = new SafeFilesystem(this.stagingDirectory(courseId, importId));
-    await draftFilesystem.writeText(relativePath, content);
+    const staging = this.stagingRelativeDirectory(courseId, importId);
+    await this.filesystem.writeText(`${staging}/${relativePath}`, content);
     const nextVersion = draft.version + 1;
-    const manifestHash = await this.calculateManifestHash(draftFilesystem, draft.tree);
+    const contentEntries = await this.calculateManifestEntries(staging, draft.tree);
+    const manifestHash = hashJson(contentEntries);
     const updatedDraft: StoredDraft = { ...draft, version: nextVersion, manifestHash };
-    await draftFilesystem.writeText("index/manifest.json", this.stringify({ manifestHash, files: draft.tree.map((entry) => entry.path) }));
-    await draftFilesystem.writeText("index/draft.json", this.stringify(updatedDraft));
+    await this.filesystem.writeText(`${staging}/index/manifest.json`, this.stringify({ manifestHash, files: draft.tree.map((entry) => entry.path), entries: contentEntries }));
+    await this.filesystem.writeText(`${staging}/index/draft.json`, this.stringify(updatedDraft));
     await this.writeImport({
       ...imported,
       draftVersion: nextVersion,
@@ -266,28 +286,51 @@ export class MaterialService {
       throw new KnowledgeReleaseError("Draft has changed; refresh before publishing");
     }
     await this.validateDraftLinks(courseId, importId, draft.tree);
+    const staging = this.stagingRelativeDirectory(courseId, importId);
+    const draftManifest = await this.readJson<StoredReleaseManifest>(this.stagingFile(courseId, importId, "index/manifest.json"));
+    const contentEntries = isContentManifest(draftManifest.entries, draft.tree)
+      ? draftManifest.entries
+      : await this.calculateManifestEntries(staging, draft.tree);
+    if (hashJson(contentEntries) !== draft.manifestHash)
+      throw new KnowledgeReleaseError("Draft content manifest does not match its content");
+    const treeHash = hashJson(draft.tree);
+    const files = draft.tree.map(({ path: targetPath }) => targetPath);
+    const manifestIndex = { contentManifestHash: draft.manifestHash, treeHash, files, entries: contentEntries };
+    const manifestIndexHash = hashJson(manifestIndex);
     const release: KnowledgeRelease = {
       id: randomUUID(),
       courseId,
       importId,
-      manifestHash: draft.manifestHash,
+      manifestHash: hashJson({ manifestIndexHash, treeHash }),
+      treeHash,
       createdAt: new Date().toISOString(),
     };
-    const staging = this.stagingDirectory(courseId, importId);
-    const releaseDirectory = this.releaseDirectory(courseId, release.id);
-    await mkdir(path.dirname(releaseDirectory), { recursive: true });
-    await rename(staging, releaseDirectory);
+    const releaseDirectory = this.releaseRelativeDirectory(courseId, release.id);
+    await this.filesystem.moveDirectory(staging, releaseDirectory);
     await this.filesystem.writeText(this.releaseFile(courseId, release.id, "index/release.json"), this.stringify(release));
+    await this.filesystem.writeText(this.releaseFile(courseId, release.id, "index/manifest.json"), this.stringify({
+      manifestHash: release.manifestHash,
+      ...manifestIndex,
+      manifestIndexHash,
+    }));
     await this.filesystem.writeText(this.activeFile(courseId), this.stringify({ releaseId: release.id, manifestHash: release.manifestHash }));
     await this.writeImport({ ...imported, status: "published", updatedAt: new Date().toISOString() });
     return release;
   }
 
   async getActiveRelease(courseId: string): Promise<KnowledgeRelease | undefined> {
+    return (await this.getActiveReleaseSnapshot(courseId))?.release;
+  }
+
+  async getActiveReleaseSnapshot(courseId: string): Promise<ActiveKnowledgeReleaseSnapshot | undefined> {
     await this.getCourse(courseId);
     try {
-      const active = await this.readJson<{ releaseId: string }>(this.activeFile(courseId));
-      return this.readJson<KnowledgeRelease>(this.releaseFile(courseId, active.releaseId, "index/release.json"));
+      const active = await this.readJson<{ releaseId: string; manifestHash: string }>(this.activeFile(courseId));
+      const release = await this.readJson<KnowledgeRelease>(this.releaseFile(courseId, active.releaseId, "index/release.json"));
+      if (release.courseId !== courseId || release.id !== active.releaseId || release.manifestHash !== active.manifestHash)
+        throw new KnowledgeReleaseError("Active knowledge release pointer does not match release metadata");
+      const integrity = await this.verifyReleaseIntegrity(courseId, release);
+      return { release, ...integrity };
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
@@ -295,10 +338,9 @@ export class MaterialService {
   }
 
   async listReleases(courseId: string): Promise<KnowledgeRelease[]> {
-    const releasesRoot = path.join(this.root, "knowledge", courseId, "releases");
     try {
-      const entries = await (await import("node:fs/promises")).readdir(releasesRoot, { withFileTypes: true });
-      const releases = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => this.readJson<KnowledgeRelease>(this.releaseFile(courseId, entry.name, "index/release.json"))));
+      const entries = await this.filesystem.listDirectories(`knowledge/${courseId}/releases`);
+      const releases = await Promise.all(entries.map((releaseId) => this.readJson<KnowledgeRelease>(this.releaseFile(courseId, releaseId, "index/release.json"))));
       return releases.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -309,7 +351,7 @@ export class MaterialService {
   async getReleaseTree(courseId: string, releaseId: string): Promise<KnowledgeTreeEntry[]> {
     const release = await this.readJson<KnowledgeRelease>(this.releaseFile(courseId, releaseId, "index/release.json"));
     if (release.courseId !== courseId) throw new KnowledgeReleaseError("Release belongs to another course");
-    return this.readJson<KnowledgeTreeEntry[]>(this.releaseFile(courseId, releaseId, "index/tree.json"));
+    return (await this.verifyReleaseIntegrity(courseId, release)).tree;
   }
 
   async createRevisionDraft(courseId: string, releaseId: string): Promise<{ imported: ImportRecord; draft: DraftSummary }> {
@@ -337,21 +379,94 @@ export class MaterialService {
   async activateRelease(courseId: string, releaseId: string): Promise<KnowledgeRelease> {
     const release = await this.readJson<KnowledgeRelease>(this.releaseFile(courseId, releaseId, "index/release.json"));
     if (release.courseId !== courseId) throw new KnowledgeReleaseError("Release belongs to another course");
+    await this.verifyReleaseIntegrity(courseId, release);
     await this.filesystem.writeText(this.activeFile(courseId), this.stringify({ releaseId, manifestHash: release.manifestHash }));
     return release;
   }
 
   async readReleaseContent(courseId: string, releaseId: string, relativePath: string): Promise<string> {
-    await this.readJson<KnowledgeRelease>(this.releaseFile(courseId, releaseId, "index/release.json"));
-    const releaseFilesystem = new SafeFilesystem(this.releaseDirectory(courseId, releaseId));
-    return releaseFilesystem.readText(relativePath);
+    const release = await this.readJson<KnowledgeRelease>(this.releaseFile(courseId, releaseId, "index/release.json"));
+    if (release.courseId !== courseId) throw new KnowledgeReleaseError("Release belongs to another course");
+    const integrity = await this.verifyReleaseIntegrity(courseId, release);
+    if (!integrity.tree.some(({ path: targetPath }) => targetPath === relativePath))
+      throw new KnowledgeReleaseError("Requested document is not part of the release");
+    const content = await this.filesystem.readText(this.releaseFile(courseId, releaseId, relativePath));
+    if (hashText(content) !== integrity.contentHashes.get(relativePath))
+      throw new KnowledgeReleaseError("Knowledge release document integrity validation failed");
+    return content;
+  }
+
+  private async verifyReleaseIntegrity(courseId: string, release: KnowledgeRelease): Promise<Pick<ActiveKnowledgeReleaseSnapshot, "tree" | "contentHashes">> {
+    let tree: KnowledgeTreeEntry[];
+    try {
+      tree = await this.readJson<KnowledgeTreeEntry[]>(this.releaseFile(courseId, release.id, "index/tree.json"));
+      if (!Array.isArray(tree) || tree.some((entry) => !entry || typeof entry.path !== "string" || entry.type !== "file"
+        || typeof entry.title !== "string" || !Array.isArray(entry.sourceSectionIds)))
+        throw new Error("Invalid release tree");
+      const treeHash = hashJson(tree);
+      if (release.treeHash && treeHash !== release.treeHash)
+        throw new Error("Release tree hash does not match its metadata");
+      if (!release.treeHash) {
+        // Older releases predate treeHash; publish kept the original draft as a second tree record.
+        const draft = await this.readJson<StoredDraft>(this.releaseFile(courseId, release.id, "index/draft.json"));
+        if (draft.manifestHash !== release.manifestHash || hashJson(draft.tree) !== treeHash)
+          throw new Error("Legacy release tree does not match its preserved draft");
+      }
+      const manifest = await this.readJson<StoredReleaseManifest>(this.releaseFile(courseId, release.id, "index/manifest.json"));
+      let entries: ContentManifestEntry[];
+      if (manifest.manifestIndexHash !== undefined || manifest.entries !== undefined) {
+        if (!isContentManifest(manifest.entries, tree)) throw new Error("Release manifest entries are invalid");
+        if (!sameKeys(manifest, ["manifestHash", "contentManifestHash", "treeHash", "files", "entries", "manifestIndexHash"]))
+          throw new Error("Release manifest index has unexpected fields");
+        entries = manifest.entries;
+        const contentManifestHash = hashJson(entries);
+        if (manifest.manifestHash !== release.manifestHash || manifest.contentManifestHash !== contentManifestHash || manifest.treeHash !== treeHash ||
+          !samePaths(manifest.files, tree.map(({ path: targetPath }) => targetPath)))
+          throw new Error("Release manifest index does not match its contents");
+        const manifestIndex = { contentManifestHash, treeHash, files: manifest.files, entries };
+        const manifestIndexHash = hashJson(manifestIndex);
+        if (manifest.manifestIndexHash !== manifestIndexHash ||
+          hashJson({ manifestIndexHash, treeHash }) !== release.manifestHash)
+          throw new Error("Release manifest hash does not match its metadata");
+      } else {
+        // Older releases have no per-file hash index. Verify the whole body set
+        // once per persistent MaterialService instance, then every caller still
+        // hashes the selected body immediately before use.
+        const cacheKey = `${courseId}:${release.id}:${release.manifestHash}`;
+        const cachedHashes = this.verifiedLegacyContentHashes.get(cacheKey);
+        const cacheUsable = Boolean(cachedHashes && cachedHashes.size === tree.length && tree.every(({ path: targetPath }) => cachedHashes.has(targetPath)));
+        if (cacheUsable && cachedHashes) {
+          entries = tree.map(({ path: targetPath, sourceSectionIds }) => ({
+            path: targetPath,
+            sourceSectionIds: [...sourceSectionIds],
+            contentHash: cachedHashes.get(targetPath)!,
+          }));
+        } else {
+          entries = await this.calculateManifestEntries(this.releaseRelativeDirectory(courseId, release.id), tree);
+        }
+        const contentManifestHash = hashJson(entries);
+        if ((manifest.contentManifestHash && manifest.contentManifestHash !== contentManifestHash) ||
+          (manifest.manifestHash && manifest.manifestHash !== release.manifestHash) ||
+          (manifest.files && !samePaths(manifest.files, tree.map(({ path: targetPath }) => targetPath))))
+          throw new Error("Release content hash does not match its manifest");
+        const manifestHash = release.treeHash
+          ? hashJson({ contentManifestHash, treeHash })
+          : contentManifestHash;
+        if (manifestHash !== release.manifestHash)
+          throw new Error("Release content hash does not match its metadata");
+        if (!cacheUsable) this.verifiedLegacyContentHashes.set(cacheKey, new Map(entries.map(({ path: targetPath, contentHash }) => [targetPath, contentHash])));
+      }
+      return { tree, contentHashes: new Map(entries.map(({ path: targetPath, contentHash }) => [targetPath, contentHash])) };
+    } catch (error: unknown) {
+      if (error instanceof KnowledgeReleaseError) throw error;
+      throw new KnowledgeReleaseError("Knowledge release integrity validation failed");
+    }
   }
 
   async readDraftContent(courseId: string, importId: string, relativePath: string): Promise<string> {
     const imported = await this.readImport(importId);
     this.assertImportCourse(imported, courseId);
-    const draftFilesystem = new SafeFilesystem(this.stagingDirectory(courseId, importId));
-    return draftFilesystem.readText(relativePath);
+    return this.filesystem.readText(this.stagingFile(courseId, importId, relativePath));
   }
 
   private async validateDraftLinks(courseId: string, importId: string, tree: KnowledgeTreeEntry[]): Promise<void> {
@@ -370,13 +485,12 @@ export class MaterialService {
     }
   }
 
-  private async calculateManifestHash(filesystem: SafeFilesystem, tree: KnowledgeTreeEntry[]): Promise<string> {
-    const entries = await Promise.all(tree.map(async ({ path: targetPath, sourceSectionIds }) => ({
+  private async calculateManifestEntries(rootRelativePath: string, tree: KnowledgeTreeEntry[]): Promise<ContentManifestEntry[]> {
+    return Promise.all(tree.map(async ({ path: targetPath, sourceSectionIds }) => ({
       path: targetPath,
-      sourceSectionIds,
-      contentHash: createHash("sha256").update(await filesystem.readText(targetPath)).digest("hex"),
+      sourceSectionIds: [...sourceSectionIds],
+      contentHash: hashText(await this.filesystem.readText(`${rootRelativePath}/${targetPath}`)),
     })));
-    return hashJson(entries);
   }
 
   private async getCourse(courseId: string): Promise<Course> {
@@ -411,16 +525,16 @@ export class MaterialService {
     return `inbox/materials/${importId}/source/${relativePath.replaceAll("\\", "/")}`;
   }
 
-  private stagingDirectory(courseId: string, importId: string): string {
-    return path.join(this.root, "knowledge", courseId, "staging", importId);
+  private stagingRelativeDirectory(courseId: string, importId: string): string {
+    return `knowledge/${courseId}/staging/${importId}`;
   }
 
   private stagingFile(courseId: string, importId: string, relativePath: string): string {
     return `knowledge/${courseId}/staging/${importId}/${relativePath}`;
   }
 
-  private releaseDirectory(courseId: string, releaseId: string): string {
-    return path.join(this.root, "knowledge", courseId, "releases", releaseId);
+  private releaseRelativeDirectory(courseId: string, releaseId: string): string {
+    return `knowledge/${courseId}/releases/${releaseId}`;
   }
 
   private releaseFile(courseId: string, releaseId: string, relativePath: string): string {
@@ -495,4 +609,26 @@ function validateDocumentPath(documentPath: string): void {
 
 function hashJson(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function isContentManifest(value: unknown, tree: KnowledgeTreeEntry[]): value is ContentManifestEntry[] {
+  return Array.isArray(value) && value.length === tree.length && value.every((entry, index) => {
+    const treeEntry = tree[index];
+    return Boolean(treeEntry && entry && typeof entry === "object"
+      && (entry as ContentManifestEntry).path === treeEntry.path
+      && JSON.stringify((entry as ContentManifestEntry).sourceSectionIds) === JSON.stringify(treeEntry.sourceSectionIds)
+      && /^[0-9a-f]{64}$/i.test((entry as ContentManifestEntry).contentHash));
+  });
+}
+
+function samePaths(value: unknown, expected: string[]): boolean {
+  return Array.isArray(value) && value.length === expected.length && value.every((entry, index) => entry === expected[index]);
+}
+
+function sameKeys(value: object, expected: string[]): boolean {
+  return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
 }

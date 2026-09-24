@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPiAssignmentGrader } from "../src/agents/assignment-grader/agent.js";
-import { SafeFilesystem } from "../src/core/safe-filesystem.js";
 import { rubricSchema } from "../src/schemas/rubric.js";
 import { GradingResultService } from "../src/services/grading-result-service.js";
 import { GradingSessionService } from "../src/services/grading-session-service.js";
@@ -42,7 +41,7 @@ describe.runIf(enabled)("single grading real provider acceptance", () => {
     const models = createModels(); models.setProvider(deepseekProvider());
     const model = models.getModel("deepseek", "deepseek-v4-flash");
     if (!model) throw new Error("DeepSeek grading model is unavailable");
-    const knowledge = new CourseKnowledgeService({ id: "00000000-0000-4000-8000-000000000002", courseId: session.courseId, importId: "00000000-0000-4000-8000-000000000003", manifestHash: "0".repeat(64), createdAt: new Date().toISOString() }, [], new SafeFilesystem(root));
+    const knowledge = new CourseKnowledgeService({ id: "00000000-0000-4000-8000-000000000002", courseId: session.courseId, importId: "00000000-0000-4000-8000-000000000003", manifestHash: "0".repeat(64), createdAt: new Date().toISOString() }, [], new Map(), async () => "");
   const grader = createPiAssignmentGrader({ models, primaryModel: model, sessions, results, rubrics, sessionId: session.id, runId: "00000000-0000-4000-8000-000000000004", knowledge, getApiKey: () => apiKey });
     const outcome = await grader.run({ kind: "grade", message: "按冻结评分表完成逐项批改；必须为全部 16 条规则提交判断。" });
     expect(outcome.kind).toBe("draft");

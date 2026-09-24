@@ -1,4 +1,5 @@
 import multipart from "@fastify/multipart";
+import { MultipartAttachmentBudget, rejectMultipartFile } from "./multipart-upload-budget.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -284,17 +285,25 @@ export function registerGradingApi(
       let report: { filename: string; bytes: Buffer } | undefined;
       const uploadedAssets: Array<{ filename: string; bytes: Buffer }> = [];
       const fields: Record<string, string> = {};
+      const attachmentBudget = new MultipartAttachmentBudget();
       for await (const part of request.parts()) {
         if (part.type === "file") {
           if (part.fieldname === "file") {
             if (report)
-              throw new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "只能上传一个主报告文件", "file");
-            report = { filename: part.filename, bytes: await part.toBuffer() };
+              rejectMultipartFile(part.file, new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "只能上传一个主报告文件", "file"));
+            const bytes = await part.toBuffer();
+            if (part.file.truncated)
+              throw new SubmissionAssetError("SUBMISSION_ASSET_TOO_LARGE", "单个文件不能超过 10 MiB", part.filename);
+            report = { filename: part.filename, bytes };
           } else if (part.fieldname === "asset") {
-            uploadedAssets.push({ filename: part.filename, bytes: await part.toBuffer() });
+            if (uploadedAssets.length >= 100)
+              rejectMultipartFile(part.file, new SubmissionAssetError("SUBMISSION_ASSET_COUNT_EXCEEDED", "附件数量不能超过 100 个", part.filename));
+            const bytes = await attachmentBudget.read(part.file);
+            if (part.file.truncated)
+              throw new SubmissionAssetError("SUBMISSION_ASSET_TOO_LARGE", "单个附件不能超过 10 MiB", part.filename);
+            uploadedAssets.push({ filename: part.filename, bytes });
           } else {
-            await part.toBuffer();
-            throw new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "文件字段必须是 file 或 asset", part.fieldname);
+            rejectMultipartFile(part.file, new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "文件字段必须是 file 或 asset", part.fieldname));
           }
         } else fields[part.fieldname] = String(part.value ?? "");
       }
@@ -401,25 +410,45 @@ export function registerGradingApi(
       const fields: Record<string, string> = {};
       let upload: { filename: string; bytes: Buffer } | undefined;
       const assetUploads: Array<{ filename: string; bytes: Buffer }> = [];
+      const attachmentBudget = new MultipartAttachmentBudget();
       for await (const part of parts) {
         if (part.type === "file") {
           if (part.fieldname === "file") {
             if (upload)
-              throw new SubmissionAssetError(
+              rejectMultipartFile(part.file, new SubmissionAssetError(
                 "SUBMISSION_ASSET_MANIFEST_INVALID",
                 "只能上传一个主报告文件",
                 "file",
+              ));
+            const bytes = await part.toBuffer();
+            if (part.file.truncated)
+              throw new SubmissionAssetError(
+                "SUBMISSION_ASSET_TOO_LARGE",
+                "单个文件不能超过 10 MiB",
+                part.filename,
               );
-            upload = { filename: part.filename, bytes: await part.toBuffer() };
+            upload = { filename: part.filename, bytes };
           } else if (part.fieldname === "asset") {
-            assetUploads.push({ filename: part.filename, bytes: await part.toBuffer() });
+            if (assetUploads.length >= 100)
+              rejectMultipartFile(part.file, new SubmissionAssetError(
+                "SUBMISSION_ASSET_COUNT_EXCEEDED",
+                "附件数量不能超过 100 个",
+                part.filename,
+              ));
+            const bytes = await attachmentBudget.read(part.file);
+            if (part.file.truncated)
+              throw new SubmissionAssetError(
+                "SUBMISSION_ASSET_TOO_LARGE",
+                "单个附件不能超过 10 MiB",
+                part.filename,
+              );
+            assetUploads.push({ filename: part.filename, bytes });
           } else {
-            await part.toBuffer();
-            throw new SubmissionAssetError(
+            rejectMultipartFile(part.file, new SubmissionAssetError(
               "SUBMISSION_ASSET_MANIFEST_INVALID",
               "文件字段必须是 file 或 asset",
               part.fieldname,
-            );
+            ));
           }
         } else fields[part.fieldname] = String(part.value ?? "");
       }

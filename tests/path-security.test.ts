@@ -38,15 +38,16 @@ describe("SafeFilesystem", () => {
     await expect(filesystem.writeText("draft/program.exe", "no")).rejects.toBeInstanceOf(UnsafePathError);
   });
 
-  it("refuses an existing symbolic-link path segment", async () => {
+  it("refuses an existing symbolic-link path segment", async ({ skip }) => {
     const root = await temporaryWorkspace();
     const outside = await temporaryWorkspace();
     await mkdir(path.join(root, "draft"));
     await writeFile(path.join(outside, "secret.md"), "secret", "utf8");
     try {
       await symlink(outside, path.join(root, "draft", "linked"), "junction");
-    } catch {
-      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "unknown error";
+      skip(`Windows junction fixture is unavailable (${code}); static path rejection cannot be exercised on this host.`);
     }
 
     const filesystem = new SafeFilesystem(root);

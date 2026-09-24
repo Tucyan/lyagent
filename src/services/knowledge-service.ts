@@ -1,19 +1,13 @@
+import { createHash } from "node:crypto";
 import { ZodError } from "zod";
-import { SafeFilesystem } from "../core/safe-filesystem.js";
 import { knowledgePathSchema, lineRangeSchema, paginationSchema, searchQuerySchema, type KnowledgeDocument, type KnowledgeLineRange, type KnowledgeSearchResult } from "../schemas/knowledge.js";
-import { MaterialService, type KnowledgeRelease, type KnowledgeTreeEntry } from "./material-service.js";
+import { KnowledgeReleaseError, MaterialService, type KnowledgeRelease } from "./material-service.js";
 
 export class KnowledgeAccessError extends Error {
   constructor(public readonly code: "ACTIVE_RELEASE_NOT_FOUND" | "INVALID_KNOWLEDGE_REQUEST" | "KNOWLEDGE_DOCUMENT_NOT_FOUND", message: string) {
     super(message);
     this.name = "KnowledgeAccessError";
   }
-}
-
-interface ActiveKnowledgeContext {
-  release: KnowledgeRelease;
-  documents: KnowledgeDocument[];
-  filesystem: SafeFilesystem;
 }
 
 export class KnowledgeService {
@@ -24,34 +18,37 @@ export class KnowledgeService {
   }
 
   async forCourse(courseId: string): Promise<CourseKnowledgeService> {
-    let release: KnowledgeRelease | undefined;
-    try { release = await this.materials.getActiveRelease(courseId); }
+    let snapshot;
+    try { snapshot = await this.materials.getActiveReleaseSnapshot(courseId); }
     catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT")
         throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "This course has no active knowledge release");
       throw error;
     }
-    if (!release) throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "This course has no active knowledge release");
-    const releaseRoot = `knowledge/${courseId}/releases/${release.id}`;
-    const filesystem = new SafeFilesystem(`${this.materials.root}/${releaseRoot}`);
-    let tree: KnowledgeTreeEntry[];
-    try {
-      tree = JSON.parse(await filesystem.readText("index/tree.json")) as KnowledgeTreeEntry[];
-    } catch {
-      throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "The active knowledge release is unavailable");
-    }
+    if (!snapshot) throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "This course has no active knowledge release");
+    const { release, tree, contentHashes } = snapshot;
     const documents = tree
       .filter((entry) => entry.type === "file")
       .map(({ path, title }) => ({ path, title }))
       .sort((left, right) => left.path.localeCompare(right.path));
-    return new CourseKnowledgeService(release, documents, filesystem);
+    return new CourseKnowledgeService(
+      release,
+      documents,
+      contentHashes,
+      (documentPath) => this.materials.readReleaseContent(courseId, release.id, documentPath),
+    );
   }
 }
 
 export class CourseKnowledgeService {
   private readonly documentsByPath: Map<string, KnowledgeDocument>;
 
-  constructor(public readonly release: KnowledgeRelease, documents: KnowledgeDocument[], private readonly filesystem: SafeFilesystem) {
+  constructor(
+    public readonly release: KnowledgeRelease,
+    documents: KnowledgeDocument[],
+    private readonly contentHashes: ReadonlyMap<string, string>,
+    private readonly readContent: (documentPath: string) => Promise<string>,
+  ) {
     this.documentsByPath = new Map(documents.map((document) => [document.path, document]));
   }
 
@@ -101,8 +98,16 @@ export class CourseKnowledgeService {
 
   private async readDocument(documentPath: string): Promise<string> {
     try {
-      return await this.filesystem.readText(documentPath);
-    } catch {
+      const content = await this.readContent(documentPath);
+      const expectedHash = this.contentHashes.get(documentPath);
+      const actualHash = createHash("sha256").update(content).digest("hex");
+      if (!expectedHash || actualHash !== expectedHash)
+        throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "The active knowledge release failed integrity validation");
+      return content;
+    } catch (error: unknown) {
+      if (error instanceof KnowledgeAccessError) throw error;
+      if (error instanceof KnowledgeReleaseError)
+        throw new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "The active knowledge release failed integrity validation");
       throw new KnowledgeAccessError("KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document was not found");
     }
   }

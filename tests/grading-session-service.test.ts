@@ -323,6 +323,7 @@ describe("GradingSessionService", () => {
       first.id,
     );
     await service.deleteSession(first.id);
+    await expect(service.deleteSession(first.id)).resolves.toBeUndefined();
     await expect(service.getSession(first.id)).rejects.toThrow(/not found/i);
     await expect(
       readFile(path.join(base, "metadata.json"), "utf8"),

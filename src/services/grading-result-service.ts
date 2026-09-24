@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
-import { finalizeGradingDraft, type GradingDraft, type GradingResult, type ReviewReason } from "../schemas/grading.js";
+import { finalizeGradingDraft, gradingDraftSchema, type GradingDraft, type GradingResult, type ReviewReason } from "../schemas/grading.js";
 import type { GradingSession, GradingSessionService } from "./grading-session-service.js";
 import type { RubricService } from "./rubric-service.js";
 
@@ -141,7 +141,13 @@ export class GradingResultService {
 
   private async readConfirmed(session: GradingSession): Promise<ConfirmedGradingResult | undefined> {
     try {
-      return JSON.parse(await this.filesystem.readText(this.confirmedJsonPath(session))) as ConfirmedGradingResult;
+      const parsed = JSON.parse(await this.filesystem.readText(this.confirmedJsonPath(session))) as unknown;
+      if (!isConfirmedGradingResult(parsed))
+        throw new GradingResultServiceError("Confirmed grading result is invalid or its hash does not match");
+      const { resultHash, ...withoutHash } = parsed;
+      if (hashJson(withoutHash) !== resultHash)
+        throw new GradingResultServiceError("Confirmed grading result hash does not match its contents");
+      return parsed;
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
@@ -212,6 +218,39 @@ export class GradingResultService {
   private confirmedMarkdownPath(session: GradingSession): string { return `${this.resultBase(session)}/${session.studentKey}.md`; }
   private confirmCommitPath(session: GradingSession): string { return `${this.resultBase(session)}/${session.studentKey}.confirm-commit.json`; }
   private auditPath(session: GradingSession): string { return `${this.resultBase(session)}/audit/${session.studentKey}.jsonl`; }
+}
+
+function isConfirmedGradingResult(value: unknown): value is ConfirmedGradingResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const confirmed = value as Record<string, unknown>;
+  if (confirmed.reviewStatus !== "confirmed"
+    || !Number.isInteger(confirmed.version) || (confirmed.version as number) < 1
+    || typeof confirmed.reviewNote !== "string"
+    || typeof confirmed.confirmedAt !== "string" || !Number.isFinite(Date.parse(confirmed.confirmedAt))
+    || typeof confirmed.resultHash !== "string" || !/^[a-f0-9]{64}$/u.test(confirmed.resultHash)
+    || !Array.isArray(confirmed.acknowledgedReasons)) return false;
+  const validReasons = new Set<ReviewReason>(["LOW_CONFIDENCE", "EVIDENCE_INSUFFICIENT", "CONVERSION_WARNING", "NEAR_PASSING_BOUNDARY"]);
+  if (!confirmed.acknowledgedReasons.every((reason) => validReasons.has(reason as ReviewReason))) return false;
+  if (!confirmed.result || typeof confirmed.result !== "object" || Array.isArray(confirmed.result)) return false;
+  const result = confirmed.result as Record<string, unknown>;
+  if (result.schemaVersion !== "1.0" || !["additive", "deductive", "hybrid"].includes(String(result.mode))
+    || typeof result.submissionHash !== "string" || !/^[a-f0-9]{64}$/u.test(result.submissionHash)) return false;
+  const score = result.score as Record<string, unknown> | null;
+  const confidence = result.confidence as Record<string, unknown> | null;
+  const review = result.review as Record<string, unknown> | null;
+  if (!score || !Number.isFinite(score.earned) || !Number.isFinite(score.possible)
+    || (score.earned as number) < 0 || (score.possible as number) < 0 || (score.earned as number) > (score.possible as number)
+    || !confidence || !Number.isFinite(confidence.overall) || !Number.isFinite(confidence.minimum)
+    || !Number.isInteger(confidence.lowCount) || (confidence.overall as number) < 0 || (confidence.overall as number) > 1
+    || (confidence.minimum as number) < 0 || (confidence.minimum as number) > 1 || (confidence.lowCount as number) < 0
+    || !review || typeof review.requiresReview !== "boolean" || !Array.isArray(review.reasons)
+    || !review.reasons.every((reason) => validReasons.has(reason as ReviewReason))) return false;
+  try {
+    const decisions = gradingDraftSchema.parse(result.decisions);
+    return decisions.mode === result.mode;
+  } catch {
+    return false;
+  }
 }
 
 function renderStudentFeedback(confirmed: ConfirmedGradingResult, rubric: Awaited<ReturnType<RubricService["getVersion"]>>["rubric"]): string {

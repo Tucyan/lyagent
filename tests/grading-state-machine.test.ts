@@ -94,6 +94,31 @@ describe("GradingBatchService state machine", () => {
     });
   });
 
+  it("does not label a draft safe to list-confirm when review metadata is incomplete", async () => {
+    const { service } = await setup("2026-08-05T08:00:00.000Z", async (sessionId) => sessionId === "session-1" ? {
+      reviewStatus: "needs_review",
+      version: 1,
+      updatedAt: "2026-08-05T08:01:00.000Z",
+      result: {
+        score: { earned: 87, possible: 100 },
+        confidence: { overall: 0.82, minimum: 0.64, lowCount: 1 },
+        review: {},
+      },
+    } : undefined);
+    const batch = await service.createBatch({
+      title: "缺少复核标记",
+      assignmentId: "assignment-1",
+      rubricVersion: 1,
+      concurrency: 1,
+      sessionIds: ["session-1"],
+    });
+
+    const job = (await service.getBatch(batch.id)).jobs[0]!;
+    service.close();
+    expect(job.requiresReview).toBeUndefined();
+    expect(job.reviewReasons).toBeUndefined();
+  });
+
   it("allows duplicate assignment titles but rejects duplicate student numbers", async () => {
     const first = await setup();
     first.known.get("session-2")!.submissionTitle = first.known.get("session-1")!.submissionTitle!;

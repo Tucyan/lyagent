@@ -81,6 +81,10 @@ export interface GradingBatchUploadDependencies {
   getBatch(id: string): Promise<{ id: string }>;
 }
 
+export interface GradingBatchUploadFileOperations {
+  removeDirectory?(relativePath: string): Promise<void>;
+}
+
 interface UploadRow {
   id: string;
   title: string;
@@ -109,6 +113,17 @@ interface ItemRow {
   updated_at: string;
 }
 
+interface ReplacementRow {
+  id: string;
+  upload_id: string;
+  item_id: string;
+  state: "prepared" | "cleanup";
+  staged_base: string;
+  backup_base: string;
+  had_original: number;
+  old_session_id: string | null;
+}
+
 export class GradingBatchUploadError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
@@ -122,17 +137,24 @@ export class GradingBatchUploadService {
   private readonly database: Database.Database;
   private readonly filesystem: SafeFilesystem;
   private readonly active = new Map<string, Promise<GradingBatchUploadItem>>();
+  private readonly itemOperations = new Map<string, Promise<void>>();
+  private readonly removeDirectory: (relativePath: string) => Promise<void>;
 
   constructor(
     private readonly root: string,
     private readonly dependencies: GradingBatchUploadDependencies,
     private readonly now: () => string = () => new Date().toISOString(),
+    fileOperations: GradingBatchUploadFileOperations = {},
   ) {
     this.database = new Database(path.join(path.resolve(root), "grading.sqlite"));
     this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
     this.filesystem = new SafeFilesystem(root, {
       allowedExtensions: new Set([".md", ".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".json"]),
+    });
+    this.removeDirectory = fileOperations.removeDirectory ?? (async (relativePath) => {
+      try { await this.filesystem.removeDirectory(relativePath); }
+      catch (error: unknown) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     });
     this.migrate();
   }
@@ -199,42 +221,87 @@ export class GradingBatchUploadService {
       assets: Array<{ path: string; bytes: Uint8Array }>;
     },
   ): Promise<GradingBatchUploadItem> {
+    return this.withItemMutation(`${uploadId}:${itemId}`, () => this.storeItemFileUnlocked(uploadId, itemId, input));
+  }
+
+  private async storeItemFileUnlocked(
+    uploadId: string,
+    itemId: string,
+    input: {
+      filename: string;
+      bytes: Uint8Array;
+      assets: Array<{ path: string; bytes: Uint8Array }>;
+    },
+  ): Promise<GradingBatchUploadItem> {
     const upload = await this.getUpload(uploadId);
     if (upload.status !== "draft") throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "已提交的上传草稿不能修改");
-    const item = this.getItem(uploadId, itemId);
+    const originalRow = this.getItemRow(uploadId, itemId);
+    const item = itemFromRow(originalRow);
     const filename = validateFilename(input.filename);
     if (input.bytes.byteLength === 0 || input.bytes.byteLength > 10 * 1024 * 1024)
       throw new GradingBatchUploadError("BATCH_UPLOAD_FILE_INVALID", "报告文件为空或超过 10 MiB");
     const extension = path.extname(filename).toLowerCase();
-    if (item.sessionId) await this.dependencies.deleteSession(item.sessionId);
-    await this.removeItemDirectory(uploadId, itemId);
     const base = this.itemBase(uploadId, itemId);
-    const reportPath = `${base}/report${extension}`;
-    await this.filesystem.writeBytes(reportPath, input.bytes);
-    const now = this.now();
-    this.database.prepare(
-      `UPDATE grading_batch_upload_items SET filename = ?, report_path = ?, asset_manifest_json = ?,
-       session_id = NULL, status = 'pending', error_code = NULL, error_message = NULL, updated_at = ?
-       WHERE id = ? AND upload_id = ?`,
-    ).run(filename, reportPath, "[]", now, itemId, uploadId);
+    let selectedAssets: Array<{ path: string; bytes: Uint8Array }>;
     try {
       validateSubmissionAssets(input.assets);
       const markdown = extension === ".md" ? Buffer.from(input.bytes).toString("utf8") : undefined;
-      const selectedAssets = markdown === undefined
+      selectedAssets = markdown === undefined
         ? []
         : selectReferencedAssets(markdown, input.assets);
       if (extension !== ".md" && input.assets.length)
         throw new SubmissionAssetError("SUBMISSION_ASSET_MANIFEST_INVALID", "只有 Markdown 报告可以包含附件", "assetManifest");
-      for (const asset of selectedAssets)
-        await this.filesystem.writeBytes(`${base}/${asset.path}`, asset.bytes);
-      this.database.prepare(
-        "UPDATE grading_batch_upload_items SET asset_manifest_json = ?, updated_at = ? WHERE id = ? AND upload_id = ?",
-      ).run(JSON.stringify(selectedAssets.map(({ path: assetPath }) => assetPath)), this.now(), itemId, uploadId);
     } catch (error: unknown) {
       const safe = safeItemError(error);
+      if (item.status === "ready") throw new GradingBatchUploadError(safe.code, safe.message);
       return this.recordFailure(this.getItemRow(uploadId, itemId), "failed", safe.code, safe.message);
     }
-    return itemFromRow(this.getItemRow(uploadId, itemId));
+
+    // Persist the complete replacement in a sibling directory before touching the ready item.
+    const stagedBase = `${base}.replacement-${randomUUID()}`;
+    const reportPath = `${base}/report${extension}`;
+    const stagedReportPath = `${stagedBase}/report${extension}`;
+    const backupBase = `${base}.previous-${randomUUID()}`;
+    const hadOriginal = await this.filesystem.directoryExists(base);
+    const replacementId = randomUUID();
+    const insertReplacement = this.database.prepare(
+      `INSERT INTO grading_batch_upload_replacements
+       (id, upload_id, item_id, state, staged_base, backup_base, had_original, old_session_id, created_at)
+       VALUES (?, ?, ?, 'prepared', ?, ?, ?, ?, ?)`,
+    );
+    let journalCreated = false;
+    let replacementCommitted = false;
+    try {
+      insertReplacement.run(replacementId, uploadId, itemId, stagedBase, backupBase, hadOriginal ? 1 : 0, item.sessionId ?? null, this.now());
+      journalCreated = true;
+      await this.filesystem.writeBytes(stagedReportPath, input.bytes);
+      for (const asset of selectedAssets)
+        await this.filesystem.writeBytes(`${stagedBase}/${asset.path}`, asset.bytes);
+      if (hadOriginal) await this.filesystem.moveDirectory(base, backupBase);
+      await this.filesystem.moveDirectory(stagedBase, base);
+      this.database.transaction(() => {
+        this.database.prepare(
+          `UPDATE grading_batch_upload_items SET filename = ?, report_path = ?, asset_manifest_json = ?,
+           session_id = NULL, status = 'pending', error_code = NULL, error_message = NULL, updated_at = ?
+           WHERE id = ? AND upload_id = ?`,
+        ).run(filename, reportPath, JSON.stringify(selectedAssets.map(({ path: assetPath }) => assetPath)), this.now(), itemId, uploadId);
+        this.database.prepare(
+          "UPDATE grading_batch_upload_replacements SET state = 'cleanup', had_original = ? WHERE id = ?",
+        ).run(hadOriginal ? 1 : 0, replacementId);
+      }).immediate();
+      replacementCommitted = true;
+      await this.finishReplacementCleanup(this.getReplacement(replacementId));
+      return itemFromRow(this.getItemRow(uploadId, itemId));
+    } catch (error: unknown) {
+      if (replacementCommitted) {
+        // Session or backup cleanup is recoverable from the journal. The item
+        // already points at the new file and must never be rolled back to a
+        // session that may have been tombstoned or partially deleted.
+        return itemFromRow(this.getItemRow(uploadId, itemId));
+      }
+      if (journalCreated) await this.recoverReplacement(this.getReplacement(replacementId)).catch(() => undefined);
+      throw error;
+    }
   }
 
   async patchIdentity(
@@ -242,23 +309,27 @@ export class GradingBatchUploadService {
     itemId: string,
     identity: StudentIdentity,
   ): Promise<GradingBatchUploadItem> {
-    await this.getUpload(uploadId);
-    const studentName = identity.studentName.trim();
-    const studentNumber = identity.studentNumber.trim();
-    if (!studentName || !studentNumber)
-      throw new GradingBatchUploadError("BATCH_UPLOAD_IDENTITY_INVALID", "姓名与学号必须同时填写");
-    this.database.prepare(
-      `UPDATE grading_batch_upload_items SET student_name = ?, student_number = ?, status = 'pending',
-       error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND upload_id = ?`,
-    ).run(studentName, studentNumber, this.now(), itemId, uploadId);
-    return itemFromRow(this.getItemRow(uploadId, itemId));
+    return this.withItemMutation(`${uploadId}:${itemId}`, async () => {
+      const upload = await this.getUpload(uploadId);
+      if (upload.status !== "draft") throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "已提交的上传草稿不能修改");
+      const studentName = identity.studentName.trim();
+      const studentNumber = identity.studentNumber.trim();
+      if (!studentName || !studentNumber)
+        throw new GradingBatchUploadError("BATCH_UPLOAD_IDENTITY_INVALID", "姓名与学号必须同时填写");
+      this.database.prepare(
+        `UPDATE grading_batch_upload_items SET student_name = ?, student_number = ?, status = 'pending',
+         error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND upload_id = ?`,
+      ).run(studentName, studentNumber, this.now(), itemId, uploadId);
+      return itemFromRow(this.getItemRow(uploadId, itemId));
+    });
   }
 
   async processItem(uploadId: string, itemId: string): Promise<GradingBatchUploadItem> {
     const key = `${uploadId}:${itemId}`;
     const existing = this.active.get(key);
     if (existing) return existing;
-    const running = this.processItemUnlocked(uploadId, itemId).finally(() => this.active.delete(key));
+    const running = this.withItemMutation(key, () => this.processItemUnlocked(uploadId, itemId))
+      .finally(() => this.active.delete(key));
     this.active.set(key, running);
     return running;
   }
@@ -268,35 +339,44 @@ export class GradingBatchUploadService {
   }
 
   async retryItem(uploadId: string, itemId: string): Promise<GradingBatchUploadItem> {
-    const item = this.getItem(uploadId, itemId);
-    this.database.prepare(
-      "UPDATE grading_batch_upload_items SET status = 'pending', error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND upload_id = ?",
-    ).run(this.now(), itemId, uploadId);
-    if (!item.sessionId) {
-      // Identity and pre-session failures resume from the persisted report.
-    } else {
-      const session = await this.dependencies.getSession(item.sessionId);
-      if (session.conversionStatus !== "ready") await this.dependencies.retryConversion(item.sessionId);
-      else if (session.submissionTitleStatus === "failed") {
-        try { await this.dependencies.resolveTitle(item.sessionId); }
-        catch (error: unknown) {
-          const safe = safeItemError(error);
-          return this.recordFailure(this.getItemRow(uploadId, itemId), "failed", safe.code, safe.message);
+    return this.withItemMutation(`${uploadId}:${itemId}`, async () => {
+      const upload = await this.getUpload(uploadId);
+      if (upload.status !== "draft") throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "已提交的上传草稿不能修改");
+      const item = this.getItem(uploadId, itemId);
+      this.database.prepare(
+        "UPDATE grading_batch_upload_items SET status = 'pending', error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND upload_id = ?",
+      ).run(this.now(), itemId, uploadId);
+      if (item.sessionId) {
+        const session = await this.dependencies.getSession(item.sessionId);
+        if (session.conversionStatus !== "ready") await this.dependencies.retryConversion(item.sessionId);
+        else if (session.submissionTitleStatus === "failed") {
+          try { await this.dependencies.resolveTitle(item.sessionId); }
+          catch (error: unknown) {
+            const safe = safeItemError(error);
+            return this.recordFailure(this.getItemRow(uploadId, itemId), "failed", safe.code, safe.message);
+          }
         }
       }
-    }
-    return this.processItem(uploadId, itemId);
+      return this.processItemUnlocked(uploadId, itemId);
+    });
   }
 
   async removeItem(uploadId: string, itemId: string): Promise<{ preservedSessionId?: string }> {
-    await this.getUpload(uploadId);
-    const item = this.getItem(uploadId, itemId);
-    this.database.prepare("DELETE FROM grading_batch_upload_items WHERE id = ? AND upload_id = ?").run(itemId, uploadId);
-    await this.removeItemDirectory(uploadId, itemId);
-    return item.sessionId ? { preservedSessionId: item.sessionId } : {};
+    return this.withItemMutation(`${uploadId}:${itemId}`, async () => {
+      const upload = await this.getUpload(uploadId);
+      if (upload.status !== "draft") throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "已提交的上传草稿不能修改");
+      const item = this.getItem(uploadId, itemId);
+      this.database.prepare("DELETE FROM grading_batch_upload_items WHERE id = ? AND upload_id = ?").run(itemId, uploadId);
+      await this.removeItemDirectory(uploadId, itemId);
+      return item.sessionId ? { preservedSessionId: item.sessionId } : {};
+    });
   }
 
   async commitUpload(uploadId: string): Promise<{ id: string }> {
+    return this.withUploadItemsMutation(uploadId, () => this.commitUploadUnlocked(uploadId));
+  }
+
+  private async commitUploadUnlocked(uploadId: string): Promise<{ id: string }> {
     const upload = await this.getUpload(uploadId);
     if (upload.committedBatchId) return this.dependencies.getBatch(upload.committedBatchId);
     if (!upload.items.length || upload.items.some((item) => item.status !== "ready" || !item.sessionId))
@@ -322,17 +402,26 @@ export class GradingBatchUploadService {
   }
 
   async cancelUpload(uploadId: string): Promise<{ preservedSessionIds: string[] }> {
-    const upload = await this.getUpload(uploadId);
-    if (upload.status === "committed")
-      throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "正式批次已创建，不能取消上传草稿");
-    const preservedSessionIds = upload.items.flatMap((item) => item.sessionId ? [item.sessionId] : []);
-    this.database.prepare("DELETE FROM grading_batch_uploads WHERE id = ?").run(uploadId);
-    try { await this.filesystem.removeDirectory(`batch-uploads/${uploadId}`); }
-    catch (error: unknown) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    return { preservedSessionIds };
+    return this.withUploadItemsMutation(uploadId, async () => {
+      const upload = await this.getUpload(uploadId);
+      if (upload.status === "committed")
+        throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "正式批次已创建，不能取消上传草稿");
+      const preservedSessionIds = upload.items.flatMap((item) => item.sessionId ? [item.sessionId] : []);
+      this.database.prepare("DELETE FROM grading_batch_uploads WHERE id = ?").run(uploadId);
+      try { await this.filesystem.removeDirectory(`batch-uploads/${uploadId}`); }
+      catch (error: unknown) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      return { preservedSessionIds };
+    });
   }
 
   async recover(): Promise<void> {
+    const replacements = this.database.prepare(
+      "SELECT * FROM grading_batch_upload_replacements ORDER BY created_at, rowid",
+    ).all() as ReplacementRow[];
+    for (const replacement of replacements) {
+      try { await this.recoverReplacement(replacement); }
+      catch { /* Keep the durable record and retry on the next startup/recovery. */ }
+    }
     const items = this.database.prepare(
       `SELECT i.* FROM grading_batch_upload_items i
        JOIN grading_batch_uploads u ON u.id = i.upload_id
@@ -345,6 +434,7 @@ export class GradingBatchUploadService {
 
   private async processItemUnlocked(uploadId: string, itemId: string): Promise<GradingBatchUploadItem> {
     const upload = await this.getUpload(uploadId);
+    if (upload.status !== "draft") throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "已提交的上传草稿不能处理");
     let row = this.getItemRow(uploadId, itemId);
     if (!row.report_path)
       return this.recordFailure(row, "failed", "BATCH_UPLOAD_FILE_REQUIRED", "请上传或替换报告文件");
@@ -424,6 +514,88 @@ export class GradingBatchUploadService {
     return row;
   }
 
+  private async withUploadItemsMutation<T>(uploadId: string, operation: () => Promise<T>): Promise<T> {
+    const itemIds = (this.database.prepare(
+      "SELECT id FROM grading_batch_upload_items WHERE upload_id = ? ORDER BY id",
+    ).all(uploadId) as Array<{ id: string }>).map(({ id }) => id);
+    const withNextLock = async (index: number): Promise<T> => {
+      const itemId = itemIds[index];
+      if (!itemId) return operation();
+      return this.withItemMutation(`${uploadId}:${itemId}`, () => withNextLock(index + 1));
+    };
+    return withNextLock(0);
+  }
+
+  private async withItemMutation<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.itemOperations.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => gate);
+    this.itemOperations.set(key, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.itemOperations.get(key) === tail) this.itemOperations.delete(key);
+    }
+  }
+
+  private getReplacement(id: string): ReplacementRow {
+    const row = this.database.prepare(
+      "SELECT * FROM grading_batch_upload_replacements WHERE id = ?",
+    ).get(id) as ReplacementRow | undefined;
+    if (!row) throw new GradingBatchUploadError("BATCH_UPLOAD_REPLACEMENT_NOT_FOUND", "上传替换清理记录不存在");
+    return row;
+  }
+
+  private async finishReplacementCleanup(replacement: ReplacementRow): Promise<void> {
+    await this.recoverReplacement(replacement);
+  }
+
+  private async recoverReplacement(replacement: ReplacementRow): Promise<void> {
+    if (![replacement.id, replacement.upload_id, replacement.item_id].every(isUuid))
+      throw new GradingBatchUploadError("BATCH_UPLOAD_REPLACEMENT_INVALID", "上传替换清理记录标识无效");
+    const itemBase = this.itemBase(replacement.upload_id, replacement.item_id);
+    const stagedPrefix = `${itemBase}.replacement-`;
+    const backupPrefix = `${itemBase}.previous-`;
+    if (!replacement.staged_base.startsWith(stagedPrefix) || !isUuid(replacement.staged_base.slice(stagedPrefix.length)) ||
+      !replacement.backup_base.startsWith(backupPrefix) || !isUuid(replacement.backup_base.slice(backupPrefix.length)))
+      throw new GradingBatchUploadError("BATCH_UPLOAD_REPLACEMENT_INVALID", "上传替换清理记录路径无效");
+
+    const oldBase = this.assertReplacementPath(itemBase);
+    const stagedBase = this.assertReplacementPath(replacement.staged_base);
+    const backupBase = this.assertReplacementPath(replacement.backup_base);
+    if (replacement.state === "prepared") {
+      if (replacement.had_original) {
+        if (await this.filesystem.directoryExists(backupBase)) {
+          await this.removeDirectory(oldBase);
+          await this.filesystem.moveDirectory(backupBase, oldBase);
+        }
+      } else {
+        await this.removeDirectory(oldBase);
+      }
+      await this.removeDirectory(stagedBase);
+      this.database.prepare("DELETE FROM grading_batch_upload_replacements WHERE id = ? AND state = 'prepared'").run(replacement.id);
+      return;
+    }
+
+    if (replacement.old_session_id) {
+      try { await this.dependencies.deleteSession(replacement.old_session_id); }
+      catch { return; }
+      this.database.prepare(
+        "UPDATE grading_batch_upload_replacements SET old_session_id = NULL WHERE id = ?",
+      ).run(replacement.id);
+    }
+    try {
+      if (replacement.had_original) await this.removeDirectory(backupBase);
+      await this.removeDirectory(stagedBase);
+    } catch {
+      return;
+    }
+    this.database.prepare("DELETE FROM grading_batch_upload_replacements WHERE id = ? AND state = 'cleanup'").run(replacement.id);
+  }
+
   private updateStatus(row: ItemRow, status: GradingBatchUploadItemStatus): void {
     this.database.prepare(
       "UPDATE grading_batch_upload_items SET status = ?, error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ?",
@@ -443,7 +615,17 @@ export class GradingBatchUploadService {
   }
 
   private itemBase(uploadId: string, itemId: string): string {
+    if (!isUuid(uploadId) || !isUuid(itemId))
+      throw new GradingBatchUploadError("BATCH_UPLOAD_ITEM_INVALID", "上传项标识无效");
     return `batch-uploads/${uploadId}/${itemId}`;
+  }
+
+  private assertReplacementPath(relativePath: string): string {
+    const resolved = path.resolve(this.filesystem.root, ...relativePath.split("/"));
+    const relative = path.relative(this.filesystem.root, resolved);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      throw new GradingBatchUploadError("BATCH_UPLOAD_REPLACEMENT_INVALID", "上传替换清理路径越界");
+    return relativePath;
   }
 
   private async removeItemDirectory(uploadId: string, itemId: string): Promise<void> {
@@ -481,7 +663,34 @@ export class GradingBatchUploadService {
       );
       CREATE INDEX IF NOT EXISTS grading_batch_upload_items_status_idx
         ON grading_batch_upload_items(upload_id, status, created_at);
+      CREATE TABLE IF NOT EXISTS grading_batch_upload_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
     `);
+    const migration = this.database.prepare(
+      "SELECT 1 FROM grading_batch_upload_schema_migrations WHERE version = 1",
+    ).get();
+    if (!migration) this.database.transaction(() => {
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS grading_batch_upload_replacements (
+          id TEXT PRIMARY KEY,
+          upload_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('prepared', 'cleanup')),
+          staged_base TEXT NOT NULL,
+          backup_base TEXT NOT NULL,
+          had_original INTEGER NOT NULL CHECK (had_original IN (0, 1)),
+          old_session_id TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS grading_batch_upload_replacements_order_idx
+          ON grading_batch_upload_replacements(created_at, id);
+      `);
+      this.database.prepare(
+        "INSERT INTO grading_batch_upload_schema_migrations(version, applied_at) VALUES (1, ?)",
+      ).run(this.now());
+    }).immediate();
   }
 }
 
@@ -493,6 +702,10 @@ function validateFilename(filename: string): string {
   if (!reportExtensions.has(extension))
     throw new GradingBatchUploadError("UNSUPPORTED_SUBMISSION_TYPE", "报告文件类型不受支持");
   return normalized;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function selectReferencedAssets(

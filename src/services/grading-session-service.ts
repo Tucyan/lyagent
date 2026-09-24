@@ -534,7 +534,15 @@ export class GradingSessionService {
   }
 
   private async deleteSessionUnlocked(sessionId: string): Promise<void> {
-    const session = this.getSessionIncludingDeletion(sessionId);
+    let session: GradingSession;
+    try { session = this.getSessionIncludingDeletion(sessionId); }
+    catch (error: unknown) {
+      // Replacement cleanup is journaled separately from this service's file
+      // deletion. If the prior attempt fully removed the row but the caller
+      // crashed before clearing its journal, retrying deletion is complete.
+      if (error instanceof GradingSessionNotFoundError) return;
+      throw error;
+    }
     const claimDeletion = this.database.transaction(() => {
       const hasBatchJobs = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'grading_batch_jobs'").get();
       if (hasBatchJobs && this.database.prepare("SELECT 1 FROM grading_batch_jobs WHERE session_id = ? LIMIT 1").get(sessionId))
