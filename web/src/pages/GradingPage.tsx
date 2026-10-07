@@ -17,6 +17,8 @@ import {
   clampGradingPreviewPercent,
   conversionPresentation,
   gradingSessionStatusLabel,
+  gradingSessionWorkflowSummary,
+  gradingStatusLabel,
   initialLiveMessage,
   normalizeGradingExportOptions,
   parseGradingExportOptions,
@@ -653,7 +655,7 @@ export function GradingPage() {
                     {session.studentName} · {session.studentNumber}
                   </small>
                   <small>
-                    {session.conversionStatus} · {session.gradingStatus}
+                    {gradingSessionWorkflowSummary(session)}
                   </small>
                 </a>
                 <div className="grading-session-actions">
@@ -726,7 +728,7 @@ export function GradingPage() {
                     <h2>与批改 Agent 对话</h2>
                     <p>
                       评分标准版本 {detail.rubricVersion} ·{" "}
-                      {detail.gradingStatus}
+                      {gradingStatusLabel(detail.gradingStatus)}
                     </p>
                     <p>
                       作业名称：

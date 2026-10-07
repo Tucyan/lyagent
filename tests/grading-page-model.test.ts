@@ -5,6 +5,8 @@ import {
   clampGradingPreviewPercent,
   conversionPresentation,
   gradingSessionStatusLabel,
+  gradingSessionWorkflowSummary,
+  gradingStatusLabel,
   initialLiveMessage,
   normalizeGradingExportOptions,
   parseGradingExportOptions,
@@ -21,6 +23,13 @@ describe("grading workbench presentation", () => {
     const result = applyGradingEvent(initialLiveMessage("run"), "error", { code: "GRADING_RUN_INTERRUPTED", message: "SECRET C:\\private\\file" });
     expect(result.content).toContain("核对现有草稿");
     expect(result.content).not.toMatch(/SECRET|private|GRADING_RUN_INTERRUPTED/);
+  });
+  it("translates conversion and grading status into friendly workflow labels", () => {
+    expect(gradingSessionWorkflowSummary({ conversionStatus: "ready", gradingStatus: "idle" })).toBe("转换完成 · 待批改");
+    expect(gradingSessionWorkflowSummary({ conversionStatus: "waiting_for_converter", gradingStatus: "running" })).toBe("等待转换 · 批改中");
+    expect(gradingSessionWorkflowSummary({ conversionStatus: "ready", gradingStatus: "needs_review" })).toBe("转换完成 · 待复核");
+    expect(gradingStatusLabel("needs_review")).toBe("待复核");
+    expect(gradingStatusLabel("confirmed")).toBe("成绩已确认");
   });
   it("offers manual retry after automatic conversion retries are exhausted without polling", () => {
     const input = { conversionStatus: "conversion_failed", conversionError: { code: "CONVERTER_UNAVAILABLE", message: "Automatic retries exhausted", retryable: true } };

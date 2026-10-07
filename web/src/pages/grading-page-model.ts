@@ -83,6 +83,7 @@ export function conversionPresentation(
     return {
       title: "等待转换服务",
       message:
+        (input.conversionError?.code ? userErrorMessage(input.conversionError.code) : undefined) ??
         input.conversionError?.message ??
         "转换服务暂时不可用，原始作业已安全保存。",
       tone: "warning",
@@ -93,6 +94,7 @@ export function conversionPresentation(
     return {
       title: input.conversionError?.retryable ? "转换已停止" : "作业文件无法转换",
       message:
+        (input.conversionError?.code ? userErrorMessage(input.conversionError.code) : undefined) ??
         input.conversionError?.message ??
         "请检查文件是否损坏、加密或不受支持。",
       tone: "danger",
@@ -103,6 +105,7 @@ export function conversionPresentation(
     return {
       title: "转换结果已被拒绝",
       message:
+        (input.conversionError?.code ? userErrorMessage(input.conversionError.code) : undefined) ??
         input.conversionError?.message ?? "转换结果未通过安全或格式校验。",
       tone: "danger",
       canRetry: false,
@@ -118,6 +121,41 @@ export function conversionPresentation(
   };
 }
 
+
+export function gradingStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    not_started: "未开始批改",
+    queued: "排队批改",
+    running: "批改中",
+    waiting_for_teacher: "待教师回答",
+    draft_ready: "已有草稿",
+    needs_review: "待复核",
+    confirmed: "成绩已确认",
+    failed: "批改未完成",
+    cancelled: "批改已停止",
+    idle: "待批改",
+    completed: "已完成",
+    draft: "已有草稿",
+  };
+  return map[status] ?? status;
+}
+
+export function gradingSessionWorkflowSummary(input: {
+  conversionStatus: string;
+  gradingStatus: string;
+}): string {
+  const convMap: Record<string, string> = {
+    ready: "转换完成",
+    queued: "排队转换",
+    converting: "正在转换",
+    waiting_for_converter: "等待转换",
+    conversion_failed: "转换失败",
+    result_rejected: "转换被拒",
+  };
+  const cText = convMap[input.conversionStatus] ?? input.conversionStatus;
+  const gText = gradingStatusLabel(input.gradingStatus);
+  return `${cText} · ${gText}`;
+}
 export function shouldPollConversion(
   input: ConversionPresentationInput,
 ): boolean {

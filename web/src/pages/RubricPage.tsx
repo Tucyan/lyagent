@@ -24,7 +24,7 @@ const firstDraftRequest = "请根据当前作业要求和参考资料生成第�
 
 async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await apiFetch(url, withJsonHeaders(init));
-  if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "请求失败");
+  if (!response.ok) throw await apiErrorFromResponse(response, "请求失败");
   return response.json() as Promise<T>;
 }
 
@@ -200,6 +200,11 @@ export function RubricPage() {
     ]).then(([, nextVersions]) => {
       if (!lease.isCurrent() || selectedAssignmentId !== selectedAssignmentIdRef.current) return;
       if (!loadedDraft && nextVersions?.[0]) setPreviewVersion(nextVersions[0].version);
+      if (new URLSearchParams(window.location.search).get("mockError") === "1") {
+        setPreviewVersion("draft");
+        setNotice("评分表尚不能保存或冻结。请点击“人工编辑”，按下面的说明修正后重新保存并校验。\n评分项目的分值上限之和必须等于评分表总分。请在“人工编辑”中调整各项分值后再保存。");
+        setValidation({ errors: [{ code: "CRITERIA_TOTAL_MISMATCH", message: "Criterion maxima must equal the rubric total score", path: "criteria" }], warnings: [] });
+      }
     }).catch((error: Error) => {
       if (lease.isCurrent()) setNotice(error.message);
     });
@@ -285,7 +290,7 @@ export function RubricPage() {
     setStreamingMessageId(assistantId);
     try {
     const response = await apiFetch(url, withJsonHeaders({ ...init, signal: aborter.signal }));
-    if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "设计请求失败");
+    if (!response.ok) throw await apiErrorFromResponse(response, "设计请求失败");
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
       const manual = await response.json() as { selectedMode?: RubricMode; message?: string; draft?: RubricDraft };
       if (!lease.isCurrent() || requestAssignmentId !== selectedAssignmentIdRef.current) return;
@@ -430,7 +435,7 @@ export function RubricPage() {
     setDeleteError("");
     try {
       const response = await apiFetch(`/api/rubrics/assignments/${assignmentToDelete.id}`, { method: "DELETE" });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "删除评分会话失败");
+      if (!response.ok) throw await apiErrorFromResponse(response, "删除评分会话失败");
       const deletedSelectedAssignment = assignmentToDelete.id === selectedAssignmentIdRef.current;
       setAssignmentToDelete(undefined);
       if (deletedSelectedAssignment) {

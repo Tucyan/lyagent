@@ -27,7 +27,7 @@ type DashboardSnapshot = {
 
 async function api<T>(url: string): Promise<T> {
   const response = await apiFetch(url, withJsonHeaders());
-  if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "请求失败");
+  if (!response.ok) throw await apiErrorFromResponse(response, "请求失败");
   return response.json() as Promise<T>;
 }
 

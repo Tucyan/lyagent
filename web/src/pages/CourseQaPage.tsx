@@ -151,7 +151,7 @@ export function CourseQaPage() {
     if (!courseId || !sessionToDelete) return;
     try {
       const response = await apiFetch(`/api/courses/${courseId}/qa/sessions/${sessionToDelete.id}`, { method: "DELETE" });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "删除会话失败");
+      if (!response.ok) throw await apiErrorFromResponse(response, "删除会话失败");
       if (sessionId === sessionToDelete.id) {
         navigateWithinApp(`/qa?course=${encodeURIComponent(courseId)}`, true);
       }
@@ -183,7 +183,7 @@ export function CourseQaPage() {
       const aborter = new AbortController();
       controller.current = aborter;
       const response = await apiFetch(`/api/courses/${requestCourseId}/qa/sessions/${requestSessionId}/messages/stream`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, allowWebSearch }), signal: aborter.signal });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "答疑请求失败");
+      if (!response.ok) throw await apiErrorFromResponse(response, "答疑请求失败");
       agentRunId.current = response.headers.get("x-agent-run-id") ?? undefined;
       const result = await consumeSse(response, (_event, raw) => {
         if (!lease.isCurrent() || requestCourseId !== courseIdRef.current || requestSessionId !== sessionIdRef.current) return;
