@@ -8,7 +8,7 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { consumeSse } from "../lib/consume-sse";
-import { ApiError, apiErrorFromResponse, withJsonHeaders } from "../lib/api";
+import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import type { RubricValue } from "../components/RubricPreviewEditor";
 import {
@@ -99,7 +99,7 @@ type FrozenRubric = {
 };
 
 async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, withJsonHeaders(init));
+  const response = await apiFetch(url, withJsonHeaders(init));
   if (!response.ok) throw await apiErrorFromResponse(response);
   return response.json() as Promise<T>;
 }
@@ -317,7 +317,7 @@ export function GradingPage() {
     let after = 0;
     let terminal = false;
     while (!terminal && lease.isCurrent()) {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/grading/sessions/${sessionId}/runs/${runId}/events?after=${after}&follow=true`,
       );
       if (!response.ok) throw new Error("无法连接批改事件流");
@@ -498,7 +498,7 @@ export function GradingPage() {
   const deleteSession = async () => {
     if (!sessionToDelete) return;
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/grading/sessions/${sessionToDelete.id}`,
         { method: "DELETE" },
       );
@@ -534,7 +534,7 @@ export function GradingPage() {
             assignmentId: selectedRubric.assignmentId,
             rubricVersion: selectedRubric.version,
           };
-    const response = await fetch(
+    const response = await apiFetch(
       "/api/grading/exports/csv",
       withJsonHeaders({
         method: "POST",
@@ -734,7 +734,7 @@ export function GradingPage() {
                     </p>
                     {titlePresentation?.error && (
                       <p className="modal-error">
-                        [{titlePresentation.error.code}] {titlePresentation.error.message}
+                        {userErrorMessage(titlePresentation.error.code)}
                       </p>
                     )}
                   </div>
@@ -1196,7 +1196,7 @@ function ResultPreview({
         <section className="review-alert">
           <strong>需要教师复核并逐项确认</strong>
           {result.review.reasons.map((reason) => (
-            <label key={reason}>
+            <label key={reviewReasonLabel(reason)}>
               <input
                 type="checkbox"
                 checked={acknowledgedReasons.includes(reason)}
@@ -1208,7 +1208,7 @@ function ResultPreview({
                   )
                 }
               />
-              {reason}
+              {reviewReasonLabel(reason)}
             </label>
           ))}
         </section>
@@ -1486,7 +1486,7 @@ function NewSessionPanel({
       form.set("assetManifest", JSON.stringify(assetManifest));
       if (!form.has("autoStartAfterConversion"))
         form.set("autoStartAfterConversion", "false");
-      const response = await fetch("/api/grading/sessions", {
+      const response = await apiFetch("/api/grading/sessions", {
         method: "POST",
         body: form,
       });

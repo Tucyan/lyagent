@@ -1,3 +1,5 @@
+import { userErrorMessage } from "../../../src/schemas/user-feedback.js";
+
 export interface GradingToolStep {
   id: string;
   name: string;
@@ -49,7 +51,7 @@ export function buildAssetManifest(
       segments[0] !== "assets" ||
       segments.some((segment) => !segment || segment === "." || segment === "..")
     ) throw new Error("请选择名为 assets 的附件目录");
-    if (seen.has(assetPath)) throw new Error("duplicate asset path");
+    if (seen.has(assetPath)) throw new Error("附件存在重复路径，请保留每个附件的一份文件后重新选择目录。");
     seen.add(assetPath);
   }
   return paths;
@@ -308,7 +310,7 @@ export function applyGradingEvent(
   if (type === "error" || type === "cancelled")
     return {
       ...message,
-      content: String(data.message ?? "运行已停止。"),
+      content: type === "cancelled" ? "运行已停止。请核对已保存的草稿，再决定是否重新批改。" : userErrorMessage(typeof data.code === "string" ? data.code : "GRADING_RUN_FAILED"),
       complete: true,
       collapsed: true,
     };

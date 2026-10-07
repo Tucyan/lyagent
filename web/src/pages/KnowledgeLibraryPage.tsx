@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { withJsonHeaders } from "../lib/api";
+import { withJsonHeaders, apiFetch, apiErrorFromResponse, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
 import { LatestRequestGate } from "../lib/async-state";
 import { numberReleases } from "./knowledge-library-model";
@@ -22,12 +22,9 @@ type NumberedRelease = Release & { versionNumber: number; versionLabel: string }
 type ViewTab = "current" | "draft" | "history";
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, withJsonHeaders(init));
+  const response = await apiFetch(url, withJsonHeaders(init));
+  if (!response.ok) throw await apiErrorFromResponse(response);
   const body = await response.text();
-  if (!response.ok) {
-    const parsed = body ? JSON.parse(body) as { message?: string } : undefined;
-    throw new Error(parsed?.message ?? response.statusText ?? "请求失败");
-  }
   return (body ? JSON.parse(body) : null) as T;
 }
 

@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatSidebar, type QaCourse, type QaSessionSummary } from "../components/ChatSidebar";
 import { ToolActivity, type ToolStep } from "../components/ToolActivity";
-import { ApiError, apiErrorFromResponse, withJsonHeaders } from "../lib/api";
+import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
 import { LatestRequestGate } from "../lib/async-state";
 import { consumeSse } from "../lib/consume-sse";
@@ -15,9 +15,9 @@ type Citation = { type: "knowledge"; path: string; startLine: number; endLine: n
 type QaMessage = { id: string; role: "user" | "assistant"; content: string; citations?: Citation[]; insufficient?: boolean; steps?: ToolStep[]; process?: string; stopped?: boolean };
 type Session = { id: string; releaseId: string; messages: Array<{ role: "user" | "assistant"; content: string; citations?: Citation[]; insufficient?: boolean }> };
 type ActiveKnowledge = { releaseId: string; documents: Array<{ path: string; title: string }> };
-type StreamEvent = { type: string; id?: string; name?: string; label?: string; summary?: string; status?: "completed" | "failed"; delta?: string; answer?: string; citations?: Citation[]; insufficient?: boolean; message?: string };
+type StreamEvent = { code?: string; type: string; id?: string; name?: string; label?: string; summary?: string; status?: "completed" | "failed"; delta?: string; answer?: string; citations?: Citation[]; insufficient?: boolean; message?: string };
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, withJsonHeaders(init));
+  const response = await apiFetch(url, withJsonHeaders(init));
   if (!response.ok) throw await apiErrorFromResponse(response);
   return response.json() as Promise<T>;
 }
@@ -150,7 +150,7 @@ export function CourseQaPage() {
   const deleteSession = async () => {
     if (!courseId || !sessionToDelete) return;
     try {
-      const response = await fetch(`/api/courses/${courseId}/qa/sessions/${sessionToDelete.id}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/courses/${courseId}/qa/sessions/${sessionToDelete.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "删除会话失败");
       if (sessionId === sessionToDelete.id) {
         navigateWithinApp(`/qa?course=${encodeURIComponent(courseId)}`, true);
@@ -182,14 +182,14 @@ export function CourseQaPage() {
       setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", content: question }, { id: assistantId, role: "assistant", content: "", steps: [] }]);
       const aborter = new AbortController();
       controller.current = aborter;
-      const response = await fetch(`/api/courses/${requestCourseId}/qa/sessions/${requestSessionId}/messages/stream`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, allowWebSearch }), signal: aborter.signal });
+      const response = await apiFetch(`/api/courses/${requestCourseId}/qa/sessions/${requestSessionId}/messages/stream`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, allowWebSearch }), signal: aborter.signal });
       if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "答疑请求失败");
       agentRunId.current = response.headers.get("x-agent-run-id") ?? undefined;
       const result = await consumeSse(response, (_event, raw) => {
         if (!lease.isCurrent() || requestCourseId !== courseIdRef.current || requestSessionId !== sessionIdRef.current) return;
         const event = raw as StreamEvent;
         if (event.type === "final") receivedFinal = true;
-        if (event.type === "error") streamFailure = event.message ?? "答疑未能完成";
+        if (event.type === "error") streamFailure = userErrorMessage(event.code ?? "QA_FAILED");
         setMessages((items) => items.map((message) => {
           if (message.id !== assistantId) return message;
           if (event.type === "tool_start" && event.id && event.label && event.summary) return { ...message, steps: [...(message.steps ?? []), { id: event.id, label: event.label, summary: event.summary, status: "running" }] };
@@ -220,7 +220,7 @@ export function CourseQaPage() {
   const stopCurrentRun = async () => {
     const runId = agentRunId.current;
     try {
-      if (runId) await fetch(`/api/agent-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+      if (runId) await apiFetch(`/api/agent-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
     } finally {
       controller.current?.abort();
     }

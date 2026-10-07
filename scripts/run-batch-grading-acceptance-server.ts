@@ -53,6 +53,7 @@ const app = await createServer({
   submissionTitleAgentFactory: titleAgent,
   modelStatus: { provider: "deterministic-acceptance", model: "m5-fake", configured: true },
 });
+
 await registerWebAssets(app, path.resolve("dist/web"));
 const courses = (await app.inject({ method: "GET", url: "/api/courses" })).json<Array<{ id: string }>>();
 if (courses.length === 0) {

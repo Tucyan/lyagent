@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { withJsonHeaders } from "../lib/api";
+import { withJsonHeaders, apiFetch, apiErrorFromResponse, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { converterStatusLabel, dashboardQuickActions } from "./dashboard-model";
 
 type DashboardCourse = {
@@ -26,7 +26,7 @@ type DashboardSnapshot = {
 };
 
 async function api<T>(url: string): Promise<T> {
-  const response = await fetch(url, withJsonHeaders());
+  const response = await apiFetch(url, withJsonHeaders());
   if (!response.ok) throw new Error((await response.json().catch(() => ({ message: response.statusText }))).message ?? "请求失败");
   return response.json() as Promise<T>;
 }

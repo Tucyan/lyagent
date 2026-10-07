@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { apiFetch } from "../lib/api";
 import {
   buildModelSettingsPayload,
   modelConfigurationFailureMessage,
@@ -19,20 +20,20 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
   const [converter, setConverter] = useState<{ provider: "docling"; status: string; device: "auto" | "cpu" }>();
 
   useEffect(() => {
-    void fetch("/api/system/models", { cache: "no-store" }).then(async (response) => {
+    void apiFetch("/api/system/models", { cache: "no-store" }).then(async (response) => {
       if (!response.ok) throw new Error();
       setCsrfToken(response.headers.get("x-csrf-token") ?? "");
       setForm(modelSettingsStateFromStatus(await response.json() as ModelSettingsStatus));
     }).catch(() => setError("无法读取模型设置，请确认本地服务正在运行。"));
   }, []);
-  useEffect(() => { void fetch("/api/system/runtime", { cache: "no-store" }).then((response) => response.ok ? response.json() : undefined).then((value: { converter?: { provider: "docling"; status: string; device: "auto" | "cpu" } } | undefined) => setConverter(value?.converter)).catch(() => undefined); }, []);
+  useEffect(() => { void apiFetch("/api/system/runtime", { cache: "no-store" }).then((response) => response.ok ? response.json() : undefined).then((value: { converter?: { provider: "docling"; status: string; device: "auto" | "cpu" } } | undefined) => setConverter(value?.converter)).catch(() => undefined); }, []);
 
   const submit = async (action: "test" | "save") => {
     if (!form || !csrfToken) return;
     setBusy(action); setError(""); setNotice("");
     try {
       const payload = buildModelSettingsPayload(form);
-      const response = await fetch(action === "test" ? "/api/system/models/test" : "/api/system/models", modelSettingsRequest(action === "test" ? "POST" : "PUT", csrfToken, payload));
+      const response = await apiFetch(action === "test" ? "/api/system/models/test" : "/api/system/models", modelSettingsRequest(action === "test" ? "POST" : "PUT", csrfToken, payload));
       if (!response.ok) throw Object.assign(new Error("model-configuration-failed"), { reason: await modelConfigurationFailureReason(response) });
       setNotice(action === "test" ? "连接测试成功。" : "设置已安全保存。");
       if (action === "save") {
@@ -41,7 +42,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
         if (saved.restartScheduled) {
           setNotice("设置已安全保存，Course Agent 正在重启。");
           const ready = await waitForRestartHealth({
-            health: async () => { const health = await fetch("/api/health", { cache: "no-store" }); const state = await health.json() as { ok?: boolean; instanceId?: string }; return health.ok && state.ok === true && Boolean(state.instanceId) && state.instanceId !== saved.instanceId; },
+            health: async () => { const health = await apiFetch("/api/health", { cache: "no-store" }); const state = await health.json() as { ok?: boolean; instanceId?: string }; return health.ok && state.ok === true && Boolean(state.instanceId) && state.instanceId !== saved.instanceId; },
             sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
           });
           if (!ready) throw new Error("restart-timeout");

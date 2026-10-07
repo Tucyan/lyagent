@@ -17,6 +17,11 @@ import {
 } from "../web/src/pages/grading-page-model.js";
 
 describe("grading workbench presentation", () => {
+  it("does not show raw run errors and tells the teacher how to recover", () => {
+    const result = applyGradingEvent(initialLiveMessage("run"), "error", { code: "GRADING_RUN_INTERRUPTED", message: "SECRET C:\\private\\file" });
+    expect(result.content).toContain("核对现有草稿");
+    expect(result.content).not.toMatch(/SECRET|private|GRADING_RUN_INTERRUPTED/);
+  });
   it("offers manual retry after automatic conversion retries are exhausted without polling", () => {
     const input = { conversionStatus: "conversion_failed", conversionError: { code: "CONVERTER_UNAVAILABLE", message: "Automatic retries exhausted", retryable: true } };
     expect(conversionPresentation(input)).toMatchObject({ title: "转换已停止", canRetry: true, canReupload: true });
@@ -34,7 +39,7 @@ describe("grading workbench presentation", () => {
     expect(() => buildAssetManifest([
       { name: "chart.png", webkitRelativePath: "assets/chart.png" },
       { name: "chart.png", webkitRelativePath: "assets/chart.png" },
-    ])).toThrow(/duplicate/i);
+    ])).toThrow(/重复路径/);
   });
 
   it("clamps the resizable preview pane", () => {

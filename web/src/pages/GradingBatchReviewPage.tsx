@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { apiErrorFromResponse, withJsonHeaders } from "../lib/api";
+import { apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import { DecisionCards, DecisionEditor } from "./GradingPage";
@@ -58,7 +58,7 @@ type SessionDetail = {
 };
 
 async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, withJsonHeaders(init));
+  const response = await apiFetch(url, withJsonHeaders(init));
   if (!response.ok) throw await apiErrorFromResponse(response);
   return response.json() as Promise<T>;
 }
@@ -283,7 +283,7 @@ export function GradingBatchReviewPage() {
             <div className="batch-review-resizer" role="separator" aria-label="调整报告与评分结果宽度" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(reportPercent)} tabIndex={0} onPointerDown={startResize} onPointerMove={resize} onKeyDown={(event) => { if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); setReportPercent((value) => clampBatchReviewReportPercent(value + (event.key === "ArrowLeft" ? -2 : 2))); } }} />
             <section className="batch-review-result"><header><div><h3>评分结果</h3>{result && <strong>{result.result.score.earned}/{result.result.score.possible}</strong>}</div>{result && <span>整体置信度 {Math.round(result.result.confidence.overall * 100)}%</span>}</header>
               {!result ? <p>尚无评分结果。</p> : <>
-                {result.result.review.requiresReview && <section className="review-alert"><strong>请确认全部复核原因</strong>{reasons.map((reason) => <label key={reason}><input type="checkbox" checked={acknowledgedReasons.includes(reason)} onChange={(event) => setAcknowledgedReasons(event.target.checked ? [...acknowledgedReasons, reason] : acknowledgedReasons.filter((item) => item !== reason))} />{reason}</label>)}</section>}
+                {result.result.review.requiresReview && <section className="review-alert"><strong>请确认全部复核原因</strong>{reasons.map((reason) => <label key={reviewReasonLabel(reason)}><input type="checkbox" checked={acknowledgedReasons.includes(reason)} onChange={(event) => setAcknowledgedReasons(event.target.checked ? [...acknowledgedReasons, reason] : acknowledgedReasons.filter((item) => item !== reason))} />{reviewReasonLabel(reason)}</label>)}</section>}
                 {editing && currentDetail?.draft ? <DecisionEditor decisions={edited} onChange={setEdited} /> : <DecisionCards decisions={result.result.decisions} sessionId={currentDetail?.id ?? selectedJob.sessionId} />}
                 {editing && <section className="batch-review-edit-actions"><label>修改备注<textarea value={editNote} onChange={(event) => setEditNote(event.target.value)} /></label><div><button type="button" onClick={() => setEditing(false)}>取消修改</button><button type="button" disabled={busy || !editNote.trim()} onClick={() => void saveEdit()}>{busyAction === "save" ? "保存中…" : "保存修改"}</button></div></section>}
                 {!editing && currentDetail?.draft && <button type="button" onClick={() => setEditing(true)}>修改评分结果</button>}
