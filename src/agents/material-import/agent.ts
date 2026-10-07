@@ -1,8 +1,10 @@
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type Model, type Models } from "@earendil-works/pi-ai";
+import { AgentExecutionBudget, type AgentExecutionLimits } from "../../core/agent-execution-budget.js";
 import type { KnowledgePlan, SourceSection } from "../../services/material-service.js";
 
 export interface PiMaterialPlannerOptions {
+  executionLimits?: Partial<AgentExecutionLimits>;
   models: Models;
   model: Model<any>;
   getApiKey?: () => string | undefined;
@@ -14,6 +16,7 @@ export interface PiMaterialPlannerOptions {
  */
 export function createPiMaterialPlanner(options: PiMaterialPlannerOptions): (sections: SourceSection[]) => Promise<KnowledgePlan> {
   return async (sections) => {
+    const budget = new AgentExecutionBudget(options.executionLimits);
     let submittedPlan: KnowledgePlan | undefined;
     const expectedSectionIds = new Set(sections.map((section) => section.id));
     let submissionAttempts = 0;
@@ -62,7 +65,7 @@ export function createPiMaterialPlanner(options: PiMaterialPlannerOptions): (sec
       toolExecution: "sequential",
       beforeToolCall: async ({ toolCall }) => toolCall.name === "submit_knowledge_plan" ? undefined : { block: true, reason: "Tool is not allowed" },
     });
-    await agent.prompt(renderSourceInventory(sections));
+    await budget.run(agent, () => agent.prompt(renderSourceInventory(sections)));
     if (!submittedPlan) throw new Error("Model did not submit a knowledge plan");
     return submittedPlan;
   };

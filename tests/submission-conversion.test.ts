@@ -93,6 +93,55 @@ function publicFailure(retryable: boolean): PublicFailureInfo {
 }
 
 describe("SubmissionConversionService", () => {
+  it("allows deleting an exhausted conversion without retaining its session files", async () => {
+    const { sessions, session } = await setup();
+    const conversion = new SubmissionConversionService(sessions, {
+      health: vi.fn(), submit: vi.fn(async () => { throw new ConversionUnavailableError(); }), status: vi.fn(), result: vi.fn(),
+    }, { maxAttempts: 3, sleep: async () => undefined });
+    try {
+      await conversion.process(session.id);
+      await expect(sessions.deleteSession(session.id)).resolves.toBeUndefined();
+      await expect(sessions.getSession(session.id)).rejects.toThrow(/not found/i);
+      expect(await sessions.listPendingConversions()).toEqual([]);
+    } finally { sessions.close(); }
+  });
+
+  it("manually retries an exhausted conversion using the preserved original", async () => {
+    const { sessions, session } = await setup();
+    const submit = vi.fn(async (_original: { filename: string; bytes: Uint8Array }) => { throw new ConversionUnavailableError(); });
+    const conversion = new SubmissionConversionService(sessions, {
+      health: vi.fn(), submit, status: vi.fn(), result: vi.fn(),
+    }, { maxAttempts: 1, sleep: async () => undefined });
+    try {
+      await conversion.process(session.id);
+      expect((await sessions.getSession(session.id)).conversionStatus).toBe("conversion_failed");
+      await conversion.process(session.id);
+      expect(submit).toHaveBeenCalledTimes(1);
+      await sessions.retryConversion(session.id);
+      const recovered = new SubmissionConversionService(sessions, {
+        health: vi.fn(), submit: async (original) => {
+          expect(original).toEqual(submit.mock.calls[0]![0]);
+          return { taskId: "recovered" };
+        }, status: async () => ({ status: "completed" }), result: async () => resultZip(),
+      });
+      await recovered.process(session.id);
+      expect(await sessions.getSession(session.id)).toMatchObject({ conversionStatus: "ready", conversionAttemptCount: 1 });
+    } finally { sessions.close(); }
+  });
+
+  it("recovers a legacy exhausted waiting session into a deletable failed state", async () => {
+    const { sessions, session } = await setup();
+    try {
+      await sessions.beginConversionAttempt(session.id);
+      await sessions.recordConversionFailure(session.id, { status: "waiting_for_converter", code: "CONVERTER_UNAVAILABLE", message: "Converter unavailable", retryable: true });
+      const submit = vi.fn();
+      await new SubmissionConversionService(sessions, { health: vi.fn(), submit, status: vi.fn(), result: vi.fn() }, { maxAttempts: 1 }).resumePending();
+      expect(submit).not.toHaveBeenCalled();
+      expect(await sessions.getSession(session.id)).toMatchObject({ conversionStatus: "conversion_failed", conversionError: { retryable: true } });
+      await expect(sessions.deleteSession(session.id)).resolves.toBeUndefined();
+    } finally { sessions.close(); }
+  });
+
   it("converts a queued submission and auto-queues grading only when configured", async () => {
     const { root, sessions, session } = await setup(true);
     const client: DocumentConversionClient = {
@@ -205,7 +254,7 @@ describe("SubmissionConversionService", () => {
     expect(client.submit).toHaveBeenCalledTimes(2);
     const saved = await sessions.getSession(session.id);
     expect(saved).toMatchObject({
-      conversionStatus: "waiting_for_converter",
+      conversionStatus: "conversion_failed",
       conversionAttemptCount: 2,
       conversionError: { code: "CONVERSION_FAILED", retryable: true },
     });
@@ -264,7 +313,7 @@ describe("SubmissionConversionService", () => {
 
     expect(submit).toHaveBeenCalledTimes(2);
     expect(await sessions.getSession(session.id)).toMatchObject({
-      conversionStatus: "waiting_for_converter",
+      conversionStatus: "conversion_failed",
       conversionAttemptCount: 2,
       conversionError: { code: "CONVERSION_FAILED", retryable: true },
     });
@@ -307,7 +356,7 @@ describe("SubmissionConversionService", () => {
 
     await conversion.process(session.id);
     expect(await sessions.getSession(session.id)).toMatchObject({
-      conversionStatus: "waiting_for_converter",
+      conversionStatus: "conversion_failed",
       gradingStatus: "not_started",
       conversionError: { code: "CONVERTER_TASK_LOST", retryable: true },
     });
@@ -318,7 +367,7 @@ describe("SubmissionConversionService", () => {
     sessions.close();
   });
 
-  it("retries converter outages with bounded backoff and preserves a retryable waiting state", async () => {
+  it("retries converter outages with bounded backoff and finishes in a retryable failed state", async () => {
     const { sessions, session } = await setup();
     const sleep = vi.fn(async (_milliseconds: number) => undefined);
     const client: DocumentConversionClient = {
@@ -339,7 +388,7 @@ describe("SubmissionConversionService", () => {
     expect(client.submit).toHaveBeenCalledTimes(3);
     expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([5, 30]);
     expect(await sessions.getSession(session.id)).toMatchObject({
-      conversionStatus: "waiting_for_converter",
+      conversionStatus: "conversion_failed",
       conversionAttemptCount: 3,
       conversionError: { code: "CONVERTER_UNAVAILABLE", retryable: true },
     });

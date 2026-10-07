@@ -17,6 +17,12 @@ import {
 } from "../web/src/pages/grading-page-model.js";
 
 describe("grading workbench presentation", () => {
+  it("offers manual retry after automatic conversion retries are exhausted without polling", () => {
+    const input = { conversionStatus: "conversion_failed", conversionError: { code: "CONVERTER_UNAVAILABLE", message: "Automatic retries exhausted", retryable: true } };
+    expect(conversionPresentation(input)).toMatchObject({ title: "转换已停止", canRetry: true, canReupload: true });
+    expect(shouldPollConversion(input)).toBe(false);
+  });
+
   it("builds an assets-rooted manifest from a selected directory", () => {
     expect(buildAssetManifest([
       { name: "chart.png", webkitRelativePath: "assets/charts/chart.png" },

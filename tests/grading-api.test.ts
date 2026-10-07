@@ -954,7 +954,7 @@ describe("grading API", () => {
     const unavailable = await waitForConversionStatus(
       unavailableSetup.app,
       unavailableCreated.json().id,
-      "waiting_for_converter",
+      "conversion_failed",
     );
     expect(unavailable).toMatchObject({
       conversionAttemptCount: 1,
@@ -969,6 +969,8 @@ describe("grading API", () => {
         })
       ).statusCode,
     ).toBe(202);
+    await waitForConversionStatus(unavailableSetup.app, unavailable.id, "conversion_failed");
+    expect((await unavailableSetup.app.inject({ method: "DELETE", url: `/api/grading/sessions/${unavailable.id}` })).statusCode).toBe(204);
     await unavailableSetup.app.close();
 
     const failedClient: DocumentConversionClient = {

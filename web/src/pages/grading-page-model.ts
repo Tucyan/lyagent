@@ -89,12 +89,12 @@ export function conversionPresentation(
     };
   if (input.conversionStatus === "conversion_failed")
     return {
-      title: "作业文件无法转换",
+      title: input.conversionError?.retryable ? "转换已停止" : "作业文件无法转换",
       message:
         input.conversionError?.message ??
         "请检查文件是否损坏、加密或不受支持。",
       tone: "danger",
-      canRetry: false,
+      canRetry: input.conversionError?.retryable === true,
       canReupload: true,
     };
   if (input.conversionStatus === "result_rejected")

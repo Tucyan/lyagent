@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type CourseQaAgentFactory } from "../src/api/server.js";
 import { WebEvidenceService } from "../src/services/web-evidence-service.js";
+import { AgentExecutionLimitError } from "../src/core/agent-execution-budget.js";
 
 const roots: string[] = [];
 
@@ -38,6 +39,19 @@ afterEach(async () => {
 });
 
 describe("course QA API", () => {
+  it("reports a model timeout without saving an unfinished answer", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "course-agent-qa-api-"));
+    roots.push(root);
+    const app = await createServer({ workspaceRoot: root, materialPlanner: async (sections) => ({ documents: [{ path: "第一章/进程.md", title: "进程", sectionIds: sections.map((section) => section.id) }] }), courseQaAgentFactory: () => ({ answer: async () => { throw new AgentExecutionLimitError("AGENT_TIMEOUT"); } }) });
+    try {
+      const course = await publishedCourse(app);
+      const session = (await app.inject({ method: "POST", url: `/api/courses/${course.id}/qa/sessions` })).json();
+      const response = await app.inject({ method: "POST", url: `/api/courses/${course.id}/qa/sessions/${session.id}/messages/stream`, payload: { question: "Explain" } });
+      expect(response.body).toContain('"code":"AGENT_TIMEOUT"');
+      expect((await app.inject({ method: "GET", url: `/api/courses/${course.id}/qa/sessions/${session.id}` })).json().messages).toEqual([]);
+    } finally { await app.close(); }
+  });
+
   it("continues and persists an answer after the page stream disconnects", async () => {
     let finish!: () => void;
     const ready = new Promise<void>((resolve) => { finish = resolve; });

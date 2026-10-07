@@ -41,6 +41,10 @@ Safe Filesystem / SQLite / External Providers
 - **Service**：实现发布、检索、评分、状态转换和审计等确定性业务规则。
 - **Storage**：文件保存内容与不可变结果；SQLite保存可恢复控制状态。
 
+资料规划、课程答疑、评分表推荐/设计、作业命名与批改的 Pi 调用统一受 `AgentExecutionBudget` 控制：每次业务任务默认最多64个模型轮次、128次工具调用和10分钟总时长。评分表的续问与备用Agent共用该次任务预算，不能通过新Prompt重置；超限或超时中止模型并返回安全错误码，显式取消同样生效。预算只保存计数和截止时间，不记录Prompt或工具参数。
+
+预算取消或超时会中止模型；若 Pi 已开始工具调用，预算保持任务所有权直到该次 Agent 调用完成，避免调用方释放任务后出现迟到的工具写入。已经进入文件提交的操作不承诺回滚；无工具执行的模型请求仍可立即超时退出。
+
 ## 四类Agent
 
 | Agent | 负责 | 不负责 |
@@ -139,9 +143,9 @@ Dashboard 只返回课程元数据、active release 元数据、文档/会话计
 ## M4单份批改边界
 
 - `GradingSessionService`绑定唯一课程、冻结评分表版本、不可变原文件、转换后Markdown版本与程序生成的内部ID；会话显示名与学生报告的作业名称是两个独立字段。
-- `SubmissionConversionService`只依赖供应商无关的`DocumentConversionClient`，当前由仅允许环回地址的Docling Serve异步API转换DOCX、PDF、PPTX和图片；Markdown直接导入。连接失败、超时、限流和5xx进入`waiting_for_converter`并按有界退避重试；明确解析失败进入`conversion_failed`，本地安全或结果格式校验失败进入`result_rejected`。重试始终复用不可变原件。
+- `SubmissionConversionService`只依赖供应商无关的`DocumentConversionClient`，当前由仅允许环回地址的Docling Serve异步API转换DOCX、PDF、PPTX和图片；Markdown直接导入。基础设施故障在自动退避期间进入`waiting_for_converter`，工作器停止后进入`conversion_failed`并保留手动重试能力；明确解析失败和本地结果拒绝不允许直接重试。详细状态规则见[领域与存储](domain-and-storage.md)。重试始终复用不可变原件。
 - `PiAssignmentGrader`在正式批改轮次只获得固定13项批改工具。未手填作业名称时，程序在提交转换完成后强制启动专用命名轮次，该轮次只开放作业文件浏览、正文搜索、正文读取和`set_submission_title`；模型必须同时核对正文与原始文件名，冲突时以正文标题为准。冻结评分标准由服务端注入系统提示词；总分、证据、置信度和Review状态由程序在提交草稿时重算。
-- `GradingRunService`以并发1执行后台轮次，把安全处理摘要、模型回复、`model_switch`和脱敏工具活动写入可按序号回放的事件表；视觉Provider失败不会回退主模型，页面断开不会取消运行。
+- `GradingRunService`默认以并发1执行后台轮次，把安全处理摘要、模型回复、`model_switch`和脱敏工具活动写入可按序号回放的事件表；终态等待以100ms间隔查询SQLite，最后一次等待不超过剩余截止时间。视觉Provider失败不会回退主模型，页面断开不会取消运行。
 - `GradingResultService`负责乐观版本、教师审计、Review确认和不可变JSON/Markdown发布。Agent不能直接发布正式结果。
 - `GradingCsvExportService`只聚合已确认JSON结果，按学生或精确冻结评分表生成可重建CSV；Agent不计算或写入成绩表。
 

@@ -6,7 +6,7 @@
 
 首次进入项目建议依次阅读：
 
-1. 根目录`README.md`（创建后作为使用入口）；
+1. 根目录[README.md](../README.md)（使用入口）；
 2. `AGENTS.md`；
 3. 本文；
 4. `architecture.md`；

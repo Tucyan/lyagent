@@ -45,9 +45,15 @@ export class SubmissionConversionService {
   process(sessionId: string): Promise<void> {
     const existing = this.active.get(sessionId);
     if (existing) return existing;
-    const running = this.processUnlocked(sessionId).finally(() =>
-      this.active.delete(sessionId),
-    );
+    const running = this.processUnlocked(sessionId).then(async () => {
+      const session = await this.sessions.getSession(sessionId);
+      // Waiting is only active while this worker owns a retry. Once it stops,
+      // keep the original retryable but release the session for deletion.
+      if (session.conversionStatus === "waiting_for_converter" && session.conversionError) {
+        const { code, message, retryable } = session.conversionError;
+        await this.sessions.recordConversionFailure(sessionId, { status: "conversion_failed", code, message, retryable });
+      }
+    }).finally(() => this.active.delete(sessionId));
     this.active.set(sessionId, running);
     return running;
   }

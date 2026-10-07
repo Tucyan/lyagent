@@ -556,7 +556,10 @@ export class GradingSessionService {
                active_run_id IS NULL
                AND grading_status NOT IN ('running', 'queued')
                AND conversion_status NOT IN ('queued', 'running', 'waiting_for_converter')
-               AND submission_title_status NOT IN ('pending', 'resolving')
+               AND (
+                 submission_title_status NOT IN ('pending', 'resolving')
+                 OR (submission_title_status = 'pending' AND conversion_status IN ('conversion_failed', 'result_rejected'))
+               )
                AND NOT EXISTS (
                  SELECT 1 FROM agent_runs
                  WHERE session_id = grading_sessions.id
@@ -789,11 +792,12 @@ export class GradingSessionService {
       throw new GradingSessionError(
         "Conversion error message must contain 1 to 300 characters",
       );
-    if (failure.retryable !== (failure.status === "waiting_for_converter"))
+    if ((failure.status === "waiting_for_converter" && !failure.retryable)
+      || (failure.status === "result_rejected" && failure.retryable))
       throw new GradingSessionError(
         "Only converter availability failures can be retried",
       );
-    if (failure.nextRetryAt && !failure.retryable)
+    if (failure.nextRetryAt && failure.status !== "waiting_for_converter")
       throw new GradingSessionError(
         "Only retryable conversion failures can have a next retry time",
       );
@@ -826,9 +830,13 @@ export class GradingSessionService {
   }
 
   async retryConversion(sessionId: string): Promise<GradingSession> {
+    return this.withSessionMutation(sessionId, () => this.retryConversionUnlocked(sessionId));
+  }
+
+  private async retryConversionUnlocked(sessionId: string): Promise<GradingSession> {
     const session = await this.getSession(sessionId);
     if (
-      session.conversionStatus !== "waiting_for_converter" ||
+      !["waiting_for_converter", "conversion_failed"].includes(session.conversionStatus) ||
       !session.conversionError?.retryable
     )
       throw new GradingConflictError(

@@ -101,6 +101,7 @@ export class GradingResultService {
     const session = await this.sessions.getSession(sessionId);
     const existing = await this.readConfirmed(session);
     if (existing) {
+      if (existing.version !== input.expectedVersion) throw new GradingDraftConflictError();
       await this.finishConfirmation(session, existing);
       return existing;
     }

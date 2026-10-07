@@ -10,6 +10,7 @@ import { GradingSessionService } from "../src/services/grading-session-service.j
 import { RubricService } from "../src/services/rubric-service.js";
 import { KnowledgeAccessError } from "../src/services/knowledge-service.js";
 import { GradingResultValidationError } from "../src/schemas/grading.js";
+import { AgentExecutionLimitError } from "../src/core/agent-execution-budget.js";
 
 const roots: string[] = [];
 
@@ -37,6 +38,24 @@ afterEach(async () => {
 });
 
 describe("GradingRunService", () => {
+  it("bounds SQLite polling while a run is stalled and preserves timeout behavior", async () => {
+    const { root, sessions, createSession } = await setup();
+    const session = await createSession("20262001");
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const runs = new GradingRunService(root, sessions, () => ({ run: async () => { await gate; return { kind: "reply", reply: "Done" }; } }));
+    try {
+      const run = await runs.start(session.id, { kind: "chat", message: "Explain" });
+      await vi.waitFor(async () => expect((await runs.getRun(run.id)).status).toBe("running"));
+      const reads = vi.spyOn(runs, "getRun");
+      await expect(runs.waitForTerminal(run.id, 350)).rejects.toThrow("Timed out waiting for grading run");
+      expect(reads.mock.calls.length).toBeLessThanOrEqual(6);
+      reads.mockRestore();
+      finish();
+      await expect(runs.waitForTerminal(run.id)).resolves.toMatchObject({ status: "completed" });
+    } finally { finish(); runs.close(); sessions.close(); }
+  });
+
   it("persists stable safe failure categories without provider details", async () => {
     const { root, sessions, createSession } = await setup();
     const cases = [
@@ -44,6 +63,8 @@ describe("GradingRunService", () => {
       { student: "20261002", error: new Error("Grading Agent did not submit a draft"), code: "GRADING_TOOL_CALL_MISSING" },
       { student: "20261003", error: new GradingResultValidationError("raw invalid draft"), code: "GRADING_DRAFT_VALIDATION_FAILED" },
       { student: "20261004", error: new KnowledgeAccessError("ACTIVE_RELEASE_NOT_FOUND", "raw missing release"), code: "GRADING_KNOWLEDGE_UNAVAILABLE" },
+      { student: "20261005", error: new AgentExecutionLimitError("AGENT_TOOL_CALL_LIMIT"), code: "AGENT_TOOL_CALL_LIMIT" },
+      { student: "20261006", error: new AgentExecutionLimitError("AGENT_TIMEOUT"), code: "AGENT_TIMEOUT" },
     ];
     for (const item of cases) {
       const session = await createSession(item.student);
@@ -53,7 +74,7 @@ describe("GradingRunService", () => {
       expect(terminal).toMatchObject({ status: "failed", errorCode: item.code });
       const events = await runs.listEvents(started.id, 0);
       expect(events).toContainEqual(expect.objectContaining({ type: "error", code: item.code }));
-      expect(JSON.stringify(events)).not.toContain(item.error.message);
+      if (!(item.error instanceof AgentExecutionLimitError)) expect(JSON.stringify(events)).not.toContain(item.error.message);
       runs.close();
     }
     sessions.close();

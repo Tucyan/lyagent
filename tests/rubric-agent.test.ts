@@ -149,6 +149,20 @@ describe("rubric designer tools", () => {
 });
 
 describe("rubric designer agent", () => {
+  it("stops repeated invalid draft tool calls instead of continuing indefinitely", async () => {
+    const { service, assignment } = await fixture();
+    const faux = fauxProvider({ tokensPerSecond: 100_000 });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const invalid = { ...additiveRubric, criteria: [{ ...additiveRubric.criteria[0]!, scorePolicy: "range" }] };
+    faux.setResponses(Array.from({ length: 8 }, () => fauxAssistantMessage([fauxToolCall("create_rubric_draft", { rubric: invalid })], { stopReason: "toolUse" })));
+    let calls = 0;
+    await expect(createPiRubricDesigner({ models, model: faux.getModel(), rubricService: service, assignmentId: assignment.id, executionLimits: { maxToolCalls: 3 } })
+      .design("Create the rubric", (event) => { if (event.type === "tool_start") calls++; })).rejects.toMatchObject({ code: "AGENT_TOOL_CALL_LIMIT" });
+    expect(calls).toBeLessThanOrEqual(4);
+    expect(await service.getDraft(assignment.id)).toBeUndefined();
+  });
+
   it("answers a request for suggestions without modifying the draft", async () => {
     const { service, assignment } = await fixture();
     const existing = await service.createDraft(assignment.id, additiveRubric);

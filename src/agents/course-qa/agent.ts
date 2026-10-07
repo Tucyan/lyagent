@@ -1,11 +1,13 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { Model, Models } from "@earendil-works/pi-ai";
+import { AgentExecutionBudget, type AgentExecutionLimits } from "../../core/agent-execution-budget.js";
 import type { CourseAnswer, CourseQaEvent } from "../../schemas/qa-stream.js";
 import type { CourseKnowledgeService } from "../../services/knowledge-service.js";
 import { createCourseQaTools, isQaToolName, toolActivity } from "../../tools/knowledge/index.js";
 import type { WebEvidenceService } from "../../services/web-evidence-service.js";
 
 export interface PiCourseQaAgentOptions {
+  executionLimits?: Partial<AgentExecutionLimits>;
   models: Models;
   model: Model<any>;
   knowledge: CourseKnowledgeService;
@@ -20,6 +22,7 @@ export interface PiCourseQaAgent {
 export function createPiCourseQaAgent(options: PiCourseQaAgentOptions): PiCourseQaAgent {
   return {
     async answer(question, onEvent, signal) {
+      const budget = new AgentExecutionBudget(options.executionLimits, signal);
       const qaTools = createCourseQaTools(options.knowledge, options.web);
       const agent = new Agent({
         initialState: {
@@ -55,7 +58,7 @@ export function createPiCourseQaAgent(options: PiCourseQaAgentOptions): PiCourse
       });
       onEvent?.({ type: "status", phase: "thinking" });
       try {
-        await agent.prompt(question);
+        await budget.run(agent, () => agent.prompt(question));
       } finally {
         signal?.removeEventListener("abort", abort);
       }

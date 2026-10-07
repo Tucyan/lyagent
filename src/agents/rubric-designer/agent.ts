@@ -1,6 +1,7 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { Model, Models } from "@earendil-works/pi-ai";
 import { z } from "zod";
+import { AgentExecutionBudget, type AgentExecutionLimits } from "../../core/agent-execution-budget.js";
 import type { RubricDraft, RubricService } from "../../services/rubric-service.js";
 import { createRubricDesignerTools, isRubricToolName, rubricToolActivity, type RubricQuestion, type RubricToolName } from "../../tools/rubric/index.js";
 
@@ -36,6 +37,7 @@ export type RubricDesignEvent =
   | { type: "tool_end"; id: string; name: RubricToolName; label: string; summary: string; status: "completed" | "failed" };
 
 export interface PiRubricDesignerOptions {
+  executionLimits?: Partial<AgentExecutionLimits>;
   models: Models;
   model: Model<any>;
   rubricService: RubricService;
@@ -52,6 +54,7 @@ export function createPiRubricDesigner(options: PiRubricDesignerOptions): PiRubr
   return {
     async recommendModes(sources) {
       if (sources.length === 0) return staticModeRecommendation();
+      const budget = new AgentExecutionBudget(options.executionLimits);
       const agent = new Agent({
         initialState: {
           systemPrompt: [
@@ -70,7 +73,7 @@ export function createPiRubricDesigner(options: PiRubricDesignerOptions): PiRubr
         streamFn: options.models.streamSimple.bind(options.models),
         ...(options.getApiKey ? { getApiKey: () => options.getApiKey?.() } : {}),
       });
-      await agent.prompt(formatRubricRecommendationSources(sources));
+      await budget.run(agent, () => agent.prompt(formatRubricRecommendationSources(sources)));
       const rawRecommendation = parseAssistantJson(agent);
       const parsed = modeRecommendationSchema.safeParse(normalizeModeRecommendation(rawRecommendation));
       if (!parsed.success) throw new Error(`Model returned an invalid scoring-mode recommendation: ${parsed.error.issues[0]?.message ?? "invalid JSON"}; received ${jsonShape(rawRecommendation)}`);
@@ -78,6 +81,7 @@ export function createPiRubricDesigner(options: PiRubricDesignerOptions): PiRubr
     },
 
     async design(request, onEvent, signal) {
+      const budget = new AgentExecutionBudget(options.executionLimits, signal);
       const designSession = await options.rubricService.getDesignSession(options.assignmentId);
       if (!designSession) throw new Error("Select a scoring mode before starting rubric design");
       const rubricTools = createRubricDesignerTools(options.rubricService, options.assignmentId, designSession.selectedMode);
@@ -109,21 +113,21 @@ export function createPiRubricDesigner(options: PiRubricDesignerOptions): PiRubr
       onEvent?.({ type: "status", phase: "thinking" });
       const resultTool = await options.rubricService.getDraft(options.assignmentId) ? "replace_rubric_draft" : "create_rubric_draft";
       try {
-        await agent.prompt([
+        await budget.run(agent, () => agent.prompt([
           "You must use the provided rubric tools now.",
           "Do not return prose.",
           "First read the assignment context and, when relevant, the existing draft.",
           `Choose exactly one terminal action: reply_to_teacher for advice, review, or explanation without a requested change; ${resultTool} for an explicit creation or change; ask_rubric_question only when essential information blocks a requested change.`,
           "Teacher request:",
           request,
-        ].join("\n"));
+        ].join("\n")));
         for (let continuation = 0; continuation < 4 && !rubricTools.capturedQuestion() && !rubricTools.capturedReply() && !rubricTools.updatedDraft(); continuation += 1) {
           if (assistantEndedEmpty(agent)) break;
-          await agent.prompt([
+          await budget.run(agent, () => agent.prompt([
             "Continue the same rubric-design task using the provided tools.",
             `Read any remaining context you need, then finish with exactly one terminal action: reply_to_teacher for a non-mutating answer, ${resultTool} for an explicit change, or ask_rubric_question if a requested change is blocked.`,
             "Do not return prose.",
-          ].join("\n"));
+          ].join("\n")));
         }
       } finally {
         signal?.removeEventListener("abort", abort);
@@ -158,14 +162,14 @@ export function createPiRubricDesigner(options: PiRubricDesignerOptions): PiRubr
         const abortTerminal = () => terminalAgent.abort();
         signal?.addEventListener("abort", abortTerminal, { once: true });
         try {
-          await terminalAgent.prompt(JSON.stringify({
+          await budget.run(terminalAgent, () => terminalAgent.prompt(JSON.stringify({
             teacherRequest: request,
             assignment: { title: assignment.title, totalScore: assignment.totalScore, requirements: assignment.requirements },
             sources,
             existingDraft: existingDraft ?? null,
-          }));
+          })));
           for (let retry = 0; retry < 3 && !rubricTools.capturedQuestion() && !rubricTools.capturedReply() && !rubricTools.updatedDraft() && assistantEndedEmpty(terminalAgent); retry += 1) {
-            await terminalAgent.prompt(`Choose the correct terminal tool now: reply_to_teacher for a non-mutating answer, ${resultTool} for an explicit change, or ask_rubric_question if blocked. Do not return prose.`);
+            await budget.run(terminalAgent, () => terminalAgent.prompt(`Choose the correct terminal tool now: reply_to_teacher for a non-mutating answer, ${resultTool} for an explicit change, or ask_rubric_question if blocked. Do not return prose.`));
           }
         } finally {
           signal?.removeEventListener("abort", abortTerminal);

@@ -45,6 +45,19 @@ afterEach(async () => {
 });
 
 describe("rubric versioning", () => {
+  it("acknowledges repeated warning codes once while rejecting missing or extra codes", async () => {
+    const service = await serviceForTest();
+    const assignment = await service.createAssignment({ title: "Continuous rubric", totalScore: 30, requirements: "Assess three criteria", sources: [] });
+    await service.selectMode(assignment.id, "additive");
+    const draft = await service.createDraft(assignment.id, {
+      schemaVersion: "1.0", mode: "additive", totalScore: 30, partialCreditAllowed: true,
+      criteria: [1, 2, 3].map((index) => ({ id: `c${index}`, name: `Criterion ${index}`, description: "Assess quality", maxScore: 10, scorePolicy: "continuous", evidenceRequired: true })),
+    });
+    await expect(service.freeze(assignment.id, draft.version, [])).rejects.toThrow("warnings must be acknowledged");
+    await expect(service.freeze(assignment.id, draft.version, ["CONTINUOUS_WITHOUT_ANCHORS", "UNEXPECTED"])).rejects.toThrow("warnings must be acknowledged");
+    await expect(service.freeze(assignment.id, draft.version, ["CONTINUOUS_WITHOUT_ANCHORS"])).resolves.toMatchObject({ version: 1 });
+  });
+
   it("deletes the conversation, sources, editable draft, and every frozen formal file with the session", async () => {
     const service = await serviceForTest();
     const assignment = await service.createAssignment({

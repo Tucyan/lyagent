@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type RubricDesignerFactory } from "../src/api/server.js";
 import type { PiRubricDesigner } from "../src/agents/rubric-designer/agent.js";
 import type { Rubric } from "../src/schemas/rubric.js";
+import { AgentExecutionLimitError } from "../src/core/agent-execution-budget.js";
+import { RubricService, RubricServiceError } from "../src/services/rubric-service.js";
 
 const roots: string[] = [];
 
@@ -48,6 +50,54 @@ afterEach(async () => {
 });
 
 describe("rubric HTTP API", () => {
+  it.each([
+    { totalScore: 19.555, requirements: "Assess report", sources: [], code: "RUBRIC_TOTAL_SCORE_INVALID", message: "Assignment total score must be a positive score with at most two decimal places" },
+    { totalScore: 100, requirements: "", sources: [], code: "RUBRIC_SOURCES_REQUIRED", message: "Assignment requirements or at least one non-empty source is required" },
+  ])("preserves the concrete safe validation reason: $code", async ({ totalScore, requirements, sources, code, message }) => {
+    const app = await serverForTest();
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/rubrics/assignments", payload: { title: "Report", totalScore, requirements, sources } });
+      expect(response.statusCode).toBe(422);
+      expect(response.json()).toEqual({ code, message });
+    } finally { await app.close(); }
+  });
+
+  it("reports missing warning acknowledgement with a specific safe error", async () => {
+    const app = await serverForTest();
+    try {
+      const assignment = await createAssignment(app);
+      await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+      await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/draft`, payload: { expectedVersion: 0, rubric } });
+      const response = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/freeze`, payload: { expectedVersion: 1, acknowledgedWarningCodes: [] } });
+      expect(response.statusCode).toBe(422);
+      expect(response.json()).toMatchObject({ code: "RUBRIC_WARNINGS_UNACKNOWLEDGED", message: "Current rubric warnings must be acknowledged before freezing" });
+    } finally { await app.close(); }
+  });
+
+  it("keeps unclassified internal errors generic without echoing paths or source names", async () => {
+    const app = await serverForTest();
+    const failure = vi.spyOn(RubricService.prototype, "createAssignment").mockRejectedValue(new RubricServiceError("private-source-name C:\\private\\workspace"));
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/rubrics/assignments", payload: { title: "Report", totalScore: 100, requirements: "Assess", sources: [] } });
+      expect(response.statusCode).toBe(422);
+      expect(response.json()).toMatchObject({ code: "RUBRIC_STATE_ERROR", message: "The rubric request is not valid for the current session state" });
+      expect(response.body).not.toContain("private-source-name");
+      expect(response.body).not.toContain("private\\workspace");
+    } finally { failure.mockRestore(); await app.close(); }
+  });
+
+  it("reports an execution limit safely without persisting an incomplete turn", async () => {
+    const app = await serverForTest(() => ({ recommendModes: async () => ({ options: [] }), design: async () => { throw new AgentExecutionLimitError("AGENT_TOOL_CALL_LIMIT"); } }));
+    try {
+      const assignment = await createAssignment(app);
+      await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode`, payload: { mode: "additive" } });
+      const response = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/messages/stream`, payload: { message: "Create rubric" } });
+      expect(response.body).toContain('"code":"AGENT_TOOL_CALL_LIMIT"');
+      expect(response.body).toContain("模型工具调用次数已达到上限");
+      expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/session` })).json().messages).toEqual([]);
+    } finally { await app.close(); }
+  });
+
   it("binds new rubrics to the unique existing course and rejects ambiguous course ownership", async () => {
     const app = await serverForTest();
     const courseId = (await app.inject({ method: "GET", url: "/api/courses" })).json()[0].id;

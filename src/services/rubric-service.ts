@@ -81,6 +81,14 @@ export class RubricServiceError extends Error {
   }
 }
 
+/** Fixed program-authored messages only; never include source names or paths. */
+export class RubricRequestError extends RubricServiceError {
+  constructor(message: string, public readonly code = "RUBRIC_STATE_ERROR") {
+    super(message);
+    this.name = "RubricRequestError";
+  }
+}
+
 export class RubricConflictError extends RubricServiceError {
   constructor() {
     super("Rubric draft has changed; refresh before editing");
@@ -112,23 +120,23 @@ export class RubricService {
   async createAssignment(input: { courseId?: string; title: string; totalScore: number; requirements: string; sources: RubricSourceInput[] }): Promise<RubricAssignment> {
     const title = input.title.trim();
     const requirements = input.requirements.trim();
-    if (title.length === 0 || title.length > 120) throw new RubricServiceError("Assignment title must be between 1 and 120 characters");
-    if (!isScore(input.totalScore) || input.totalScore === 0) throw new RubricServiceError("Assignment total score must be a positive score with at most two decimal places");
-    if (requirements.length > 100_000) throw new RubricServiceError("Assignment requirements must contain at most 100000 characters");
+    if (title.length === 0 || title.length > 120) throw new RubricRequestError("Assignment title must be between 1 and 120 characters");
+    if (!isScore(input.totalScore) || input.totalScore === 0) throw new RubricRequestError("Assignment total score must be a positive score with at most two decimal places", "RUBRIC_TOTAL_SCORE_INVALID");
+    if (requirements.length > 100_000) throw new RubricRequestError("Assignment requirements must contain at most 100000 characters");
     if (requirements.length === 0 && !input.sources.some((source) => source.content.trim().length > 0)) {
-      throw new RubricServiceError("Assignment requirements or at least one non-empty source is required");
+      throw new RubricRequestError("Assignment requirements or at least one non-empty source is required", "RUBRIC_SOURCES_REQUIRED");
     }
-    if (input.sources.length > 10) throw new RubricServiceError("An assignment can contain at most 10 source files");
+    if (input.sources.length > 10) throw new RubricRequestError("An assignment can contain at most 10 source files");
     const totalBytes = input.sources.reduce((total, source) => total + Buffer.byteLength(source.content), 0);
-    if (totalBytes > 5 * 1024 * 1024) throw new RubricServiceError("Rubric sources exceed the 5 MiB limit");
+    if (totalBytes > 5 * 1024 * 1024) throw new RubricRequestError("Rubric sources exceed the 5 MiB limit");
 
     const assignmentId = randomUUID();
     const sources: RubricSource[] = [];
     for (const source of input.sources) {
-      if (source.role !== "rubric_draft" && source.role !== "note") throw new RubricServiceError("Rubric source role is invalid");
+      if (source.role !== "rubric_draft" && source.role !== "note") throw new RubricRequestError("Rubric source role is invalid");
       const name = source.name.trim();
       const size = Buffer.byteLength(source.content);
-      if (name.length === 0 || name.length > 160) throw new RubricServiceError("Rubric source name must be between 1 and 160 characters");
+      if (name.length === 0 || name.length > 160) throw new RubricRequestError("Rubric source name must be between 1 and 160 characters");
       if (size > 1024 * 1024) throw new RubricServiceError(`Rubric source is too large: ${name}`);
       const stored: RubricSource = { id: randomUUID(), role: source.role, name, size };
       await this.filesystem.writeText(this.sourceFile(assignmentId, stored.id), source.content);
@@ -166,7 +174,7 @@ export class RubricService {
     return this.mutateAssignment(assignmentId, async () => {
       const assignment = await this.getAssignment(assignmentId);
       const normalized = title.trim();
-      if (normalized.length === 0 || normalized.length > 120) throw new RubricServiceError("Assignment title must be between 1 and 120 characters");
+      if (normalized.length === 0 || normalized.length > 120) throw new RubricRequestError("Assignment title must be between 1 and 120 characters");
       const updated: RubricAssignment = { ...assignment, title: normalized, updatedAt: new Date().toISOString() };
       await this.writeAssignment(updated);
       return updated;
@@ -176,7 +184,7 @@ export class RubricService {
   async bindCourse(assignmentId: string, courseId: string): Promise<RubricAssignment> {
     return this.mutateAssignment(assignmentId, async () => {
       const assignment = await this.getAssignment(assignmentId);
-      if (assignment.courseId && assignment.courseId !== courseId) throw new RubricServiceError("Rubric assignment is already bound to another course");
+      if (assignment.courseId && assignment.courseId !== courseId) throw new RubricRequestError("Rubric assignment is already bound to another course");
       if (assignment.courseId === courseId) return assignment;
       const updated: RubricAssignment = { ...assignment, courseId, updatedAt: new Date().toISOString() };
       await this.writeAssignment(updated);
@@ -206,11 +214,11 @@ export class RubricService {
   async selectMode(assignmentId: string, selectedMode: Rubric["mode"]): Promise<RubricDesignSession> {
     return this.mutateAssignment(assignmentId, async () => {
       await this.getAssignment(assignmentId);
-      if (selectedMode !== "additive" && selectedMode !== "deductive" && selectedMode !== "hybrid") throw new RubricServiceError("Rubric scoring mode is invalid");
+      if (selectedMode !== "additive" && selectedMode !== "deductive" && selectedMode !== "hybrid") throw new RubricRequestError("Rubric scoring mode is invalid");
       const existing = await this.getDesignSession(assignmentId);
       if (existing?.selectedMode === selectedMode) return existing;
-      if (await this.getDraftUnlocked(assignmentId)) throw new RubricServiceError("The scoring mode cannot change after a rubric draft exists");
-      if ((await this.listVersions(assignmentId)).length > 0) throw new RubricServiceError("The scoring mode cannot change after a rubric version is frozen");
+      if (await this.getDraftUnlocked(assignmentId)) throw new RubricRequestError("The scoring mode cannot change after a rubric draft exists");
+      if ((await this.listVersions(assignmentId)).length > 0) throw new RubricRequestError("The scoring mode cannot change after a rubric version is frozen");
       const session: RubricDesignSession = { assignmentId, selectedMode, updatedAt: new Date().toISOString(), messages: [] };
       await this.writeDesignSession(assignmentId, session);
       return session;
@@ -237,7 +245,7 @@ export class RubricService {
     return this.mutateAssignment(assignmentId, async () => {
       const assignment = await this.getAssignment(assignmentId);
       const session = await this.getDesignSession(assignmentId);
-      if (!session) throw new RubricServiceError("Select a scoring mode before starting rubric design");
+      if (!session) throw new RubricRequestError("Select a scoring mode before starting rubric design");
       const updatedAt = new Date().toISOString();
       const updated: RubricDesignSession = {
         ...session,
@@ -258,10 +266,10 @@ export class RubricService {
     const assignment = await this.getAssignment(assignmentId);
     if (await this.getDraftUnlocked(assignmentId)) {
       if (conflictIfDraftExists) throw new RubricConflictError();
-      throw new RubricServiceError("Assignment already has an editable rubric draft");
+      throw new RubricRequestError("Assignment already has an editable rubric draft");
     }
     if (baseRubricVersion === undefined && (await this.listVersions(assignmentId)).length > 0) {
-      throw new RubricServiceError("Create a revision from a frozen rubric version before editing again");
+      throw new RubricRequestError("Create a revision from a frozen rubric version before editing again");
     }
     if (baseRubricVersion !== undefined) await this.getVersion(assignmentId, baseRubricVersion);
     await this.assertRubricMatchesAssignment(assignment, rubric);
@@ -308,9 +316,9 @@ export class RubricService {
       if (draft.version !== expectedVersion) throw new RubricConflictError();
       const validation = validateRubric(draft.rubric);
       if (validation.errors.length > 0) throw new RubricValidationError(validation);
-      const requiredWarnings = validation.warnings.map((warning) => warning.code).sort();
+      const requiredWarnings = [...new Set(validation.warnings.map((warning) => warning.code))].sort();
       if (JSON.stringify([...new Set(acknowledgedWarningCodes)].sort()) !== JSON.stringify(requiredWarnings)) {
-        throw new RubricServiceError("Current rubric warnings must be acknowledged before freezing");
+        throw new RubricRequestError("Current rubric warnings must be acknowledged before freezing", "RUBRIC_WARNINGS_UNACKNOWLEDGED");
       }
       const versions = await this.listVersions(assignmentId);
       const version = (versions[0]?.version ?? 0) + 1;
@@ -361,17 +369,17 @@ export class RubricService {
 
   private async requireDraft(assignmentId: string): Promise<RubricDraft> {
     const draft = await this.getDraftUnlocked(assignmentId);
-    if (!draft) throw new RubricServiceError("Assignment does not have an editable rubric draft");
+    if (!draft) throw new RubricRequestError("Assignment does not have an editable rubric draft");
     return draft;
   }
 
   private async assertRubricMatchesAssignment(assignment: RubricAssignment, rubric: Rubric): Promise<void> {
     const session = await this.getDesignSession(assignment.id);
-    if (!session) throw new RubricServiceError("Select a scoring mode before creating a rubric draft");
-    if (session.selectedMode !== rubric.mode) throw new RubricServiceError("Rubric mode does not match the selected scoring mode");
+    if (!session) throw new RubricRequestError("Select a scoring mode before creating a rubric draft");
+    if (session.selectedMode !== rubric.mode) throw new RubricRequestError("Rubric mode does not match the selected scoring mode");
     const validation = validateRubric(rubric);
     if (validation.errors.length > 0) throw new RubricValidationError(validation);
-    if (rubric.totalScore !== assignment.totalScore) throw new RubricServiceError("Rubric total score must match the assignment total score");
+    if (rubric.totalScore !== assignment.totalScore) throw new RubricRequestError("Rubric total score must match the assignment total score");
   }
 
   private async writeAssignment(assignment: RubricAssignment): Promise<void> {

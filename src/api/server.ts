@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
+import { AgentExecutionLimitError } from "../core/agent-execution-budget.js";
 import { ZodError, z } from "zod";
 import { sseComment, sseFrame } from "./streaming/sse.js";
 import type { PiCourseQaAgent } from "../agents/course-qa/agent.js";
@@ -16,7 +17,7 @@ import {
 } from "../services/material-service.js";
 import type { PiRubricDesigner, RubricDesignEvent, RubricDesignerOutcome } from "../agents/rubric-designer/agent.js";
 import { rubricSchema, validateRubric, type Rubric } from "../schemas/rubric.js";
-import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricService, RubricServiceError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
+import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricService, RubricServiceError, RubricRequestError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
 import { registerGradingApi } from "./grading-routes.js";
 import { StudentIdentityError, type StudentIdentityClient } from "../services/student-identity-service.js";
 import type { DocumentConversionClient } from "../services/document-conversion-client.js";
@@ -159,6 +160,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (error instanceof RubricConflictError) return reply.code(409).send({ code: "RUBRIC_CONFLICT", message: "The rubric draft has changed; refresh and try again" });
     if (error instanceof RubricCourseBindingError) return reply.code(422).send({ code: "RUBRIC_COURSE_BINDING_ERROR", message: error.message });
     if (error instanceof RubricValidationError) return reply.code(422).send({ code: "RUBRIC_VALIDATION_FAILED", errors: error.validation.errors, warnings: error.validation.warnings });
+    if (error instanceof RubricRequestError) return reply.code(422).send({ code: error.code, message: error.message });
     if (error instanceof RubricServiceError) {
       if (error.message.includes("was not found")) return reply.code(404).send({ code: "RUBRIC_NOT_FOUND", message: "The requested rubric session does not exist" });
       return reply.code(422).send({ code: "RUBRIC_STATE_ERROR", message: "The rubric request is not valid for the current session state" });
@@ -496,7 +498,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
         emit({ type: "final", ...answer, releaseId: courseKnowledge.release.id, sessionId });
       }
     } catch (error) {
-      if (!controller.signal.aborted) emit({ type: "error", code: "QA_FAILED", message: "The course answer could not be completed" });
+      if (!controller.signal.aborted) emit({ type: "error", code: error instanceof AgentExecutionLimitError ? error.code : "QA_FAILED", message: error instanceof AgentExecutionLimitError ? error.message : "The course answer could not be completed" });
     } finally {
       clearInterval(keepAlive);
       activeAgentRuns.delete(runId);
@@ -622,8 +624,8 @@ async function streamRubricDesign(
       else emit("draft", { version: outcome.draft.version, updatedAt: outcome.draft.updatedAt });
       emit("final", { kind: outcome.kind, message: outcome.message });
     }
-  } catch {
-    if (!controller.signal.aborted) emit("error", { code: "RUBRIC_DESIGN_FAILED", message: "评分表设计未能完成，请稍后重试或先使用人工编辑。" });
+  } catch (error) {
+    if (!controller.signal.aborted) emit("error", { code: error instanceof AgentExecutionLimitError ? error.code : "RUBRIC_DESIGN_FAILED", message: error instanceof AgentExecutionLimitError ? error.message : "评分表设计未能完成，请稍后重试或先使用人工编辑。" });
   } finally {
     clearInterval(keepAlive);
     activeAgentRuns.delete(runId);

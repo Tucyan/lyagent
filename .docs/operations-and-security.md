@@ -38,6 +38,7 @@
 - Windows发布监督进程使用`Global\CourseAgent.Launcher.<workspace-sha256>`确保单实例，并原子维护受控runtime descriptor。复用实例前同时验证Workspace身份、owner token格式、监督进程存活、loopback URL与健康接口；API只返回版本、端口、backend和就绪状态，不返回PID、绝对路径或原始错误。监督进程只向经过验证且由其记录的子PID执行`taskkill /T /F`。
 - 流式界面展示固定安全处理摘要和脱敏工具活动，不保存或展示Provider私有推理链、Prompt、密钥或跨会话正文。无视觉模型时，`read_submission_image`只返回`VISION_MODEL_NOT_CONFIGURED`文本码，不读取或返回图片字节、路径或底层错误；批改Agent必须将受影响项标记为证据不足或向教师确认。成功读取图片后的模型切换只发送非敏感模型ID与能力标签。
 - API错误、普通日志和审计索引不得包含完整正文。
+- Rubric API仅直接返回`RubricRequestError`中由程序定义的固定业务错误码与提示；未分类的`RubricServiceError`继续返回安全泛化错误，不回传来源名称、绝对路径或内部详情。模型执行预算和取消规则见[架构说明](architecture.md)。
 - `POST /api/system/models/test`只临时验证连接而不保存；`PUT /api/system/models`验证后保存并要求重启。两者必须同时通过环回来源、精确Origin和CSRF Token检查；同源页面先从`GET /api/system/models`响应头取得本进程Token，跨源页面受浏览器同源策略限制不能读取。Provider错误只返回安全摘要。
 - `GET /api/system/models`只返回非敏感端点元数据和`configured`状态，绝不回填密钥。关闭独立视觉Provider时，配置事务同时删除已不再使用的视觉凭据；任一步失败都会恢复旧配置与旧凭据。主模型未配置期间只开放静态页面、`/api/health`和模型设置API。
 - 模型Provider远程地址必须使用HTTPS；HTTP仅允许`127.0.0.1`、`localhost`或`::1`，且地址不得包含用户名、密码、查询参数或片段。合法路径会保留；仅当显式完整地址以`/chat/completions`结尾时，程序选择Chat Completions协议并把该后缀从运行时Base URL移除，避免重复拼接。

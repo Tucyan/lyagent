@@ -5,6 +5,7 @@ import PQueue from "p-queue";
 import { ZodError } from "zod";
 import type { GradingAgentEvent, GradingAgentOutcome, PiAssignmentGrader } from "../agents/assignment-grader/agent.js";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
+import { AgentExecutionLimitError, type AgentExecutionLimitCode } from "../core/agent-execution-budget.js";
 import { GradingConflictError, type GradingSession, type GradingSessionService } from "./grading-session-service.js";
 import { GradingResultValidationError } from "../schemas/grading.js";
 import { KnowledgeAccessError } from "./knowledge-service.js";
@@ -128,10 +129,12 @@ export class GradingRunService {
 
   async waitForTerminal(runId: string, timeoutMs = 5_000): Promise<GradingRun> {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() <= deadline) {
+    while (true) {
       const run = await this.getRun(runId);
       if (["completed", "waiting_for_teacher", "failed", "cancelled"].includes(run.status)) return run;
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100, remaining)));
     }
     throw new Error("Timed out waiting for grading run");
   }
@@ -307,6 +310,7 @@ function isAbort(error: unknown): boolean {
 }
 
 type SafeGradingFailureCode =
+  | AgentExecutionLimitCode
   | "GRADING_MODEL_REQUEST_FAILED"
   | "GRADING_TOOL_CALL_MISSING"
   | "GRADING_DRAFT_VALIDATION_FAILED"
@@ -320,11 +324,15 @@ function safeGradingFailure(code: SafeGradingFailureCode): { code: SafeGradingFa
     GRADING_DRAFT_VALIDATION_FAILED: "批改草稿未通过校验，请重试并检查评分依据",
     GRADING_KNOWLEDGE_UNAVAILABLE: "课程资料暂不可用；可在不使用课程资料的情况下重试批改",
     GRADING_RUN_INTERRUPTED: "批改运行因服务重启而中断；未自动重新调用模型",
+    AGENT_TURN_LIMIT: new AgentExecutionLimitError("AGENT_TURN_LIMIT").message,
+    AGENT_TOOL_CALL_LIMIT: new AgentExecutionLimitError("AGENT_TOOL_CALL_LIMIT").message,
+    AGENT_TIMEOUT: new AgentExecutionLimitError("AGENT_TIMEOUT").message,
   };
   return { code, message: messages[code] };
 }
 
 function classifyGradingFailure(error: unknown): { code: SafeGradingFailureCode; message: string } {
+  if (error instanceof AgentExecutionLimitError) return safeGradingFailure(error.code);
   if (error instanceof KnowledgeAccessError)
     return safeGradingFailure("GRADING_KNOWLEDGE_UNAVAILABLE");
   if (error instanceof GradingResultValidationError || error instanceof ZodError || (error as { name?: unknown }).name === "GradingResultValidationError")

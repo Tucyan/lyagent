@@ -4,7 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GradingDraft } from "../src/schemas/grading.js";
-import { GradingResultService, GradingReviewRequiredError } from "../src/services/grading-result-service.js";
+import { GradingResultService, GradingReviewRequiredError, GradingDraftConflictError } from "../src/services/grading-result-service.js";
 import { GradingSessionService } from "../src/services/grading-session-service.js";
 import { RubricService } from "../src/services/rubric-service.js";
 
@@ -53,6 +53,23 @@ afterEach(async () => {
 });
 
 describe("GradingResultService", () => {
+  it("rejects mismatched versions even after confirmation while recovering same-version retries", async () => {
+    const { root, sessions, results, session } = await setup();
+    try {
+      const first = await results.submitDraft(session.id, 0, draft(), { type: "agent", id: "run-1" });
+      const saved = await results.submitDraft(session.id, first.version, draft(0.9), { type: "teacher", id: "teacher" });
+      const confirmed = await results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "", acknowledgedReasons: [] });
+      const markdownPath = path.join(root, "assignments", session.assignmentId, "results", session.batchId, `${session.studentKey}.md`);
+      await rm(markdownPath);
+      for (const expectedVersion of [saved.version - 1, saved.version + 1]) {
+        await expect(results.confirm(session.id, { expectedVersion, reviewNote: "", acknowledgedReasons: [] })).rejects.toBeInstanceOf(GradingDraftConflictError);
+      }
+      await expect(readFile(markdownPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "", acknowledgedReasons: [] })).resolves.toEqual(confirmed);
+      expect(await readFile(markdownPath, "utf8")).toContain("作业评分反馈");
+    } finally { sessions.close(); }
+  });
+
   it("validates and versions Agent drafts while calculating score and review automatically", async () => {
     const { sessions, results, session } = await setup();
     const saved = await results.submitDraft(session.id, 0, draft(), { type: "agent", id: "run-1" });

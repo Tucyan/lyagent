@@ -32,6 +32,7 @@ export class SessionNotFoundError extends Error {
 
 export class SessionService {
   private readonly filesystem: SafeFilesystem;
+  private readonly mutationTails = new Map<string, Promise<void>>();
 
   constructor(workspaceRoot: string) {
     this.filesystem = new SafeFilesystem(workspaceRoot);
@@ -56,30 +57,36 @@ export class SessionService {
   }
 
   async appendCompletedTurn(courseId: string, sessionId: string, user: Extract<SessionMessage, { role: "user" }>, assistant: Extract<SessionMessage, { role: "assistant" }>): Promise<CourseQaSession> {
-    const session = await this.get(courseId, sessionId);
-    const updated: CourseQaSession = {
-      ...session,
-      updatedAt: new Date().toISOString(),
-      messages: [...session.messages, user, assistant].slice(-20),
-    };
-    await this.write(updated);
-    return updated;
+    return this.mutateSession(courseId, sessionId, async () => {
+      const session = await this.get(courseId, sessionId);
+      const updated: CourseQaSession = {
+        ...session,
+        updatedAt: new Date().toISOString(),
+        messages: [...session.messages, user, assistant].slice(-20),
+      };
+      await this.write(updated);
+      return updated;
+    });
   }
 
   async rename(courseId: string, sessionId: string, title: string): Promise<CourseQaSession> {
-    const session = await this.get(courseId, sessionId);
-    const updated: CourseQaSession = { ...session, title, updatedAt: new Date().toISOString() };
-    await this.write(updated);
-    return updated;
+    return this.mutateSession(courseId, sessionId, async () => {
+      const session = await this.get(courseId, sessionId);
+      const updated: CourseQaSession = { ...session, title, updatedAt: new Date().toISOString() };
+      await this.write(updated);
+      return updated;
+    });
   }
 
   async delete(courseId: string, sessionId: string): Promise<void> {
-    await this.get(courseId, sessionId);
-    try {
-      await this.filesystem.removeFile(this.file(courseId, sessionId));
-    } catch {
-      throw new SessionNotFoundError();
-    }
+    return this.mutateSession(courseId, sessionId, async () => {
+      await this.get(courseId, sessionId);
+      try {
+        await this.filesystem.removeFile(this.file(courseId, sessionId));
+      } catch {
+        throw new SessionNotFoundError();
+      }
+    });
   }
 
   async list(courseId: string): Promise<CourseQaSessionSummary[]> {
@@ -95,6 +102,22 @@ export class SessionService {
 
   private async write(session: CourseQaSession): Promise<void> {
     await this.filesystem.writeText(this.file(session.courseId, session.id), `${JSON.stringify(session, null, 2)}\n`);
+  }
+
+  private async mutateSession<T>(courseId: string, sessionId: string, action: () => Promise<T>): Promise<T> {
+    const key = this.file(courseId, sessionId);
+    const previous = this.mutationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => current);
+    this.mutationTails.set(key, tail);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.mutationTails.get(key) === tail) this.mutationTails.delete(key);
+    }
   }
 
   private file(courseId: string, sessionId: string): string {
