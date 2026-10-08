@@ -257,15 +257,6 @@ function Write-Utf8([string]$Path, [string]$Content) {
   [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding($false)))
 }
 
-function Write-PackageHashes([string]$PackageRoot) {
-  $hashFile = Join-Path $PackageRoot "SHA256SUMS.txt"
-  $lines = Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Where-Object { $_.FullName -ne $hashFile } | ForEach-Object {
-    $relative = $_.FullName.Substring($PackageRoot.Length + 1).Replace('\', '/')
-    "$(Get-Sha256 $_.FullName)  $relative"
-  } | Sort-Object
-  Write-Utf8 $hashFile (($lines -join "`n") + "`n")
-}
-
 function New-DeterministicZip([string]$Source, [string]$Destination) {
   Add-Type -AssemblyName System.IO.Compression
   Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -348,7 +339,6 @@ function Build-Package([string]$PackageMode, [string]$NodeRuntime, [string]$Pyth
     doclingServe = [ordered]@{ version = [string]$lock.doclingServe.version; wheelSha256 = [string]$lock.doclingServe.sha256 }
   }
   Write-Utf8 (Join-Path $stage "release-manifest.json") (($manifest | ConvertTo-Json -Depth 5) + "`n")
-  Write-PackageHashes $stage
   New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
   $zip = Join-Path $OutputRoot "$packageName.zip"
   New-DeterministicZip $stage $zip

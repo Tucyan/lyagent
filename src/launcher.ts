@@ -13,6 +13,7 @@ class LauncherFailure extends Error { constructor(message: string, public readon
 class ShutdownRequested extends Error {}
 
 const releaseRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+process.stdout.write("正在启动 Course Agent。请保持本窗口运行，不要重复双击启动文件。\n");
 const workspaceRoot = process.env.COURSE_AGENT_WORKSPACE ? path.resolve(process.env.COURSE_AGENT_WORKSPACE) : defaultWorkspaceRoot(process.env);
 const identity = await resolveWorkspaceIdentity(workspaceRoot);
 const descriptorFile = path.join(identity.canonicalRoot, "config", "runtime.json");
@@ -20,7 +21,7 @@ const mutex = await acquireLauncherMutex(identity.hash);
 
 if (!mutex.acquired) {
   const existing = await readHealthyDescriptor(descriptorFile, { workspaceHash: identity.hash, isProcessAlive, processStartedAt: windowsProcessStartedAt, health: (url, token) => healthCheck(url, token) });
-  if (!existing) fail("Course Agent 已在启动或运行，但运行状态无法安全确认。请稍后重试。", 3);
+  if (!existing) fail("Course Agent 已在启动或运行。请等待原启动窗口就绪；如果原窗口已报错，关闭它后再启动，勿并行重复运行。", 3);
   openBrowser(existing.appUrl); process.exit(0);
 }
 
@@ -29,6 +30,7 @@ await rm(descriptorFile, { force: true });
 const device = chooseDoclingDevice(process.env);
 const localAppData = process.env.LOCALAPPDATA;
 if (!localAppData) fail("无法确定 Docling 模型目录。", 1);
+process.stdout.write("正在准备文档转换模型。full 包通常可直接使用本地模型；首次启动请耐心等待。\n");
 const artifactsPath = await prepareDoclingArtifacts({ releaseRoot, localAppData, doclingServeVersion: DOCLING_SERVE_VERSION, runDownload: runDoclingDownload });
 const appCandidates = Array.from({ length: 10 }, (_, index) => 3001 + index); let appReservation = await PortReservation.acquire(appCandidates);
 const converterCandidates = Array.from({ length: 10 }, (_, index) => 8000 + index); let converterReservation = await PortReservation.acquire(converterCandidates);
@@ -41,6 +43,7 @@ try {
   supervision = runSupervisor({
       device, maxUnexpectedRestarts: 2,
       startConverter: async () => {
+        process.stdout.write("正在启动文档转换服务，首次加载可能需要数分钟。就绪后会自动打开网页。\n");
         const remaining = [converterReservation.port, ...converterCandidates.filter((port) => port !== converterReservation.port)];
         while (remaining.length > 0) {
           if (shuttingDown) throw new ShutdownRequested();
@@ -48,13 +51,14 @@ try {
           if (shuttingDown) throw new ShutdownRequested();
           await converterReservation.release(); converterReleased = true;
           const child = startChild(doclingLaunchSpec(releaseRoot, { port: converterReservation.port, device, artifactsPath }));
-          if (await waitForOwnedHealth(`http://127.0.0.1:${converterReservation.port}/ready`, child, 10 * 60_000, undefined, shutdownController.signal) && !shuttingDown) return child;
+          if (await waitForOwnedHealth(`http://127.0.0.1:${converterReservation.port}/ready`, child, 10 * 60_000, undefined, shutdownController.signal, "文档转换服务") && !shuttingDown) { process.stdout.write("文档转换服务已就绪。\n"); return child; }
           await terminateTree(child.pid, child.startedAt); remaining.splice(remaining.indexOf(converterReservation.port), 1);
           if (shuttingDown) throw new ShutdownRequested();
         }
-        throw new Error("文档转换服务启动失败。");
+        throw new LauncherFailure("文档转换服务未能启动。请关闭本次窗口，确认没有重复启动的实例；若再次失败，请保留本窗口提示，提供发布包版本和是否有其他程序占用端口，暂时不要反复启动。", 1);
       },
       startApp: async (selected) => {
+        process.stdout.write("正在启动应用网页服务。\n");
         const remaining = [appReservation.port, ...appCandidates.filter((port) => port !== appReservation.port)];
         while (remaining.length > 0) {
           if (shuttingDown) throw new ShutdownRequested();
@@ -62,16 +66,17 @@ try {
           const instanceId = randomUUID(); const startedAt = Date.now();
           ownedInstanceIds.add(instanceId);
           const child = startChild(appLaunchSpec(releaseRoot, { workspaceRoot: identity.canonicalRoot, appPort: appReservation.port, converterPort: converterReservation.port, device: selected, ownerToken: instanceId }));
-          if (await waitForOwnedHealth(`http://127.0.0.1:${appReservation.port}/api/health`, child, 30_000, instanceId, shutdownController.signal) && !shuttingDown) {
+          if (await waitForOwnedHealth(`http://127.0.0.1:${appReservation.port}/api/health`, child, 30_000, instanceId, shutdownController.signal, "应用网页服务") && !shuttingDown) {
             const supervisorStartedAt = Date.now() - Math.round(process.uptime() * 1_000);
             await writeRuntimeDescriptor(descriptorFile, descriptorFor({ workspaceHash: identity.hash, ownerToken: instanceId, pid: child.pid, processStartedAt: child.startedAt ?? startedAt, supervisorPid: process.pid, supervisorStartedAt, appPort: appReservation.port, converterPort: converterReservation.port, device: selected, startedAt: new Date(startedAt).toISOString() }));
+            process.stdout.write(`应用已就绪：http://127.0.0.1:${appReservation.port} 。若浏览器未自动打开，请复制此地址；结束使用时关闭本窗口。\n`);
             if (!opened) { opened = true; openBrowser(`http://127.0.0.1:${appReservation.port}`); }
             return child;
           }
           await terminateTree(child.pid, child.startedAt); remaining.splice(remaining.indexOf(appReservation.port), 1);
           if (shuttingDown) throw new ShutdownRequested();
         }
-        throw new Error("Course Agent 服务启动失败。");
+        throw new LauncherFailure("应用网页服务未能启动。请关闭本次窗口后重新启动一次；仍失败时保留提示并提供发布包版本，已有业务数据请勿删除。", 1);
       },
       isConverterHealthy: () => healthCheck(`http://127.0.0.1:${converterReservation.port}/ready`), terminateTree, shutdown,
     });
@@ -111,10 +116,12 @@ function openBrowser(url: string): void { const parsed = new URL(url); if (parse
 function systemBinary(name: string): string { const root = process.env.SystemRoot ?? process.env.WINDIR; if (!root) throw new Error("无法确定 Windows 系统目录。"); return path.join(root, "System32", name); }
 function isProcessAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
 async function healthCheck(url: string, expectedOwner?: string, signal?: AbortSignal): Promise<boolean> { try { const response = await fetch(url, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1_500)]) : AbortSignal.timeout(1_500) }); if (!response.ok) return false; if (!expectedOwner) return true; const body = await response.json() as { instanceId?: unknown }; return body.instanceId === expectedOwner; } catch { return false; } }
-async function waitForOwnedHealth(url: string, child: LauncherChild, timeoutMs: number, expectedOwner?: string, signal?: AbortSignal): Promise<boolean> {
+async function waitForOwnedHealth(url: string, child: LauncherChild, timeoutMs: number, expectedOwner?: string, signal?: AbortSignal, label?: string): Promise<boolean> {
+  const started = Date.now(); let nextProgress = started + 30_000;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (signal?.aborted) return false;
+    if (label && Date.now() >= nextProgress) { process.stdout.write(`${label}仍在准备，已等待约${Math.floor((Date.now() - started) / 1000)}秒。请保持窗口运行，不要重复启动。\n`); nextProgress += 30_000; }
     const outcome = await Promise.race([healthCheck(url, expectedOwner, signal).then((healthy) => healthy ? "healthy" as const : "retry" as const), child.wait().then(() => "exited" as const), ...(signal ? [new Promise<"shutdown">((resolve) => signal.addEventListener("abort", () => resolve("shutdown"), { once: true }))] : [])]);
     if (outcome === "shutdown") return false;
     if (outcome === "exited") return false;

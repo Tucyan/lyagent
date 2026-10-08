@@ -62,6 +62,10 @@ export type BatchReviewJob = {
   confidence?: { overall: number };
 };
 
+export function batchJobStatusLabel(job: Pick<BatchReviewJob, "status" | "reviewStatus">): string {
+  return job.reviewStatus === "confirmed" ? "成绩已确认" : batchStatusLabel(job.status);
+}
+
 export function formatBatchScore(job: Pick<BatchReviewJob, "score">): string {
   return job.score ? `${job.score.earned}/${job.score.possible}` : "—";
 }

@@ -312,6 +312,7 @@ function isAbort(error: unknown): boolean {
 type SafeGradingFailureCode =
   | AgentExecutionLimitCode
   | "GRADING_MODEL_REQUEST_FAILED"
+  | "GRADING_ACTION_UNAVAILABLE"
   | "GRADING_TOOL_CALL_MISSING"
   | "GRADING_DRAFT_VALIDATION_FAILED"
   | "GRADING_KNOWLEDGE_UNAVAILABLE"
@@ -320,6 +321,7 @@ type SafeGradingFailureCode =
 function safeGradingFailure(code: SafeGradingFailureCode): { code: SafeGradingFailureCode; message: string } {
   const messages: Record<SafeGradingFailureCode, string> = {
     GRADING_MODEL_REQUEST_FAILED: "模型请求失败，请检查模型连接后重试",
+    GRADING_ACTION_UNAVAILABLE: "当前阶段无法执行该操作；尚未批改时请先点击开始批改，已有草稿时请查看并复核草稿",
     GRADING_TOOL_CALL_MISSING: "模型未提交有效批改草稿，请重试",
     GRADING_DRAFT_VALIDATION_FAILED: "批改草稿未通过校验，请重试并检查评分依据",
     GRADING_KNOWLEDGE_UNAVAILABLE: "课程资料暂不可用；可在不使用课程资料的情况下重试批改",
@@ -332,6 +334,7 @@ function safeGradingFailure(code: SafeGradingFailureCode): { code: SafeGradingFa
 }
 
 function classifyGradingFailure(error: unknown): { code: SafeGradingFailureCode; message: string } {
+  if (error instanceof GradingConflictError) return safeGradingFailure("GRADING_ACTION_UNAVAILABLE");
   if (error instanceof AgentExecutionLimitError) return safeGradingFailure(error.code);
   if (error instanceof KnowledgeAccessError)
     return safeGradingFailure("GRADING_KNOWLEDGE_UNAVAILABLE");

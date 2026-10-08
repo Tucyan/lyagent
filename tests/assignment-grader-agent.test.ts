@@ -53,6 +53,7 @@ describe("assignment grader Agent", () => {
     expect(prompt).toContain("VISION_MODEL_NOT_CONFIGURED");
     expect(prompt).toContain("evidenceInsufficient");
     expect(prompt).toContain("ask_grading_question");
+    expect(prompt).toContain("Teacher-facing options must describe the consequence");
     sessions.close();
   });
 

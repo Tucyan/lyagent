@@ -7,6 +7,8 @@ import {
   modelSettingsRequest,
   modelSettingsStateFromStatus,
   waitForRestartHealth,
+  rememberModelSettingsSave,
+  consumeModelSettingsSave,
   type ModelSettingsFormState,
   type ModelSettingsStatus,
 } from "./model-settings-page-model";
@@ -18,6 +20,8 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [converter, setConverter] = useState<{ provider: "docling"; status: string; device: "auto" | "cpu" }>();
+
+  useEffect(() => { try { const completed = consumeModelSettingsSave(window.sessionStorage); if (completed) setNotice(completed); } catch { /* Browser storage may be unavailable. */ } }, []);
 
   useEffect(() => {
     void apiFetch("/api/system/models", { cache: "no-store" }).then(async (response) => {
@@ -46,7 +50,13 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
             sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
           });
           if (!ready) throw new Error("restart-timeout");
-          window.location.assign(mode === "setup" ? "/" : "/settings/models");
+          if (mode === "setup") window.location.assign("/");
+          else {
+            let remembered = false;
+            try { remembered = rememberModelSettingsSave(window.sessionStorage); } catch { /* Keep the success message on this page instead. */ }
+            if (remembered) window.location.assign("/settings/models");
+            else setNotice("设置已生效，应用已重启。请点击“返回工作台并继续”开展业务。");
+          }
         }
       }
     } catch (caught) {
@@ -82,7 +92,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
           </>}
         </fieldset>
         {error && <p className="model-error" role="alert">{error}</p>}
-        {notice && <p className="model-success" role="status">{notice}</p>}
+        {notice && <p className="model-success" role="status">{notice}{notice.includes("设置已生效") && <> <a href="/">返回工作台并继续</a></>}</p>}
         <div className="model-actions"><button type="button" disabled={Boolean(busy)} onClick={() => void submit("test")}>{busy === "test" ? "测试中…" : "测试连接"}</button><button type="submit" disabled={Boolean(busy)}>{busy === "save" ? "保存中…" : "保存设置"}</button></div>
       </form>
     </section>

@@ -1,5 +1,26 @@
 import { userErrorMessage } from "../../../src/schemas/user-feedback.js";
 
+type NamedGradingRules = {
+  criteria?: ReadonlyArray<{ id: string; name: string }>;
+  rules?: ReadonlyArray<{ id: string; name: string }>;
+  deductionRules?: ReadonlyArray<{ id: string; name: string }>;
+  bonusRules?: ReadonlyArray<{ id: string; name: string }>;
+};
+export function gradingItemLabel(rubric: NamedGradingRules | undefined, id: string, index: number): string {
+  const items = [...(rubric?.criteria ?? []), ...(rubric?.rules ?? []), ...(rubric?.deductionRules ?? []), ...(rubric?.bonusRules ?? [])];
+  return items.find(item => item.id === id)?.name.trim() || `评分项目 ${index + 1}`;
+}
+
+export function gradingConversationRequest(status: string, message: string): string {
+  return status === "waiting_for_teacher"
+    ? `这是对待确认评分问题的教师回答：${message}\n请依据此答复继续批改并提交评分草稿；仍缺少必要信息时请明确提问。`
+    : message;
+}
+
+export function canAnswerGradingQuestion(status: string, runInProgress: boolean, messageIndex: number, lastMessageIndex: number): boolean {
+  return status === "waiting_for_teacher" && !runInProgress && messageIndex === lastMessageIndex;
+}
+
 export interface GradingToolStep {
   id: string;
   name: string;

@@ -11,6 +11,7 @@ import { consumeSse } from "../lib/consume-sse";
 import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import type { RubricValue } from "../components/RubricPreviewEditor";
+import { GradingReviewChecklist } from "../components/GradingReviewChecklist.js";
 import {
   applyGradingEvent,
   buildAssetManifest,
@@ -19,6 +20,9 @@ import {
   gradingSessionStatusLabel,
   gradingSessionWorkflowSummary,
   gradingStatusLabel,
+  gradingConversationRequest,
+  canAnswerGradingQuestion,
+  gradingItemLabel,
   initialLiveMessage,
   normalizeGradingExportOptions,
   parseGradingExportOptions,
@@ -87,6 +91,7 @@ type Draft = {
   };
 };
 type SessionDetail = GradingSession & {
+  rubric: RubricValue;
   submission: { markdown: string; locked: boolean } | null;
   draft: Draft | null;
   confirmed: ({ resultHash: string } & Draft) | null;
@@ -374,7 +379,7 @@ export function GradingPage() {
         kind === "grade"
           ? `/api/grading/sessions/${sessionId}/runs`
           : `/api/grading/sessions/${sessionId}/messages`,
-        { method: "POST", body: JSON.stringify({ message: text }) },
+        { method: "POST", body: JSON.stringify({ message: kind === "chat" ? gradingConversationRequest(detail.gradingStatus, text) : text }) },
       );
       if (selectedIdRef.current === sessionId) setMessage("");
       await followRun(sessionId, run.id);
@@ -773,6 +778,7 @@ export function GradingPage() {
                   {detail.conversation.messages.map((item, index) => (
                     <ConversationBubble
                       message={item}
+                      canAnswer={canAnswerGradingQuestion(detail.gradingStatus, Boolean(live && !live.complete), index, detail.conversation.messages.length - 1) && !isSessionOperationBusy("run")}
                       onOption={(option) => void startRun("chat", option)}
                       key={`${item.runId}-${index}`}
                     />
@@ -793,7 +799,7 @@ export function GradingPage() {
                   <textarea
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
-                    placeholder="询问评分依据，或明确要求 Agent 修改草稿"
+                    placeholder={detail.gradingStatus === "waiting_for_teacher" ? "回答上面的评分问题，发送后继续批改" : "询问评分依据，或明确要求 Agent 修改草稿"}
                     disabled={
                       Boolean(live && !live.complete) ||
                       isSessionOperationBusy("run")
@@ -812,7 +818,7 @@ export function GradingPage() {
                       type="submit"
                       disabled={!message.trim() || isSessionOperationBusy("run")}
                     >
-                      {isSessionOperationBusy("run") ? "正在发送…" : "发送"}
+                      {isSessionOperationBusy("run") ? "正在发送…" : detail.gradingStatus === "waiting_for_teacher" ? "回答并继续批改" : "发送"}
                     </button>
                   )}
                 </form>
@@ -831,24 +837,28 @@ export function GradingPage() {
             <div className="grading-preview-toolbar">
               <div>
                 <button
+                  disabled={creating}
                   className={previewMode === "submission" ? "active" : ""}
                   onClick={() => setPreviewMode("submission")}
                 >
                   学生作业
                 </button>
                 <button
+                  disabled={creating}
                   className={previewMode === "result" ? "active" : ""}
                   onClick={() => setPreviewMode("result")}
                 >
                   评分结果
                 </button>
               </div>
-              <button onClick={() => setFullscreen((value) => !value)}>
+              <button disabled={creating} onClick={() => setFullscreen((value) => !value)}>
                 {fullscreen ? "退出全屏" : "全屏"}
               </button>
             </div>
             <div className="grading-preview-body">
-              {!detail ? (
+              {creating ? (
+                <div className="grading-empty"><h3>正在新建会话</h3><p>请完成左侧表单。创建成功后，这里会显示新报告；当前尚无新会话的成绩。</p></div>
+              ) : !detail ? (
                 <p>选择会话后在此预览。</p>
               ) : previewMode === "submission" ? (
                 <SubmissionPreview
@@ -955,18 +965,20 @@ export function GradingPage() {
   );
 }
 
-function ConversationBubble({
+export function ConversationBubble({
   message,
   onOption,
+  canAnswer,
 }: {
   message: ConversationMessage;
   onOption(option: string): void;
+  canAnswer: boolean;
 }) {
   return (
     <article className={`grading-message ${message.role}`}>
       <div>
         <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-        {message.options && message.options.length > 0 && (
+        {message.options && message.options.length > 0 && (canAnswer ? (
           <div className="preview-actions">
             {message.options.map((option) => (
               <button
@@ -978,7 +990,7 @@ function ConversationBubble({
               </button>
             ))}
           </div>
-        )}
+        ) : <section className="grading-question-history"><small>历史提问选项，仅作记录；请使用当前对话中的操作。</small><ul>{message.options.map(option => <li key={option}>{option}</li>)}</ul></section>)}
         {message.role === "assistant" && (
           <>
             <details>
@@ -1194,31 +1206,11 @@ function ResultPreview({
         </div>
         <span>置信度 {(result.confidence.overall * 100).toFixed(0)}%</span>
       </header>
-      {result.review.requiresReview && (
-        <section className="review-alert">
-          <strong>需要教师复核并逐项确认</strong>
-          {result.review.reasons.map((reason) => (
-            <label key={reviewReasonLabel(reason)}>
-              <input
-                type="checkbox"
-                checked={acknowledgedReasons.includes(reason)}
-                onChange={(event) =>
-                  setAcknowledgedReasons(
-                    event.target.checked
-                      ? [...acknowledgedReasons, reason]
-                      : acknowledgedReasons.filter((item) => item !== reason),
-                  )
-                }
-              />
-              {reviewReasonLabel(reason)}
-            </label>
-          ))}
-        </section>
-      )}
+      <GradingReviewChecklist confirmed={Boolean(detail.confirmed)} reasons={result.review.reasons} notices={Array.isArray(result.decisions.warnings) ? result.decisions.warnings as string[] : []} acknowledgedReasons={acknowledgedReasons} onChange={setAcknowledgedReasons} />
       {manual && !detail.confirmed ? (
-        <DecisionEditor decisions={edited} onChange={setEdited} />
+        <DecisionEditor decisions={edited} rubric={detail.rubric} onChange={setEdited} />
       ) : (
-        <DecisionCards decisions={result.decisions} sessionId={detail.id} />
+        <DecisionCards decisions={result.decisions} rubric={detail.rubric} sessionId={detail.id} />
       )}
       {detail.confirmed ? (
         <section className="confirmed-badge">
@@ -1299,9 +1291,11 @@ function decisionEntries(decisions: Record<string, unknown>) {
 export function DecisionCards({
   decisions,
   sessionId,
+  rubric,
 }: {
   decisions: Record<string, unknown>;
   sessionId: string;
+  rubric?: RubricValue;
 }) {
   return (
     <section className="decision-list">
@@ -1313,7 +1307,7 @@ export function DecisionCards({
           <article key={String(item.criterionId ?? item.ruleId ?? index)}>
             <div>
               <strong>
-                {String(item.criterionId ?? item.ruleId ?? `项目 ${index + 1}`)}
+                {gradingItemLabel(rubric, String(item.criterionId ?? item.ruleId ?? ""), index)}
               </strong>
               <span>
                 {item.score !== undefined
@@ -1384,9 +1378,11 @@ export function DecisionCards({
 export function DecisionEditor({
   decisions,
   onChange,
+  rubric,
 }: {
   decisions: Record<string, unknown>;
   onChange(value: Record<string, unknown>): void;
+  rubric?: RubricValue;
 }) {
   const update = (
     key: string,
@@ -1403,7 +1399,7 @@ export function DecisionEditor({
     <section className="decision-list decision-editor">
       {decisionEntries(decisions).map(({ key, index, item }) => (
         <article key={`${key}-${index}`}>
-          <strong>{String(item.criterionId ?? item.ruleId)}</strong>
+          <strong>{gradingItemLabel(rubric, String(item.criterionId ?? item.ruleId ?? ""), index)}</strong>
           {item.triggered !== undefined && (
             <label>
               <input
@@ -1420,7 +1416,7 @@ export function DecisionEditor({
             .filter((field) => item[field] !== undefined)
             .map((field) => (
               <label key={field}>
-                {field}
+                {{ score: "得分", deduction: "扣分", bonus: "加分" }[field]}
                 <input
                   type="number"
                   min="0"

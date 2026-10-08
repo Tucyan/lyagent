@@ -5,9 +5,12 @@ import { apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, revi
 import { navigateWithinApp } from "../lib/app-navigation";
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import { DecisionCards, DecisionEditor } from "./GradingPage";
+import { GradingReviewChecklist } from "../components/GradingReviewChecklist.js";
+import type { RubricValue } from "../components/RubricPreviewEditor.js";
 import {
   batchReviewHref,
   batchStatusLabel,
+  batchJobStatusLabel,
   canConfirmBatchJob,
   canRetryBatchJob,
   formatBatchConfidence,
@@ -48,6 +51,7 @@ type Draft = {
   };
 };
 type SessionDetail = {
+  rubric: RubricValue;
   id: string;
   studentName: string;
   studentNumber: string;
@@ -272,7 +276,7 @@ export function GradingBatchReviewPage() {
         <nav>{batch?.jobs.map((job) => <button className={job.sessionId === selectedJob?.sessionId ? "active" : ""} key={job.id} type="button" onClick={() => chooseSession(job.sessionId)}>
           <span><strong>{job.studentName}</strong><small>{job.studentNumber}</small></span>
           <span><b>{formatBatchScore(job)}</b><small>置信度 {formatBatchConfidence(job)}</small></span>
-          <em>{batchStatusLabel(job.status)}</em>
+          <em>{batchJobStatusLabel(job)}</em>
         </button>)}</nav>
       </aside>
       <main className="batch-review-main">
@@ -283,13 +287,13 @@ export function GradingBatchReviewPage() {
             <div className="batch-review-resizer" role="separator" aria-label="调整报告与评分结果宽度" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(reportPercent)} tabIndex={0} onPointerDown={startResize} onPointerMove={resize} onKeyDown={(event) => { if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); setReportPercent((value) => clampBatchReviewReportPercent(value + (event.key === "ArrowLeft" ? -2 : 2))); } }} />
             <section className="batch-review-result"><header><div><h3>评分结果</h3>{result && <strong>{result.result.score.earned}/{result.result.score.possible}</strong>}</div>{result && <span>整体置信度 {Math.round(result.result.confidence.overall * 100)}%</span>}</header>
               {!result ? <p>尚无评分结果。</p> : <>
-                {result.result.review.requiresReview && <section className="review-alert"><strong>请确认全部复核原因</strong>{reasons.map((reason) => <label key={reviewReasonLabel(reason)}><input type="checkbox" checked={acknowledgedReasons.includes(reason)} onChange={(event) => setAcknowledgedReasons(event.target.checked ? [...acknowledgedReasons, reason] : acknowledgedReasons.filter((item) => item !== reason))} />{reviewReasonLabel(reason)}</label>)}</section>}
-                {editing && currentDetail?.draft ? <DecisionEditor decisions={edited} onChange={setEdited} /> : <DecisionCards decisions={result.result.decisions} sessionId={currentDetail?.id ?? selectedJob.sessionId} />}
+                <GradingReviewChecklist confirmed={Boolean(currentDetail?.confirmed)} reasons={reasons} notices={Array.isArray(result.result.decisions.warnings) ? result.result.decisions.warnings as string[] : []} acknowledgedReasons={acknowledgedReasons} onChange={setAcknowledgedReasons} />
+                {editing && currentDetail?.draft ? <DecisionEditor decisions={edited} rubric={currentDetail.rubric} onChange={setEdited} /> : <DecisionCards decisions={result.result.decisions} rubric={currentDetail?.rubric} sessionId={currentDetail?.id ?? selectedJob.sessionId} />}
                 {editing && <section className="batch-review-edit-actions"><label>修改备注<textarea value={editNote} onChange={(event) => setEditNote(event.target.value)} /></label><div><button type="button" onClick={() => setEditing(false)}>取消修改</button><button type="button" disabled={busy || !editNote.trim()} onClick={() => void saveEdit()}>{busyAction === "save" ? "保存中…" : "保存修改"}</button></div></section>}
-                {!editing && currentDetail?.draft && <button type="button" onClick={() => setEditing(true)}>修改评分结果</button>}
-                {currentDetail?.draft && <label className="batch-review-note">复核备注<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} /></label>}
+                {!editing && currentDetail?.draft && !currentDetail.confirmed && <button type="button" onClick={() => setEditing(true)}>修改评分结果</button>}
+                {currentDetail?.draft && !currentDetail.confirmed && <label className="batch-review-note">复核备注<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} /></label>}
               </>}
-              <footer><button type="button" disabled={busy || !selectedJob || !canRetryBatchJob(selectedJob)} onClick={() => void retry()}>{busyAction === "retry" ? "重试中…" : "重试"}</button><button className="primary-button" type="button" disabled={confirmDisabled} onClick={() => void confirm()}>{busyAction === "confirm" ? "确认中…" : "确认"}</button></footer>
+              {currentDetail?.confirmed ? <section className="confirmed-badge"><p>成绩已确认，教师复核记录已保存。</p><a href={`/grading?session=${currentDetail.id}`}>查看正式结果与导出；需要改分时创建结果修订</a></section> : <footer><button type="button" disabled={busy || !selectedJob || !canRetryBatchJob(selectedJob)} onClick={() => void retry()}>{busyAction === "retry" ? "重试中…" : "重试"}</button><button className="primary-button" type="button" disabled={confirmDisabled} onClick={() => void confirm()}>{busyAction === "confirm" ? "确认中…" : "确认"}</button></footer>}
             </section>
           </div>
         </>}

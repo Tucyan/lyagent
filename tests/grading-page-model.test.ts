@@ -7,6 +7,8 @@ import {
   gradingSessionStatusLabel,
   gradingSessionWorkflowSummary,
   gradingStatusLabel,
+  gradingConversationRequest,
+  canAnswerGradingQuestion,
   initialLiveMessage,
   normalizeGradingExportOptions,
   parseGradingExportOptions,
@@ -19,6 +21,28 @@ import {
 } from "../web/src/pages/grading-page-model.js";
 
 describe("grading workbench presentation", () => {
+  it("allows only the current unanswered teacher question and blocks history or an active run", () => {
+    // A waiting question retains its run ID; only a live, unfinished run blocks answering.
+    expect(canAnswerGradingQuestion("waiting_for_teacher", false, 4, 4)).toBe(true);
+    expect(canAnswerGradingQuestion("waiting_for_teacher", false, 1, 4)).toBe(false);
+    expect(canAnswerGradingQuestion("waiting_for_teacher", true, 4, 4)).toBe(false);
+    expect(canAnswerGradingQuestion("needs_review", false, 4, 4)).toBe(false);
+    expect(canAnswerGradingQuestion("confirmed", false, 4, 4)).toBe(false);
+  });
+  it("explains model and draft failures with a concrete next step instead of a generic restart", () => {
+    const model = applyGradingEvent(initialLiveMessage("run"), "error", { code: "GRADING_MODEL_REQUEST_FAILED", message: "raw provider exception" });
+    expect(model.content).toContain("测试连接");
+    const state = applyGradingEvent(initialLiveMessage("run"), "error", { code: "GRADING_ACTION_UNAVAILABLE" });
+    expect(state.content).toContain("开始批改");
+    expect(model.content).not.toContain("raw provider");
+  });
+  it("continues grading after a teacher answers a pending question while keeping ordinary chat unchanged", () => {
+    const answer = "按现有证据严格评分";
+    expect(gradingConversationRequest("waiting_for_teacher", answer)).toContain(answer);
+    expect(gradingConversationRequest("waiting_for_teacher", answer)).toContain("继续批改并提交评分草稿");
+    expect(gradingConversationRequest("draft_ready", "解释扣分依据")).toBe("解释扣分依据");
+    expect(gradingConversationRequest("not_started", "先看看评分标准")).toBe("先看看评分标准");
+  });
   it("does not show raw run errors and tells the teacher how to recover", () => {
     const result = applyGradingEvent(initialLiveMessage("run"), "error", { code: "GRADING_RUN_INTERRUPTED", message: "SECRET C:\\private\\file" });
     expect(result.content).toContain("核对现有草稿");

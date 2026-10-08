@@ -17,6 +17,8 @@ describe("API error presentation", () => {
     }
     expect(rubricProblemMessage({ code: "RANGE_GAP_OR_OVERLAP", path: "criteria.private.levels" })).toContain("0.01");
     expect(rubricProblemMessage({ code: "NEW_ERROR", path: "private.socket" })).not.toMatch(/private|socket/);
+    expect(reviewReasonLabel("CONVERSION_WARNING")).toContain("具体说明");
+    expect(reviewReasonLabel("CONVERSION_WARNING")).not.toContain("报告转换");
   });
   it("keeps the safe code, message, and issue paths", async () => {
     const error = await apiErrorFromResponse(new Response(JSON.stringify({

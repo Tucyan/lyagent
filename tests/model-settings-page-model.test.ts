@@ -8,6 +8,8 @@ import {
   modelSettingsRequest,
   modelSettingsStateFromStatus,
   resolveAppRoute,
+  rememberModelSettingsSave,
+  consumeModelSettingsSave,
 } from "../web/src/pages/model-settings-page-model.js";
 
 const status = {
@@ -15,6 +17,20 @@ const status = {
 };
 
 describe("model settings page model", () => {
+  it("keeps a one-time save confirmation across a successful restart without storing credentials", () => {
+    const values = new Map<string, string>();
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+    expect(consumeModelSettingsSave(storage)).toBe("");
+    expect(rememberModelSettingsSave(storage)).toBe(true);
+    expect([...values.values()]).toEqual(["completed"]);
+    expect(consumeModelSettingsSave(storage)).toContain("设置已生效");
+    expect(consumeModelSettingsSave(storage)).toBe("");
+  });
+  it("does not fail a successful save when browser storage is unavailable", () => {
+    const storage = { getItem: () => { throw new Error("storage disabled"); }, setItem: () => { throw new Error("storage disabled"); }, removeItem: () => { throw new Error("storage disabled"); } };
+    expect(rememberModelSettingsSave(storage)).toBe(false);
+    expect(consumeModelSettingsSave(storage)).toBe("");
+  });
   it("redirects normal pages to setup until the primary model is configured", () => {
     expect(resolveAppRoute("/grading", false)).toEqual({ kind: "redirect", href: "/setup" });
     expect(resolveAppRoute("/setup", false)).toEqual({ kind: "setup" });

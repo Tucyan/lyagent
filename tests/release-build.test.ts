@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -52,7 +54,7 @@ describe("Windows release builder", () => {
     expect(script).toContain("[string]$CacheRoot");
     expect(script).toContain("[string]$OutputRoot");
     expect(script).toContain(".part");
-    expect(script).toContain("Get-FileHash");
+    expect(script).toMatch(/Get-FileHash|Security.Cryptography.SHA256/);
     expect(script).not.toContain("$Size.Value");
     expect(script).toContain("Move-Item");
     expect(script).toContain('$inner = @(Get-ChildItem -LiteralPath $temporary -Directory)');
@@ -75,10 +77,11 @@ describe("Windows release builder", () => {
     expect(script).toContain("Copy-Directory $modelCache $models");
   });
 
-  it("stages only runtime inputs and emits manifests, package hashes, and mode metadata", async () => {
+  it("stages runtime inputs and emits manifests, archive hashes, and mode metadata", async () => {
     const script = await text("scripts/build-release.ps1");
     expect(script).toContain("release-manifest.json");
     expect(script).toContain("SHA256SUMS.txt");
+    expect(script).not.toContain("Write-PackageHashes");
     expect(script).toContain("THIRD_PARTY_NOTICES.md");
     expect(script).toContain('packageMode = $PackageMode');
     expect(script).toContain('modelsIncluded = ($PackageMode -eq "full")');
@@ -92,8 +95,7 @@ describe("Windows release builder", () => {
 
   it("checks the bundled Node ABI against better-sqlite3 with the bundled executable", async () => {
     const build = await text("scripts/build-release.ps1");
-    const verify = await text("scripts/verify-release.ps1");
-    for (const script of [build, verify]) {
+    for (const script of [build]) {
       expect(script).toContain("better-sqlite3");
       expect(script).toContain("process.versions.modules");
       expect(script).toContain("node.exe");
@@ -101,21 +103,32 @@ describe("Windows release builder", () => {
     expect(build).toContain('Push-Location (Join-Path $PackageRoot "app")');
   });
 
-  it("verifies package content without reading or writing secret values", async () => {
+  it("verifies only the archive hash without extracting or scanning package files", async () => {
     const script = await text("scripts/verify-release.ps1");
-    expect(script).toContain("release-manifest.json");
     expect(script).toContain("SHA256SUMS.txt");
-    expect(script).toContain("packageMode");
-    expect(script).toContain("modelsIncluded");
-    expect(script).toContain("Get-FileHash");
-    expect(script).toContain("VerifyAndExtract");
-    expect(script).toContain("ZipArchive");
+    expect(script).toMatch(/Get-FileHash|Security.Cryptography.SHA256/);
+    expect(script).not.toContain("VerifyAndExtract");
+    expect(script).not.toContain("ZipArchive");
     expect(script).not.toContain("Expand-Archive");
-    expect(script).toContain("Assert-NoForbiddenContent");
-    expect(script).toContain(String.raw`runtime\python\Lib\site-packages\docling_parse\pdf_resources\glyphs\standard\additional.dat`);
-    expect(script).toMatch(/\$segments -notcontains "node_modules"/);
-    expect(script).toMatch(/\^\(api\[-_\]\?key\|secret\|student-material\)/);
+    expect(script).not.toContain("-Recurse");
     expect(script).not.toMatch(/Get-Content\s+.*(?:secret|api.?key)/i);
+  });
+
+  it.skipIf(process.platform !== "win32")("accepts a matching external checksum and rejects a changed archive or missing checksum", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "release-archive-hash-"));
+    try {
+      const archive = path.join(directory, "course-agent-v0.1.0-win-x64-full.zip");
+      const bytes = Buffer.from("archive hash only; contents must not be opened");
+      await writeFile(archive, bytes);
+      const sums = path.join(directory, "SHA256SUMS.txt");
+      await writeFile(sums, `${createHash("sha256").update(bytes).digest("hex")}  ${path.basename(archive)}\n`);
+      const verify = () => execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "scripts/verify-release.ps1"), "-ReleaseRoot", directory, "-PackagePath", archive], { stdio: "pipe", timeout: 15_000 }).toString();
+      expect(verify()).toContain("Archive SHA-256 verified");
+      await writeFile(archive, "changed archive");
+      expect(verify).toThrow();
+      await rm(sums);
+      expect(verify).toThrow();
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });
 

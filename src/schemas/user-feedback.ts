@@ -33,6 +33,11 @@ const errors: Record<string, string> = {
   RUBRIC_DESIGN_FAILED: "评分表设计未能完成。请检查模型连接后重新发送请求，也可点击“人工编辑”继续修改已有草稿。",
   GRADING_RUN_INTERRUPTED: "上次批改因服务重启而中断。请核对现有草稿，再点击“重新批改”继续。",
   GRADING_RUN_FAILED: "这次批改未能完成。请检查模型连接并核对报告后重试，已有草稿可继续人工复核。",
+  GRADING_MODEL_REQUEST_FAILED: "模型请求未完成。请到“模型设置”点击“测试连接”，连接正常后返回当前会话重试；已有草稿仍可复核。",
+  GRADING_ACTION_UNAVAILABLE: "当前会话状态不支持此操作。请刷新核对状态；尚未开始时先点击“开始批改”，已有草稿可继续复核。",
+  GRADING_TOOL_CALL_MISSING: "模型未生成有效评分草稿。请在当前会话明确要求“继续批改并提交评分草稿”；仍失败时先测试模型连接再重试。",
+  GRADING_DRAFT_VALIDATION_FAILED: "评分草稿不符合当前评分表。请核对评分标准，并要求模型按冻结评分表重新生成；已有草稿可人工修订。",
+  GRADING_KNOWLEDGE_UNAVAILABLE: "课程资料暂不可用。请在课程资料库核对当前已发布版本，也可明确要求仅依据评分表和报告重新批改。",
   SUBMISSION_TITLE_FAILED: "名称识别未完成。请手动填写作业名称后继续，或点击“重试识别”。",
   SUBMISSION_TITLE_MODEL_FAILED: "名称识别未完成。请手动填写作业名称后继续，或点击“重试识别”。",
   CONVERTER_UNAVAILABLE: "转换服务暂时不可用，原始报告已保留。请确认启动器和转换服务就绪后点击“重试转换”，也可上传 Markdown 报告。",
@@ -82,7 +87,7 @@ export function reviewReasonLabel(reason: string): string {
   return ({
     LOW_CONFIDENCE: "模型把握不足：请核对对应项目的评分分析和作业表现。",
     EVIDENCE_INSUFFICIENT: "评分依据不足：请补充或修正评分分析，确认分数有依据。",
-    CONVERSION_WARNING: "报告转换需要核对：请对照原始报告检查正文、表格和图片是否完整。",
+    CONVERSION_WARNING: "评分注意事项需要核对：请查看具体说明；涉及转换完整性时，再对照原始报告检查正文、表格和图片。",
     NEAR_PASSING_BOUNDARY: "成绩接近及格线：请重点核对影响通过与否的评分项目。",
   } as Record<string, string>)[reason] ?? "需要教师复核：请核对报告与评分表，并在备注中记录判断。";
 }

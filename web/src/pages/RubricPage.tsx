@@ -200,11 +200,6 @@ export function RubricPage() {
     ]).then(([, nextVersions]) => {
       if (!lease.isCurrent() || selectedAssignmentId !== selectedAssignmentIdRef.current) return;
       if (!loadedDraft && nextVersions?.[0]) setPreviewVersion(nextVersions[0].version);
-      if (new URLSearchParams(window.location.search).get("mockError") === "1") {
-        setPreviewVersion("draft");
-        setNotice("评分表尚不能保存或冻结。请点击“人工编辑”，按下面的说明修正后重新保存并校验。\n评分项目的分值上限之和必须等于评分表总分。请在“人工编辑”中调整各项分值后再保存。");
-        setValidation({ errors: [{ code: "CRITERIA_TOTAL_MISMATCH", message: "Criterion maxima must equal the rubric total score", path: "criteria" }], warnings: [] });
-      }
     }).catch((error: Error) => {
       if (lease.isCurrent()) setNotice(error.message);
     });

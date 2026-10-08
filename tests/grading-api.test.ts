@@ -568,6 +568,7 @@ describe("grading API", () => {
       url: `/api/grading/sessions/${session.id}`,
     });
     expect(read.json().submission.markdown).toContain("AI 与生活");
+    expect(read.json().rubric).toEqual(rubric);
     const edited = await app.inject({
       method: "PUT",
       url: `/api/grading/sessions/${session.id}/submission`,

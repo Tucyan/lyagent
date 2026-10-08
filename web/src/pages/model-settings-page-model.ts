@@ -1,3 +1,16 @@
+type SaveNoticeStorage = { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void };
+const SAVE_NOTICE_KEY = "course-agent-model-save-completed";
+export function rememberModelSettingsSave(storage: SaveNoticeStorage): boolean {
+  try { storage.setItem(SAVE_NOTICE_KEY, "completed"); return true; } catch { return false; }
+}
+export function consumeModelSettingsSave(storage: SaveNoticeStorage): string {
+  try {
+    const completed = storage.getItem(SAVE_NOTICE_KEY) === "completed";
+    storage.removeItem(SAVE_NOTICE_KEY);
+    return completed ? "设置已生效，应用已重启。请点击“返回工作台并继续”开展业务。" : "";
+  } catch { return ""; }
+}
+
 export interface ModelEndpointStatus {
   providerId: string;
   modelId: string;

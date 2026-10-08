@@ -10,6 +10,8 @@
 
 ## 文档
 
+- [从解压开始的逐步图文使用说明](docs/acceptance/2026-10-08-step-by-step-usage.md)：真实 DeepSeek 示例操作、复核与导出。
+- [真实交互验证报告](docs/acceptance/2026-10-08-real-interaction-report.md)：截图证据、源码修复和未验证范围。
 - [工程文档入口](.docs/README.md)：架构、存储、开发、测试与运行安全。
 - [里程碑与用户验收范围](docs/superpowers/plans/2026-08-02-course-agent-milestones.md)：各阶段状态与验收条件。
 - [Windows 发布包前端验收](docs/acceptance/windows-release-frontend-state-sync.md)：页面切换、会话恢复和操作状态检查。

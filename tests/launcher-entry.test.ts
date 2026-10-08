@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, copyFile, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
@@ -52,6 +53,28 @@ it("BAT launches only the bundled launcher through a quoted relative path", asyn
   expect(bat).toContain('"%~dp0runtime\\node\\node.exe" "%~dp0app\\dist\\src\\launcher.js"');
   expect(bat).not.toMatch(/mineru-api/i);
   expect(bat).toMatch(/if not exist/i);
+});
+
+it.skipIf(process.platform !== "win32")("BAT shows actionable Chinese guidance after a launcher failure in a spaced path", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "启动提示 验证-"));
+  try {
+    await mkdir(path.join(root, "runtime/node"), { recursive: true });
+    await mkdir(path.join(root, "runtime/python/Lib/site-packages/docling_serve"), { recursive: true });
+    await mkdir(path.join(root, "app/dist/src"), { recursive: true });
+    await copyFile(process.execPath, path.join(root, "runtime/node/node.exe"));
+    await writeFile(path.join(root, "runtime/python/python.exe"), "test-only placeholder");
+    await writeFile(path.join(root, "app/dist/src/launcher.js"), "process.exit(2);");
+    const bat = path.join(root, "start-course-agent.bat");
+    await copyFile(path.resolve("start-course-agent.bat"), bat);
+    const result = spawnSync(path.join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", `""${bat}" <nul"`], { encoding: "utf8", windowsVerbatimArguments: true, timeout: 10_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain("启动未完成。请保留上方提示；已有业务数据请勿删除，不要反复双击启动。");
+    expect(result.stderr).not.toContain("not recognized");
+  } finally {
+    if (!path.resolve(root).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`)) throw new Error("Test cleanup path escaped temporary directory");
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("waits for Docling model readiness rather than process liveness alone", async () => {

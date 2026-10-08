@@ -23,11 +23,11 @@ async function setup() {
   await rubrics.createDraft(assignment.id, { schemaVersion: "1.0", mode: "deductive", totalScore: 100, overlapGroups: [], rules: [{ id: "missing", name: "缺失", condition: "缺失", deduction: 20, maxDeduction: 20, occurrence: "once", evidenceRequired: true }] });
   await rubrics.freeze(assignment.id, 1, []);
   const sessions = new GradingSessionService(root, rubrics);
-  async function createSession(studentNumber: string) {
+  async function createSession(studentNumber: string, lock = true) {
     const source = path.join(root, `${studentNumber}.md`);
     await writeFile(source, "# 报告\n内容\n", "utf8");
     const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: 1, studentName: "学生", studentNumber, originalPath: source, originalFilename: `${studentNumber}.md`, autoStartAfterConversion: false });
-    await sessions.lockSubmissionForGrading(session.id);
+    if (lock) await sessions.lockSubmissionForGrading(session.id);
     return session;
   }
   return { root, sessions, results: new GradingResultService(root, sessions, rubrics), createSession };
@@ -38,6 +38,18 @@ afterEach(async () => {
 });
 
 describe("GradingRunService", () => {
+  it("explains how to proceed when a teacher question is requested before grading starts", async () => {
+    const { root, sessions, createSession } = await setup();
+    const session = await createSession("20262002", false);
+    const runs = new GradingRunService(root, sessions, () => ({ run: async () => ({ kind: "question", question: { question: "严格还是从宽？", options: ["严格", "从宽"] } }) }));
+    try {
+      const run = await runs.start(session.id, { kind: "chat", message: "先向教师确认" });
+      const terminal = await runs.waitForTerminal(run.id);
+      expect(terminal.status).toBe("failed");
+      expect((await runs.listEvents(run.id, 0)).find((event) => event.type === "error")?.code).toBe("GRADING_ACTION_UNAVAILABLE");
+      expect((await sessions.getSession(session.id)).gradingStatus).toBe("not_started");
+    } finally { runs.close(); sessions.close(); }
+  });
   it("bounds SQLite polling while a run is stalled and preserves timeout behavior", async () => {
     const { root, sessions, createSession } = await setup();
     const session = await createSession("20262001");
