@@ -588,6 +588,7 @@ export function registerGradingApi(
       const session = await sessions.getSession(id);
       return {
         ...session,
+        owningBatchId: batches.owningBatchId(id) ?? null,
         rubric: (await options.rubrics.getVersion(session.assignmentId, session.rubricVersion)).rubric,
         submission:
           session.conversionStatus === "ready"

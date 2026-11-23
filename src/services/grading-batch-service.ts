@@ -450,6 +450,11 @@ export class GradingBatchService {
     return this.rebuildSummary(batchId);
   }
 
+  owningBatchId(sessionId: string): string | undefined {
+    const job = this.database.prepare("SELECT batch_id FROM grading_batch_jobs WHERE session_id = ? LIMIT 1").get(sessionId) as { batch_id: string } | undefined;
+    return job?.batch_id;
+  }
+
   assertDirectRunAllowed(sessionId: string): void {
     const reserved = this.database.prepare(
       "SELECT 1 FROM grading_batch_jobs WHERE session_id = ? LIMIT 1",

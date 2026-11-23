@@ -1,0 +1,45 @@
+:root {
+  /* Restrained neutral palette */
+  --bg-canvas: #f6f7f9;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f1f4f8;
+  --border-subtle: #e3e7ee;
+  --border-strong: #cfd6e1;
+
+  /* Text hierarchy */
+  --text-primary: #1c2430;
+  --text-secondary: #525f70;
+  --text-muted: #768394;
+
+  /* Single restrained brand accent */
+  --color-primary: #275896;
+  --color-primary-hover: #1f487c;
+  --color-primary-soft: #eef4fc;
+  --color-primary-border: #c4d8f2;
+
+  /* Low-saturation semantic tones */
+  --color-success-bg: #edf7f1;
+  --color-success-border: #bfe3ce;
+  --color-success-text: #1c6442;
+
+  --color-warning-bg: #fef7e8;
+  --color-warning-border: #f1d39a;
+  --color-warning-text: #85520e;
+
+  --color-danger-bg: #fdf1f1;
+  --color-danger-border: #f0c2c2;
+  --color-danger-text: #9e2d2d;
+
+  /* Shape & motion */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 2px rgba(24, 34, 48, 0.05);
+  --shadow-md: 0 8px 24px rgba(24, 34, 48, 0.08);
+  --shadow-lg: 0 16px 40px rgba(24, 34, 48, 0.14);
+  --ease-standard: 160ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* Shell widths */
+  --nav-width-expanded: 224px;
+  --nav-width-compact: 64px;
+}

@@ -471,6 +471,7 @@ describe("grading API", () => {
     expect(reservedDelete.statusCode, reservedDelete.body).toBe(409);
     const preserved = await app.inject({ method: "GET", url: `/api/grading/sessions/${sessionIds[0]}` });
     expect(preserved.statusCode, preserved.body).toBe(200);
+    expect(preserved.json().owningBatchId).toBe(batch.id);
     expect(preserved.json().submission.markdown).toContain("合成正文");
     const reservationDb = new Database(path.join(root, "grading.sqlite"));
     reservationDb.prepare("UPDATE grading_batch_jobs SET status = 'cancelled' WHERE session_id = ?").run(sessionIds[0]);

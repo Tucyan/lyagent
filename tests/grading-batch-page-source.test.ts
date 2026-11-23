@@ -7,11 +7,11 @@ describe("batch grading table source", () => {
     expect(source).toContain("<th>分数</th>");
     expect(source).toContain("<th>置信度</th>");
     expect(source).toContain("batchReviewHref");
-    expect(source).toContain(">Review</a>");
+    expect(source).toContain(">进入复核</a>");
     expect(source).toContain("重试中…");
     expect(source).toContain("retryingItemId");
     expect(source).toContain("retryingJobId");
-    expect(source).toContain(">确认</button>");
+    expect(source).toContain('"确认"}</button>');
     expect(source).toContain("/confirm`");
   });
 

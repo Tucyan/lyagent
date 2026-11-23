@@ -3,6 +3,9 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { RubricDocument, RubricEditor, type RubricMode, type RubricValue } from "../components/RubricPreviewEditor";
 import { ToolActivity, type ToolStep } from "../components/ToolActivity";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { useToast } from "../components/ToastProvider";
+import { useUnsavedGuard } from "../lib/use-unsaved-guard";
 import { withJsonHeaders, apiFetch, apiErrorFromResponse, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
 import { LatestRequestGate, type RequestLease } from "../lib/async-state";
@@ -37,6 +40,7 @@ function storedMessages(session: RubricSession | null): RubricMessage[] {
 }
 
 export function RubricPage() {
+  const toast = useToast();
   const selectedAssignmentId = assignmentIdFromSearch(window.location.search);
   const [assignments, setAssignments] = useState<RubricAssignment[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
@@ -73,6 +77,7 @@ export function RubricPage() {
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [previewVersion, setPreviewVersion] = useState<"draft" | number>("draft");
   const [editing, setEditing] = useState(false);
+  useUnsavedGuard(editing);
   const [editedRubric, setEditedRubric] = useState<RubricValue>();
   const [validation, setValidation] = useState<RubricValidation>();
   const [freezeReady, setFreezeReady] = useState(false);
@@ -383,7 +388,7 @@ export function RubricPage() {
     try {
       const saved = await api<RubricDraft>(`/api/rubrics/assignments/${requestAssignmentId}/draft`, { method: "PUT", body: JSON.stringify({ expectedVersion: draft.version, rubric: editedRubric }) });
       if (requestAssignmentId !== selectedAssignmentIdRef.current) return;
-      setDraft(saved); setEditing(false); setValidation(undefined); setFreezeReady(false); setNotice(`人工修改已保存为草稿 v${saved.version}。`);
+      setDraft(saved); setEditing(false); setValidation(undefined); setFreezeReady(false); setNotice(`人工修改已保存为草稿 v${saved.version}。`); toast.success(`人工修改已保存为草稿 v${saved.version}。`);
     } catch (error) { if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice((error as Error).message); }
     finally { if (requestAssignmentId === selectedAssignmentIdRef.current) setSubmitting(false); }
   };
@@ -407,7 +412,7 @@ export function RubricPage() {
     try {
       const frozen = await api<FrozenRubric>(`/api/rubrics/assignments/${requestAssignmentId}/freeze`, { method: "POST", body: JSON.stringify({ expectedVersion: draft.version, acknowledgedWarningCodes: validation.warnings.map((warning) => warning.code) }) });
       if (requestAssignmentId !== selectedAssignmentIdRef.current) return;
-      setDraft(undefined); setEditing(false); setFreezeReady(false); setValidation(undefined); setPreviewVersion(frozen.version); await refreshVersions(requestAssignmentId); await refreshAssignments(); if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice(`评分表 v${frozen.version} 已冻结，可正式应用。`);
+      setDraft(undefined); setEditing(false); setFreezeReady(false); setValidation(undefined); setPreviewVersion(frozen.version); await refreshVersions(requestAssignmentId); await refreshAssignments(); if (requestAssignmentId === selectedAssignmentIdRef.current) { setNotice(`评分表 v${frozen.version} 已冻结，可正式应用。`); toast.success(`评分表 v${frozen.version} 已冻结，可用于作业批改。`); }
     } catch (error) { if (requestAssignmentId === selectedAssignmentIdRef.current) setNotice((error as Error).message); }
     finally { if (requestAssignmentId === selectedAssignmentIdRef.current) setSubmitting(false); }
   };
@@ -452,10 +457,10 @@ export function RubricPage() {
   const workspaceStyle = { "--rubric-preview-width": `${previewPercent}%` } as CSSProperties;
 
   const chatContent = assignment && selectedMode ? <section className="rubric-chat">
-    <div className="rubric-chat-heading"><div><h2>{assignment.title}</h2><p>{assignment.totalScore} 分 · {modeLabel[selectedMode]}</p></div><a href="/rubrics">新建评分表</a></div>
+    <div className="rubric-chat-heading"><div><h2>{assignment.title}</h2><p>{assignment.totalScore} 分 · {modeLabel[selectedMode]}</p></div></div>
     <details className="rubric-context"><summary>作业要求与参考资料</summary>{assignment.requirements ? <p>{assignment.requirements}</p> : <p>未单独填写作业要求，将以参考资料为设计依据。</p>}{assignment.sources.length > 0 && <ul>{assignment.sources.map((item) => <li key={item.id}>{item.role === "rubric_draft" ? "评分草稿" : "设计备注"}：{item.name}</li>)}</ul>}</details>
     <div className="rubric-message-list" ref={messageListRef} aria-live="polite" onScroll={(event) => { const list = event.currentTarget; followStreamRef.current = shouldFollowRubricStream(list.scrollHeight - list.scrollTop - list.clientHeight); }}>{messages.length === 0 ? <div className="rubric-chat-welcome"><h3>{frozenWithoutDraft ? "当前评分表已冻结" : "继续设计评分表"}</h3><p>{frozenWithoutDraft ? "请从右侧历史版本创建修订后继续对话。" : "可以直接生成第一版，也可以先补充希望采用的评分维度。"}</p>{!frozenWithoutDraft && <button className="primary-button" type="button" disabled={submitting} onClick={() => void chooseMode(selectedMode)}>直接生成第一版评分表</button>}</div> : messages.map((message) => <article className={`rubric-chat-message ${message.role}`} key={message.id}>{message.role === "assistant" && <><ToolActivity steps={message.tools ?? []} streaming={streamingMessageId === message.id} title="评分表处理步骤" streamingTitle="正在设计评分表" />{message.process && <details className="assistant-process" open={streamingMessageId === message.id}><summary>模型处理过程 <small>安全摘要，完成后自动折叠</small></summary><p>{message.process}</p></details>}</>}<div className="rubric-message-content">{message.role === "assistant" ? <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown> : <p>{message.content}</p>}</div>{message.options && <div className="rubric-question-options">{message.options.map((option) => <button type="button" key={option} onClick={() => setChatInput(option)}>{option}</button>)}</div>}</article>)}</div>
-    <form className="rubric-composer" onSubmit={(event) => void sendMessage(event)}><textarea value={chatInput} disabled={submitting || frozenWithoutDraft} onChange={(event) => setChatInput(event.target.value)} placeholder={frozenWithoutDraft ? "评分表已冻结，请先创建修订草稿。" : "告诉 Agent 需要调整的评分项目、分值、等级或扣分规则…"} /><button className="primary-button" disabled={submitting || frozenWithoutDraft || !chatInput.trim()} type="submit">发送</button></form>
+    <form className="rubric-composer" onSubmit={(event) => void sendMessage(event)}><textarea value={chatInput} disabled={submitting || frozenWithoutDraft} onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return; event.preventDefault(); if (!submitting && !frozenWithoutDraft && chatInput.trim()) event.currentTarget.form?.requestSubmit(); }} placeholder={frozenWithoutDraft ? "评分表已冻结，请先创建修订草稿。" : "告诉 Agent 需要调整的评分项目、分值、等级或扣分规则…（Ctrl+Enter 发送）"} /><button className="primary-button" disabled={submitting || frozenWithoutDraft || !chatInput.trim()} type="submit">发送</button></form>
   </section> : assignment ? <section className="rubric-mode-gate"><div className="rubric-session-heading"><div><p className="eyebrow">当前评分会话</p><h2>{assignment.title}</h2><p>{assignment.totalScore} 分 · {assignment.sources.length} 份参考资料</p></div><a href="/rubrics">新建评分表</a></div><details className="rubric-context"><summary>查看作业要求与参考资料</summary>{assignment.requirements ? <p>{assignment.requirements}</p> : <p>未单独填写作业要求，将以参考资料为设计依据。</p>}{assignment.sources.length > 0 && <ul>{assignment.sources.map((item) => <li key={item.id}>{item.name}</li>)}</ul>}</details><h3>先选择评分制度</h3><p>选择后会直接调用 Agent 生成第一版草稿，无需填写额外备注。</p><div className="rubric-mode-grid">{recommendations.length === 0 ? <p>正在生成评分制度建议…</p> : recommendations.map((item) => <article key={item.mode} className={item.recommended ? "recommended" : ""}><div><strong>{modeLabel[item.mode]}{item.recommended ? "（推荐）" : ""}</strong><p>{item.reason ?? item.benefit ?? "适用于当前评分场景。"}</p></div><button type="button" className={item.recommended ? "primary-button" : ""} disabled={submitting} onClick={() => void chooseMode(item.mode)}>选择并开始</button></article>)}</div></section> : <section className="rubric-create-panel"><div><p className="eyebrow">新评分会话</p><h2>创建评分表设计会话</h2><p>先选择评分表所属课程；作业要求与参考资料至少填写一项。</p></div><form onSubmit={(event) => void createAssignment(event)} className="rubric-create-form"><label>课程<select aria-label="选择课程" required value={courseId} onChange={(event) => setCourseId(event.target.value)}><option value="">选择课程</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label><div className="rubric-course-create"><input aria-label="新课程名称" value={courseName} maxLength={100} onChange={(event) => setCourseName(event.target.value)} placeholder={courses.length === 0 ? "还没有课程，请输入课程名称" : "或在这里新建课程"} /><button type="button" disabled={submitting || !courseName.trim()} onClick={() => void createCourse()}>创建并选择</button></div><label>会话名称<input required value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="例如：AI 与生活的融合及挑战－作业报告评分表" /></label><label>总分<input required type="number" min="0.01" step="0.01" value={totalScore} onChange={(event) => setTotalScore(event.target.value)} /></label><label>作业要求（与参考资料至少填写一项）<textarea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="说明作业目标、提交要求和评分重点；如参考资料中已包含，可留空。" /></label><fieldset className="rubric-source-fieldset"><legend>参考资料（可选）</legend><label className="rubric-file-input">导入文件<input type="file" accept=".txt,.md,.csv,.json,text/plain,text/markdown" onChange={(event) => void readSourceFile(event.target.files?.[0])} /></label><span>{sourceName || "也可以直接粘贴文本"}</span><textarea value={source} onChange={(event) => { setSource(event.target.value); if (!event.target.value) setSourceName(""); }} placeholder="粘贴评分标准草稿或设计备注…" />{source.trim() && <label>资料类型<select value={sourceRole} onChange={(event) => setSourceRole(event.target.value as "rubric_draft" | "note")}><option value="rubric_draft">评分标准草稿</option><option value="note">设计备注</option></select></label>}</fieldset><div className="rubric-form-actions"><button className="primary-button" type="submit" disabled={submitting || !courseId || !title.trim() || (!requirements.trim() && !source.trim())}>创建并选择评分制度</button></div></form></section>;
 
   const previewPanel = <aside className={`rubric-preview-panel ${previewFullscreen ? "fullscreen" : ""}`} aria-label="评分表预览"><div className="rubric-preview-toolbar"><div><h2>评分表预览</h2><span>{previewVersion === "draft" && draft ? `可编辑草稿 v${draft.version}` : selectedFrozen ? `冻结版本 v${selectedFrozen.version}` : "尚无草稿"}</span></div><div>{(draft || versions.length > 0) && <select aria-label="选择预览版本" value={previewVersion} onChange={(event) => { const value = event.target.value; setPreviewVersion(value === "draft" ? "draft" : Number(value)); setEditing(false); setValidation(undefined); }}><option value="draft" disabled={!draft}>当前草稿{draft ? ` v${draft.version}` : "（无）"}</option>{versions.map((version) => <option value={version.version} key={version.version}>冻结版本 v{version.version}</option>)}</select>}{draft && previewVersion === "draft" && <button type="button" onClick={() => { setEditing((value) => !value); setEditedRubric(structuredClone(draft.rubric)); }}>{editing ? "查看预览" : "人工编辑"}</button>}<button type="button" onClick={() => setPreviewFullscreen((value) => !value)}>{previewFullscreen ? "退出全屏" : "全屏预览"}</button></div></div><div className="rubric-preview-body">{previewRubric ? editing && draft && previewVersion === "draft" && editedRubric ? <RubricEditor rubric={editedRubric} onChange={setEditedRubric} /> : <RubricDocument rubric={previewRubric} /> : <div className="rubric-preview-empty"><strong>{assignment ? "等待评分表草稿" : "尚未开始设计"}</strong><p>{assignment ? "选择评分制度后，Agent 生成的草稿会显示在这里。" : "创建会话后，可在这里预览、编辑和冻结评分表。"}</p></div>}</div>{draft && previewVersion === "draft" && <footer className="rubric-preview-actions">{editing ? <><button type="button" onClick={() => { setEditing(false); setEditedRubric(structuredClone(draft.rubric)); }}>取消修改</button><button className="primary-button" type="button" disabled={submitting} onClick={() => void saveManualDraft()}>保存人工修改</button></> : <><button type="button" disabled={submitting} onClick={() => void validateForFreeze()}>校验并准备冻结</button>{freezeReady && <button className="primary-button" type="button" disabled={submitting} onClick={() => void freezeDraft()}>确认冻结为正式版本</button>}</>}{validation && <div className={`rubric-validation ${validation.errors.length ? "error" : "success"}`}><strong>{validation.errors.length ? `${validation.errors.length} 个错误` : "校验通过"}</strong>{[...validation.errors, ...validation.warnings].map((problem, index) => <p key={`${problem.code}-${index}`}>{rubricProblemMessage(problem)}</p>)}</div>}</footer>}{selectedFrozen && <footer className="rubric-preview-actions"><button type="button" disabled={submitting || Boolean(draft)} onClick={() => void createRevision(selectedFrozen.version)}>基于 v{selectedFrozen.version} 创建修订</button><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.md`} download>导出 Markdown</a><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.json`} download>导出 JSON</a><small>只有冻结版本才允许被正式应用。</small></footer>}</aside>;
@@ -477,6 +482,16 @@ export function RubricPage() {
         {previewPanel}
       </section>
     </section>
-    {assignmentToDelete && <div className="modal-backdrop"><section className="session-modal" role="dialog" aria-modal="true" aria-labelledby="delete-rubric-session-title"><h2 id="delete-rubric-session-title">删除评分会话？</h2><p>{rubricDeleteWarning(assignmentToDelete.title)}</p>{deleteError && <p className="modal-error">{deleteError}</p>}<div className="modal-actions"><button type="button" disabled={deleting} onClick={() => { setAssignmentToDelete(undefined); setDeleteError(""); }}>取消</button><button className="danger-button" type="button" disabled={deleting} onClick={() => void deleteAssignment()}>{deleting ? "正在删除…" : "永久删除"}</button></div></section></div>}
+    <ConfirmDialog
+      open={Boolean(assignmentToDelete)}
+      title="删除评分会话？"
+      description={assignmentToDelete ? rubricDeleteWarning(assignmentToDelete.title) : ""}
+      confirmLabel={deleting ? "正在删除…" : "永久删除"}
+      tone="danger"
+      busy={deleting}
+      error={deleteError}
+      onConfirm={() => void deleteAssignment()}
+      onCancel={() => { setAssignmentToDelete(undefined); setDeleteError(""); }}
+    />
   </div>;
 }

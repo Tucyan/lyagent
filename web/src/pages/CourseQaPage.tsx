@@ -3,6 +3,8 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatComposer } from "../components/ChatComposer";
 import { ChatSidebar, type QaCourse, type QaSessionSummary } from "../components/ChatSidebar";
+import { ConfirmDialog, PromptDialog } from "../components/ConfirmDialog";
+import { useToast } from "../components/ToastProvider";
 import { ToolActivity, type ToolStep } from "../components/ToolActivity";
 import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
@@ -23,6 +25,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function CourseQaPage() {
+  const toast = useToast();
   const query = new URLSearchParams(location.search);
   const [courses, setCourses] = useState<QaCourse[]>([]);
   const [courseId, setCourseId] = useState(query.get("course") ?? "");
@@ -207,7 +210,10 @@ export function CourseQaPage() {
     } catch (error) {
       if (requestCourseId === courseIdRef.current && nextSessionId === sessionIdRef.current) {
         setMessages((items) => items.map((message) => message.id === assistantId ? { ...message, stopped: error instanceof DOMException && error.name === "AbortError" } : message));
-        if (!(error instanceof DOMException && error.name === "AbortError") && !receivedFinal) setNotice((error as Error).message);
+        if (!(error instanceof DOMException && error.name === "AbortError") && !receivedFinal) {
+          setNotice((error as Error).message);
+          toast.fromError(error);
+        }
       }
     } finally {
       if (requestCourseId === courseIdRef.current && nextSessionId === sessionIdRef.current) {
@@ -250,8 +256,27 @@ export function CourseQaPage() {
         {messages.length === 0 ? <div className="qa-welcome"><h1>{currentCourse ? `你好，准备学习 ${currentCourse.name}` : "选择一门课程开始答疑"}</h1><p>我会优先依据当前已发布的课程资料作答，并附上可核查的引用。</p>{examples.map((example) => <button key={example} onClick={() => setInput(example)}>{example}</button>)}</div> : messages.map((message) => <article className={`chat-message ${message.role}`} key={message.id}>{message.role === "assistant" && <><ToolActivity steps={message.steps ?? []} streaming={isCurrentAssistantMessage(message)} />{message.process && <details className="assistant-process" open={shouldOpenProcess(isCurrentAssistantMessage(message))}><summary>模型处理过程 <small>非最终回答</small></summary><p>{message.process}</p></details>}</>}{message.content && (message.role === "assistant" ? <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown> : <p>{message.content}</p>)}{message.insufficient && <p className="insufficient">资料不足：当前可用资料无法支持这个问题。</p>}{message.citations?.map((citation) => <button className="citation" key={citation.type === "knowledge" ? `${citation.path}-${citation.startLine}` : `${citation.sourceId}-${citation.startLine}`} onClick={() => void openCitation(citation)}>{citation.type === "knowledge" ? `${citation.path.split("/").at(-1)} · L${citation.startLine}–L${citation.endLine}` : `${citation.title || new URL(citation.url).hostname} · 网络来源`}</button>)}{message.stopped && <p className="stopped">已停止，未保存本轮回答。</p>}</article>)}</section>
       <ChatComposer value={input} onChange={setInput} onSend={() => void send()} onStop={() => void stopCurrentRun()} allowWebSearch={allowWebSearch} onAllowWebSearchChange={setAllowWebSearch} disabled={composerState.disabled} placeholder={composerState.placeholder} streaming={streaming} />
     </main>
-    {sessionToRename && <div className="modal-backdrop"><section className="session-modal" role="dialog" aria-modal="true" aria-labelledby="rename-session-title"><form onSubmit={(event) => { event.preventDefault(); void renameSession(); }}><h2 id="rename-session-title">重命名会话</h2><label>会话名称<input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} maxLength={80} autoFocus /></label>{sessionActionError && <p className="modal-error">{sessionActionError}</p>}<div className="modal-actions"><button type="button" onClick={() => { setSessionToRename(undefined); setSessionActionError(""); }}>取消</button><button type="submit">保存</button></div></form></section></div>}
-    {sessionToDelete && <div className="modal-backdrop"><section className="session-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-title"><h2 id="delete-session-title">删除会话？</h2><p>“{sessionToDelete.summary}”及其历史消息将从本机删除，无法恢复。</p>{sessionActionError && <p className="modal-error">{sessionActionError}</p>}<div className="modal-actions"><button type="button" onClick={() => { setSessionToDelete(undefined); setSessionActionError(""); }}>取消</button><button className="danger-button" type="button" onClick={() => void deleteSession()}>删除</button></div></section></div>}
+    <PromptDialog
+      open={Boolean(sessionToRename)}
+      title="重命名会话"
+      label="会话名称"
+      value={renameTitle}
+      maxLength={80}
+      error={sessionActionError}
+      onChange={setRenameTitle}
+      onConfirm={() => void renameSession()}
+      onCancel={() => { setSessionToRename(undefined); setSessionActionError(""); }}
+    />
+    <ConfirmDialog
+      open={Boolean(sessionToDelete)}
+      title="删除会话？"
+      description={sessionToDelete ? `“${sessionToDelete.summary}”及其历史消息将从本机永久删除，无法恢复。` : ""}
+      confirmLabel="永久删除"
+      tone="danger"
+      error={sessionActionError}
+      onConfirm={() => void deleteSession()}
+      onCancel={() => { setSessionToDelete(undefined); setSessionActionError(""); }}
+    />
     {source?.citation.type === "knowledge" && <aside className="source-drawer"><button onClick={() => setSource(undefined)} aria-label="关闭原文">×</button><h2>{source.citation.path.split("/").at(-1)}</h2><p>L{source.citation.startLine}–L{source.citation.endLine}</p><pre>{source.content}</pre></aside>}
   </div>;
 }

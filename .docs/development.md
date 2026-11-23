@@ -124,3 +124,5 @@ Windows启动器依次说明模型准备、转换器加载和网页服务启动�
 BAT使用UTF-8无BOM与CRLF换行（`.gitattributes`约束checkout）；不要混用LF。Windows回归测试会实际执行带中文和空格路径的BAT失败分支，检查恢复提示及原退出码，避免中文行被cmd误解析为命令。
 
 排查过程中不得把学生正文、密钥或完整外部回调复制进Issue、日志或测试fixture。
+
+单份批改详情返回 `owningBatchId` 表示会话被批量任务管理（区别于提交存储使用的 `batchId`）。此时单份页面展示批次Review入口，不提供发送、直接启动或教师选项；回答批次问题需在批量工作台处理。独立会话的输入框使用Enter换行、Ctrl+Enter（Mac为Cmd+Enter）发送；输入法选词期间不触发快捷发送。

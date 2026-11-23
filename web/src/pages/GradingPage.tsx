@@ -12,6 +12,11 @@ import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMes
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import type { RubricValue } from "../components/RubricPreviewEditor";
 import { GradingReviewChecklist } from "../components/GradingReviewChecklist.js";
+import { ConfirmDialog, PromptDialog } from "../components/ConfirmDialog";
+import { DecisionCards, DecisionEditor } from "../components/grading/DecisionPanels";
+import { useToast } from "../components/ToastProvider";
+import { useUnsavedGuard } from "../lib/use-unsaved-guard";
+export { DecisionCards, DecisionEditor };
 import {
   applyGradingEvent,
   buildAssetManifest,
@@ -91,6 +96,7 @@ type Draft = {
   };
 };
 type SessionDetail = GradingSession & {
+  owningBatchId?: string | null;
   rubric: RubricValue;
   submission: { markdown: string; locked: boolean } | null;
   draft: Draft | null;
@@ -112,6 +118,7 @@ async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
 }
 
 export function GradingPage() {
+  const toast = useToast();
   const [locationSearch, setLocationSearch] = useState(window.location.search);
   const query = new URLSearchParams(locationSearch);
   const selectedId = query.get("session") ?? undefined;
@@ -156,6 +163,7 @@ export function GradingPage() {
   const operationKeysRef = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
   editingRef.current = editing;
+  useUnsavedGuard(editing);
   const navigateWithinGrading = (search: URLSearchParams) => {
     const suffix = search.toString();
     const nextSessionId = search.get("session") ?? undefined;
@@ -359,8 +367,10 @@ export function GradingPage() {
     try {
       return await operation();
     } catch (error) {
-      if (selectedIdRef.current === sessionId)
+      if (selectedIdRef.current === sessionId) {
         setNotice((error as Error).message);
+        toast.fromError(error);
+      }
       return undefined;
     } finally {
       operationKeysRef.current.delete(key);
@@ -609,9 +619,6 @@ export function GradingPage() {
           <h1>{detail ? detail.title : "批改工作台"}</h1>
           <p>{notice}</p>
         </div>
-        <button type="button" onClick={() => setCreating(true)}>
-          新建会话
-        </button>
       </header>
       <div
         className={`grading-workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
@@ -705,7 +712,7 @@ export function GradingPage() {
           />
         </aside>
         <section
-          className="grading-split"
+          className={`grading-split ${creating ? "is-creating" : ""}`}
           ref={splitRef}
           style={{ "--grading-preview": `${previewPercent}%` } as CSSProperties}
         >
@@ -755,6 +762,7 @@ export function GradingPage() {
                     </button>
                   )}
                   {detail.conversionStatus === "ready" &&
+                    !detail.owningBatchId &&
                     ["not_started", "queued", "failed", "cancelled"].includes(
                       detail.gradingStatus,
                     ) &&
@@ -778,7 +786,7 @@ export function GradingPage() {
                   {detail.conversation.messages.map((item, index) => (
                     <ConversationBubble
                       message={item}
-                      canAnswer={canAnswerGradingQuestion(detail.gradingStatus, Boolean(live && !live.complete), index, detail.conversation.messages.length - 1) && !isSessionOperationBusy("run")}
+                      canAnswer={!detail.owningBatchId && canAnswerGradingQuestion(detail.gradingStatus, Boolean(live && !live.complete), index, detail.conversation.messages.length - 1) && !isSessionOperationBusy("run")}
                       onOption={(option) => void startRun("chat", option)}
                       key={`${item.runId}-${index}`}
                     />
@@ -789,7 +797,10 @@ export function GradingPage() {
                         runId === live.runId && role === "assistant",
                     ) && <LiveBubble message={live} />}
                 </div>
-                <form
+                {detail.owningBatchId ? <div className="grading-composer grading-composer-help" role="status">
+                  <p>此会话属于批量批改，不能在单份页面发送对话。请进入批次 Review 核对评分、人工修订或确认；需要回答教师问题时，请到批量工作台处理。</p>
+                  <a href={`/grading/batches/review?batch=${encodeURIComponent(detail.owningBatchId)}&session=${encodeURIComponent(detail.id)}`}>进入本批次 Review</a>
+                </div> : <form
                   className="grading-composer"
                   onSubmit={(event) => {
                     event.preventDefault();
@@ -797,8 +808,15 @@ export function GradingPage() {
                   }}
                 >
                   <textarea
+                    aria-label="批改对话消息"
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                      event.preventDefault();
+                      if (message.trim() && !isSessionOperationBusy("run") && !(live && !live.complete)) void startRun("chat", message);
+                    }}
+                    aria-describedby="grading-send-help"
                     placeholder={detail.gradingStatus === "waiting_for_teacher" ? "回答上面的评分问题，发送后继续批改" : "询问评分依据，或明确要求 Agent 修改草稿"}
                     disabled={
                       Boolean(live && !live.complete) ||
@@ -821,7 +839,8 @@ export function GradingPage() {
                       {isSessionOperationBusy("run") ? "正在发送…" : detail.gradingStatus === "waiting_for_teacher" ? "回答并继续批改" : "发送"}
                     </button>
                   )}
-                </form>
+                </form>}
+                {!detail.owningBatchId && <p className="grading-send-help" id="grading-send-help">Enter 换行 · Ctrl＋Enter（Mac：⌘＋Enter）发送；发送后等待本轮完成。</p>}
               </>
             )}
           </main>
@@ -897,70 +916,27 @@ export function GradingPage() {
           </aside>
         </section>
       </div>
-      {sessionToRename && (
-        <div className="modal-backdrop">
-          <section className="session-modal" role="dialog" aria-modal="true">
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void renameSession();
-              }}
-            >
-              <h2>重命名批改会话</h2>
-              <label>
-                会话名称
-                <input
-                  value={renameTitle}
-                  maxLength={80}
-                  autoFocus
-                  onChange={(event) => setRenameTitle(event.target.value)}
-                />
-              </label>
-              {sessionActionError && (
-                <p className="modal-error">{sessionActionError}</p>
-              )}
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  onClick={() => setSessionToRename(undefined)}
-                >
-                  取消
-                </button>
-                <button type="submit">保存</button>
-              </div>
-            </form>
-          </section>
-        </div>
-      )}
-      {sessionToDelete && (
-        <div className="modal-backdrop">
-          <section className="session-modal" role="dialog" aria-modal="true">
-            <h2>删除批改会话？</h2>
-            <p>
-              “{sessionToDelete.title}
-              ”的作业文件、批改过程和结果将从本机永久删除。
-            </p>
-            {sessionActionError && (
-              <p className="modal-error">{sessionActionError}</p>
-            )}
-            <div className="modal-actions">
-              <button
-                type="button"
-                onClick={() => setSessionToDelete(undefined)}
-              >
-                取消
-              </button>
-              <button
-                className="danger-button"
-                type="button"
-                onClick={() => void deleteSession()}
-              >
-                删除
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <PromptDialog
+        open={Boolean(sessionToRename)}
+        title="重命名批改会话"
+        label="会话名称"
+        value={renameTitle}
+        maxLength={80}
+        error={sessionActionError}
+        onChange={setRenameTitle}
+        onConfirm={() => void renameSession()}
+        onCancel={() => { setSessionToRename(undefined); setSessionActionError(""); }}
+      />
+      <ConfirmDialog
+        open={Boolean(sessionToDelete)}
+        title="删除批改会话？"
+        description={sessionToDelete ? `“${sessionToDelete.title}”的作业文件、批改过程和结果将从本机永久删除，无法恢复。` : ""}
+        confirmLabel="永久删除"
+        tone="danger"
+        error={sessionActionError}
+        onConfirm={() => void deleteSession()}
+        onCancel={() => { setSessionToDelete(undefined); setSessionActionError(""); }}
+      />
     </div>
   );
 }
@@ -1164,7 +1140,10 @@ function ResultPreview({
   operationBusy: { confirm: boolean; revision: boolean };
 }) {
   const draft = detail.confirmed ?? detail.draft;
+  const toast = useToast();
   const [manual, setManual] = useState(false);
+  const [savingManual, setSavingManual] = useState(false);
+  useUnsavedGuard(manual);
   const [edited, setEdited] = useState<Record<string, unknown>>({});
   const [editNote, setEditNote] = useState("");
   useEffect(() => {
@@ -1179,18 +1158,26 @@ function ResultPreview({
     );
   const result = draft.result;
   const saveManual = async () => {
-    if (!detail.draft || !editNote.trim()) return;
-    await api(`/api/grading/sessions/${detail.id}/draft`, {
-      method: "PUT",
-      body: JSON.stringify({
-        expectedVersion: detail.draft.version,
-        draft: edited,
-        note: editNote,
-      }),
-    });
-    await refresh();
-    setManual(false);
-    setEditNote("");
+    if (!detail.draft || !editNote.trim() || savingManual) return;
+    setSavingManual(true);
+    try {
+      await api(`/api/grading/sessions/${detail.id}/draft`, {
+        method: "PUT",
+        body: JSON.stringify({
+          expectedVersion: detail.draft.version,
+          draft: edited,
+          note: editNote,
+        }),
+      });
+      await refresh();
+      setManual(false);
+      setEditNote("");
+      toast.success("人工修订已保存并重新计算总分。");
+    } catch (error) {
+      toast.fromError(error);
+    } finally {
+      setSavingManual(false);
+    }
   };
   const allAcknowledged = result.review.reasons.every((reason) =>
     acknowledgedReasons.includes(reason),
@@ -1245,10 +1232,12 @@ function ResultPreview({
               <div>
                 <button onClick={() => setManual(false)}>取消修订</button>
                 <button
+                  type="button"
+                  className="primary-button"
                   onClick={() => void saveManual()}
-                  disabled={!editNote.trim()}
+                  disabled={savingManual || !editNote.trim()}
                 >
-                  保存结构化修订
+                  {savingManual ? "正在保存…" : "保存结构化修订"}
                 </button>
               </div>
             </>
@@ -1263,6 +1252,8 @@ function ResultPreview({
                 />
               </label>
               <button
+                type="button"
+                className="primary-button"
                 onClick={() => void confirm()}
                 disabled={
                   operationBusy.confirm ||
@@ -1272,187 +1263,20 @@ function ResultPreview({
               >
                 {operationBusy.confirm ? "正在确认…" : "确认并发布正式结果"}
               </button>
+              {result.review.requiresReview && (!reviewNote.trim() || !allAcknowledged) && (
+                <small className="inline-requirement-hint">
+                  {!allAcknowledged && !reviewNote.trim()
+                    ? "请先勾选上方全部复核原因，并填写复核备注后即可确认"
+                    : !allAcknowledged
+                      ? "请先勾选上方全部复核原因后即可确认"
+                      : "请填写复核备注后即可确认"}
+                </small>
+              )}
             </>
           )}
         </section>
       )}
     </div>
-  );
-}
-function decisionEntries(decisions: Record<string, unknown>) {
-  return ["criteria", "deductions", "bonuses"].flatMap((key) =>
-    Array.isArray(decisions[key])
-      ? (decisions[key] as Array<Record<string, unknown>>).map(
-          (item, index) => ({ key, index, item }),
-        )
-      : [],
-  );
-}
-export function DecisionCards({
-  decisions,
-  sessionId,
-  rubric,
-}: {
-  decisions: Record<string, unknown>;
-  sessionId: string;
-  rubric?: RubricValue;
-}) {
-  return (
-    <section className="decision-list">
-      {decisionEntries(decisions).map(({ item }, index) => {
-        const evidence = Array.isArray(item.evidence)
-          ? (item.evidence as Array<Record<string, unknown>>)
-          : [];
-        return (
-          <article key={String(item.criterionId ?? item.ruleId ?? index)}>
-            <div>
-              <strong>
-                {gradingItemLabel(rubric, String(item.criterionId ?? item.ruleId ?? ""), index)}
-              </strong>
-              <span>
-                {item.score !== undefined
-                  ? `${item.score} 分`
-                  : item.deduction !== undefined
-                    ? `扣 ${item.deduction} 分`
-                    : item.bonus !== undefined
-                      ? `加 ${item.bonus} 分`
-                      : ""}
-              </span>
-            </div>
-            <p>{String(item.reason ?? "")}</p>
-            <small>
-              置信度 {Math.round(Number(item.confidence ?? 0) * 100)}% ·
-              分析依据 {evidence.length} 条
-            </small>
-            {evidence.length > 0 && (
-              <details>
-                <summary>查看评分分析依据</summary>
-                {evidence.map((entry, evidenceIndex) => (
-                  <div
-                    className="grading-evidence"
-                    key={`${String(entry.path ?? entry.kind)}-${evidenceIndex}`}
-                  >
-                    {entry.kind === "analysis" ? (
-                      <>
-                        <strong>模型分析论据</strong>
-                        <p>
-                          <b>作业表现：</b>
-                          {String(entry.observation ?? "")}
-                        </p>
-                        <p>
-                          <b>标准对应：</b>
-                          {String(entry.rubricBasis ?? "")}
-                        </p>
-                        <p>
-                          <b>分值理由：</b>
-                          {String(entry.scoreJustification ?? "")}
-                        </p>
-                      </>
-                    ) : entry.kind === "image" ? (
-                      <>
-                        <img
-                          src={`/api/grading/sessions/${sessionId}/assets/${encodeURIComponent(String(entry.path).replace(/^assets\//, ""))}`}
-                          alt="评分佐证"
-                        />
-                        <p>{String(entry.explanation ?? "")}</p>
-                      </>
-                    ) : (
-                      <>
-                        <code>
-                          {String(entry.path)}:{String(entry.startLine)}-
-                          {String(entry.endLine)}
-                        </code>
-                        <blockquote>{String(entry.quote ?? "")}</blockquote>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </details>
-            )}
-          </article>
-        );
-      })}
-    </section>
-  );
-}
-export function DecisionEditor({
-  decisions,
-  onChange,
-  rubric,
-}: {
-  decisions: Record<string, unknown>;
-  onChange(value: Record<string, unknown>): void;
-  rubric?: RubricValue;
-}) {
-  const update = (
-    key: string,
-    index: number,
-    field: string,
-    value: unknown,
-  ) => {
-    const next = structuredClone(decisions);
-    const items = next[key] as Array<Record<string, unknown>>;
-    items[index] = { ...items[index], [field]: value };
-    onChange(next);
-  };
-  return (
-    <section className="decision-list decision-editor">
-      {decisionEntries(decisions).map(({ key, index, item }) => (
-        <article key={`${key}-${index}`}>
-          <strong>{gradingItemLabel(rubric, String(item.criterionId ?? item.ruleId ?? ""), index)}</strong>
-          {item.triggered !== undefined && (
-            <label>
-              <input
-                type="checkbox"
-                checked={Boolean(item.triggered)}
-                onChange={(event) =>
-                  update(key, index, "triggered", event.target.checked)
-                }
-              />
-              触发规则
-            </label>
-          )}
-          {["score", "deduction", "bonus"]
-            .filter((field) => item[field] !== undefined)
-            .map((field) => (
-              <label key={field}>
-                {{ score: "得分", deduction: "扣分", bonus: "加分" }[field]}
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={Number(item[field])}
-                  onChange={(event) =>
-                    update(key, index, field, Number(event.target.value))
-                  }
-                />
-              </label>
-            ))}
-          <label>
-            理由
-            <textarea
-              value={String(item.reason ?? "")}
-              onChange={(event) =>
-                update(key, index, "reason", event.target.value)
-              }
-            />
-          </label>
-          <label>
-            置信度
-            <input
-              type="number"
-              min="0"
-              max="1"
-              step="0.01"
-              value={Number(item.confidence ?? 0)}
-              onChange={(event) =>
-                update(key, index, "confidence", Number(event.target.value))
-              }
-            />
-          </label>
-        </article>
-      ))}
-    </section>
   );
 }
 function NewSessionPanel({

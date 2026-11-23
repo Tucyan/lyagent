@@ -68,9 +68,9 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
   const updatePrimary = (field: "providerId" | "modelId" | "baseUrl" | "apiKey", value: string) => setForm({ ...form, primary: { ...form.primary, [field]: value } });
   const handleSubmit = (event: FormEvent) => { event.preventDefault(); void submit("save"); };
   return <main className="model-settings-page">
-    <header><div><p className="eyebrow">Course Agent</p><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1></div>{mode === "settings" && <a href="/">返回工作台</a>}</header>
+    <header><div><p className="eyebrow">Course Agent</p><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1></div></header>
     <section className="model-settings-card">
-      {converter && <p className="model-routing-note">Docling 文档转换器：{converter.status} · {converter.device}</p>}
+      {converter && <p className="model-routing-note">文档转换服务（Docling）：{converter.status === "ready" ? "已就绪" : converter.status === "starting" ? "正在启动" : "暂不可用"} · {converter.device === "cpu" ? "CPU 模式" : "自动加速"}</p>}
       <p className="model-routing-note">主模型不处理图片；批改工具成功读取图片后，本次运行会从下一轮起切换至视觉模型，并在该次运行余下轮次保持使用视觉模型。</p>
       <form onSubmit={handleSubmit}>
         <fieldset><legend>主模型（必填）</legend>

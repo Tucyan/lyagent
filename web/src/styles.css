@@ -2843,6 +2843,9 @@ code {
   border: 1px solid #d7dbe1;
   border-radius: 13px;
 }
+.grading-composer-help { display: block; }
+.grading-composer-help p { margin: 0 0 8px; }
+.grading-send-help { margin: 0; padding: 0 20px 12px; color: #65748a; font-size: 12px; }
 .grading-resizer {
   width: 6px;
   min-width: 6px;
