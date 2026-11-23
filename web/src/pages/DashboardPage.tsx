@@ -1,29 +1,16 @@
 import { useEffect, useState } from "react";
-import { withJsonHeaders, apiFetch, apiErrorFromResponse, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
-import { converterStatusLabel, dashboardQuickActions } from "./dashboard-model";
-
-type DashboardCourse = {
-  id: string;
-  name: string;
-  createdAt: string;
-  knowledgeStatus: "published" | "unpublished" | "unavailable";
-  activeRelease: { id: string; createdAt: string } | null;
-  releaseCount: number;
-  documentCount: number;
-  qaSessionCount: number;
-  lastActivityAt: string;
-};
-type DashboardActivity =
-  | { type: "course_created"; courseId: string; courseName: string; at: string }
-  | { type: "release_published"; courseId: string; courseName: string; releaseId: string; at: string }
-  | { type: "qa_session_updated"; courseId: string; courseName: string; sessionId: string; summary: string; at: string };
-type DashboardSnapshot = {
-  generatedAt: string;
-  model: { provider: string; model: string; configured: boolean };
-  totals: { courses: number; publishedCourses: number; activeDocuments: number; qaSessions: number };
-  courses: DashboardCourse[];
-  recentActivity: DashboardActivity[];
-};
+import { withJsonHeaders, apiFetch, apiErrorFromResponse } from "../lib/api";
+import {
+  activityPresentation,
+  courseStatusPresentation,
+  dashboardHeadlineSummary,
+  dashboardOnboardingSteps,
+  dashboardQuickActions,
+  dashboardSystemAlerts,
+  systemReadinessSummary,
+  type DashboardRuntime,
+  type DashboardSnapshot,
+} from "./dashboard-model";
 
 async function api<T>(url: string): Promise<T> {
   const response = await apiFetch(url, withJsonHeaders());
@@ -35,58 +22,237 @@ function dateTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
-function activityText(activity: DashboardActivity): string {
-  if (activity.type === "course_created") return "创建了课程";
-  if (activity.type === "release_published") return "发布了知识版本";
-  return `更新了答疑会话：${activity.summary}`;
+function shortDate(value: string): string {
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(new Date(value));
 }
-
-const statusLabel: Record<DashboardCourse["knowledgeStatus"], string> = {
-  published: "已发布",
-  unpublished: "未发布",
-  unavailable: "版本不可用",
-};
 
 export function DashboardPage() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>();
-  const [runtime, setRuntime] = useState<{ converter: { provider: "docling"; status: "starting" | "ready" | "unavailable"; device: "auto" | "cpu" } }>();
-  const [notice, setNotice] = useState("正在加载工作台…");
+  const [runtime, setRuntime] = useState<DashboardRuntime>();
+  const [errorMessage, setErrorMessage] = useState<string>();
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = async () => {
     setRefreshing(true);
+    setErrorMessage(undefined);
     try {
-      const [next, nextRuntime] = await Promise.all([api<DashboardSnapshot>("/api/dashboard"), api<{ converter: { provider: "docling"; status: "starting" | "ready" | "unavailable"; device: "auto" | "cpu" } }>("/api/system/runtime")]);
+      const [next, nextRuntime] = await Promise.all([
+        api<DashboardSnapshot>("/api/dashboard"),
+        api<DashboardRuntime>("/api/system/runtime"),
+      ]);
       setSnapshot(next);
       setRuntime(nextRuntime);
-      setNotice(`数据更新于 ${dateTime(next.generatedAt)}`);
     } catch (error) {
-      setNotice((error as Error).message);
+      setErrorMessage((error as Error).message);
     } finally {
       setRefreshing(false);
     }
   };
 
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    void refresh();
+  }, []);
 
-  return <div className="dashboard-page">
-    <header className="workspace-header"><div><p className="eyebrow">教师工作台</p><h1>课程总览</h1><p>{notice}</p></div><button type="button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? "刷新中…" : "刷新数据"}</button></header>
-    {snapshot && <>
-      <section className="model-status" aria-label="模型配置状态"><span>模型配置</span><strong>{snapshot.model.provider} / {snapshot.model.model}</strong><span className={snapshot.model.configured ? "status published" : "status unpublished"}>{snapshot.model.configured ? "已配置" : "未配置"}</span></section>
-      {runtime && <section className="model-status" aria-label="文档转换器状态"><span>文档转换器</span><strong>{converterStatusLabel(runtime.converter)}</strong></section>}
-      <section className="metric-grid" aria-label="课程数据概览">
-        <div><span>课程</span><strong>{snapshot.totals.courses}</strong><small>{snapshot.totals.publishedCourses} 门已发布</small></div>
-        <div><span>已发布资料</span><strong>{snapshot.totals.activeDocuments}</strong><small>当前 active release 文档</small></div>
-        <div><span>答疑会话</span><strong>{snapshot.totals.qaSessions}</strong><small>本地已保存会话</small></div>
-        <div><span>知识版本</span><strong>{snapshot.courses.reduce((total, course) => total + course.releaseCount, 0)}</strong><small>不可变发布记录</small></div>
-      </section>
-      <section className="dashboard-card dashboard-quick-actions"><div className="section-heading"><div><h2>快捷开始</h2><p>从常用教学工作中继续。</p></div></div><div>{dashboardQuickActions.map((action) => <a key={action.href} href={action.href}><strong>{action.label}</strong><span>{action.description}</span></a>)}</div></section>
-      <section className="dashboard-card"><div className="section-heading"><div><h2>课程状态</h2><p>只统计当前已发布资料与本地答疑会话。</p></div><a href="/knowledge">管理课程资料</a></div>
-        {snapshot.courses.length === 0 ? <div className="dashboard-empty"><h3>还没有课程</h3><p>先创建课程并导入已整理的 Markdown 资料，随后可发布为答疑可读的知识版本。</p><a href="/knowledge">前往课程资料库</a></div> : <div className="course-table-wrap"><table><thead><tr><th>课程</th><th>资料状态</th><th>文档</th><th>版本</th><th>答疑会话</th><th>最近活动</th><th>操作</th></tr></thead><tbody>{snapshot.courses.map((course) => <tr key={course.id}><td><strong>{course.name}</strong><small>{course.activeRelease ? `当前版本 ${course.activeRelease.id.slice(0, 8)}` : "尚无当前版本"}</small></td><td><span className={`status ${course.knowledgeStatus}`}>{statusLabel[course.knowledgeStatus]}</span></td><td>{course.documentCount}</td><td>{course.releaseCount}</td><td>{course.qaSessionCount}</td><td>{dateTime(course.lastActivityAt)}</td><td className="course-links"><a href={`/knowledge?course=${encodeURIComponent(course.id)}`}>资料</a>{course.knowledgeStatus === "published" ? <a href={`/qa?course=${encodeURIComponent(course.id)}`}>答疑</a> : <span>答疑不可用</span>}</td></tr>)}</tbody></table></div>}
-      </section>
-      <section className="dashboard-card"><div className="section-heading"><div><h2>最近活动</h2><p>显示最近八条实际发生的课程、发布和答疑活动。</p></div></div>
-        {snapshot.recentActivity.length === 0 ? <p className="empty-activity">暂无活动记录。</p> : <ol className="activity-list">{snapshot.recentActivity.map((activity, index) => <li key={`${activity.type}-${activity.at}-${index}`}><span className="activity-dot" /><div><strong>{activity.courseName}</strong><p>{activityText(activity)}</p></div><time dateTime={activity.at}>{dateTime(activity.at)}</time></li>)}</ol>}
-      </section>
-    </>}
-  </div>;
+  const alerts = snapshot ? dashboardSystemAlerts(snapshot.model, runtime) : [];
+  const readiness = snapshot ? systemReadinessSummary(snapshot.model, runtime) : undefined;
+  const hasCourses = (snapshot?.courses.length ?? 0) > 0;
+
+  return (
+    <div className="dashboard-page">
+      <header className="workspace-header dashboard-header">
+        <div>
+          <p className="eyebrow">教师工作台</p>
+          <h1>课程总览</h1>
+          <p>
+            {errorMessage
+              ? errorMessage
+              : snapshot
+                ? dashboardHeadlineSummary(snapshot.totals)
+                : "正在加载课程信息…"}
+          </p>
+        </div>
+        <div className="dashboard-header-actions">
+          {readiness && (
+            <a
+              className={`dashboard-readiness-pill ${readiness.tone}`}
+              href={readiness.href}
+              title={readiness.title}
+            >
+              <span className="dashboard-readiness-dot" aria-hidden="true" />
+              {readiness.label}
+            </a>
+          )}
+          <button
+            className="dashboard-refresh-button"
+            type="button"
+            onClick={() => void refresh()}
+            disabled={refreshing}
+            title={snapshot ? `最近更新于 ${dateTime(snapshot.generatedAt)}` : "刷新课程数据"}
+          >
+            {refreshing ? "刷新中…" : "刷新"}
+          </button>
+          <a className="dashboard-primary-cta" href="/knowledge">
+            {hasCourses ? "整理课程资料" : "创建第一门课程"}
+          </a>
+        </div>
+      </header>
+
+      {snapshot && (
+        <>
+          {alerts.length > 0 && (
+            <section className="dashboard-alerts" aria-label="系统提醒">
+              {alerts.map((alert) => (
+                <div key={alert.id} className={`dashboard-alert ${alert.tone}`} role="status">
+                  <div>
+                    <strong>{alert.title}</strong>
+                    <p>{alert.detail}</p>
+                  </div>
+                  {alert.actionHref && alert.actionLabel && (
+                    <a className="dashboard-alert-action" href={alert.actionHref}>
+                      {alert.actionLabel}
+                    </a>
+                  )}
+                </div>
+              ))}
+            </section>
+          )}
+
+          {hasCourses ? (
+            <section className="metric-grid dashboard-metric-grid" aria-label="教学概览">
+              <div>
+                <span>我的课程</span>
+                <strong>{snapshot.totals.courses}</strong>
+                <small>{snapshot.totals.publishedCourses} 门已开启答疑</small>
+              </div>
+              <div>
+                <span>已生效资料</span>
+                <strong>{snapshot.totals.activeDocuments}</strong>
+                <small>可供课程答疑参考的讲义</small>
+              </div>
+              <div>
+                <span>答疑记录</span>
+                <strong>{snapshot.totals.qaSessions}</strong>
+                <small>累计课程问答会话</small>
+              </div>
+            </section>
+          ) : (
+            <section className="dashboard-card dashboard-onboarding" aria-label="新手引导">
+              <div className="section-heading">
+                <div>
+                  <h2>三步开始使用课程助教</h2>
+                  <p>先建立课程资料库，再随时用于课程答疑与作业批改。</p>
+                </div>
+              </div>
+              <ol className="dashboard-onboarding-steps">
+                {dashboardOnboardingSteps.map((item) => (
+                  <li key={item.step}>
+                    <span className="dashboard-step-badge">{item.step}</span>
+                    <div className="dashboard-step-body">
+                      <strong>{item.title}</strong>
+                      <p>{item.description}</p>
+                    </div>
+                    <a href={item.href}>{item.actionLabel}</a>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+
+          <section className="dashboard-card dashboard-quick-actions">
+            <div className="section-heading">
+              <div>
+                <h2>常用教学工作</h2>
+                <p>从常见备课与批改场景直接开始。</p>
+              </div>
+            </div>
+            <div>
+              {dashboardQuickActions.map((action) => (
+                <a key={action.href} href={action.href}>
+                  <strong>{action.label}</strong>
+                  <span>{action.description}</span>
+                </a>
+              ))}
+            </div>
+          </section>
+
+          {hasCourses && (
+            <section className="dashboard-card">
+              <div className="section-heading">
+                <div>
+                  <h2>我的课程</h2>
+                  <p>选择一门课程整理资料，或直接进入课程答疑。</p>
+                </div>
+                <a href="/knowledge">前往课程资料库</a>
+              </div>
+              <div className="dashboard-course-grid">
+                {snapshot.courses.map((course) => {
+                  const status = courseStatusPresentation(course.knowledgeStatus);
+                  const updatedAt = course.activeRelease?.createdAt ?? course.lastActivityAt;
+                  const courseParam = encodeURIComponent(course.id);
+                  return (
+                    <article key={course.id} className="dashboard-course-card">
+                      <div className="dashboard-course-card-head">
+                        <h3>{course.name}</h3>
+                        <span className={`status ${status.tone}`}>{status.label}</span>
+                      </div>
+                      <p className="dashboard-course-meta">
+                        <span>{course.documentCount} 份生效资料</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{course.qaSessionCount} 次答疑</span>
+                        <span aria-hidden="true">·</span>
+                        <span>更新于 {shortDate(updatedAt)}</span>
+                      </p>
+                      <div className="dashboard-course-actions">
+                        <a className="dashboard-course-btn secondary" href={`/knowledge?course=${courseParam}`}>
+                          整理资料
+                        </a>
+                        {course.knowledgeStatus === "published" ? (
+                          <a className="dashboard-course-btn primary" href={`/qa?course=${courseParam}`}>
+                            进入答疑
+                          </a>
+                        ) : (
+                          <span className="dashboard-course-hint">发布资料后可开启答疑</span>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {snapshot.recentActivity.length > 0 && (
+            <section className="dashboard-card">
+              <div className="section-heading">
+                <div>
+                  <h2>最近工作</h2>
+                  <p>点击即可回到上次的教学任务继续处理。</p>
+                </div>
+              </div>
+              <ol className="activity-list dashboard-activity-list">
+                {snapshot.recentActivity.map((activity, index) => {
+                  const item = activityPresentation(activity);
+                  return (
+                    <li key={`${activity.type}-${activity.at}-${index}`}>
+                      <a className="dashboard-activity-link" href={item.href}>
+                        <span className="activity-dot" aria-hidden="true" />
+                        <div className="dashboard-activity-copy">
+                          <strong>{item.title}</strong>
+                          <p>{item.description}</p>
+                        </div>
+                        <div className="dashboard-activity-right">
+                          <time dateTime={activity.at}>{dateTime(activity.at)}</time>
+                          <span className="dashboard-activity-cta">{item.actionLabel} →</span>
+                        </div>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ol>
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
