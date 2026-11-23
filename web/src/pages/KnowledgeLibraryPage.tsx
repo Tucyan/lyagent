@@ -96,7 +96,6 @@ export function KnowledgeLibraryPage() {
   const showNotice = (message: string, kind: "info" | "error" = "info") => {
     setNotice(message);
     setNoticeKind(kind);
-    if (kind === "error") toast.error(message);
   };
 
   const resetCourseState = (nextCourseId: string) => {

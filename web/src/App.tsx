@@ -36,6 +36,19 @@ export function App() {
     };
   }, []);
   const path = location.path;
+  useEffect(() => {
+    const titles: Record<string, string> = {
+      "/setup": "首次设置 · Course Agent",
+      "/settings/models": "模型设置 · Course Agent",
+      "/qa": "课程答疑 · Course Agent",
+      "/knowledge": "课程资料库 · Course Agent",
+      "/rubrics": "评分量表 · Course Agent",
+      "/grading": "单份批改 · Course Agent",
+      "/grading/batches": "批量批改 · Course Agent",
+      "/grading/batches/review": "批次复核 · Course Agent",
+    };
+    document.title = titles[path] ?? "课程总览 · Course Agent";
+  }, [path]);
   if (path === "/setup") return <ToastProvider><ModelSettingsPage mode="setup" /></ToastProvider>;
   return <ToastProvider><SetupGuard path={path}>{path === "/settings/models" ? <AdminShell active="model-settings"><ModelSettingsPage mode="settings" /></AdminShell> : <ApplicationPage path={path} />}</SetupGuard></ToastProvider>;
 }

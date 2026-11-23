@@ -189,13 +189,21 @@ textarea:focus-visible {
 .admin-main .qa-shell {
   min-height: 100vh;
   height: 100vh;
+  grid-template-columns: 260px minmax(0, 1fr);
 }
 
-/* Toast notifications */
+.admin-main .chat-sidebar {
+  position: static;
+  width: auto;
+  height: 100vh;
+  z-index: auto;
+}
+
+/* Toast notifications (top-right so bottom composers and primary actions are never covered) */
 .toast-viewport {
   position: fixed;
+  top: 16px;
   right: 20px;
-  bottom: 20px;
   z-index: 80;
   display: grid;
   gap: 10px;
@@ -693,7 +701,32 @@ textarea:focus-visible {
   gap: 8px;
 }
 
+.rubric-course-create {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rubric-course-create input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rubric-course-create button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 @media (max-width: 960px) {
+  .admin-main .qa-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-main .chat-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 280px;
+    z-index: 20;
+  }
   .admin-compact-toggle {
     display: none;
   }
