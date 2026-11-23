@@ -477,7 +477,60 @@ textarea:focus-visible {
   color: var(--color-warning-text);
 }
 
-/* Single grading page: centered creation mode without 40% empty right pane */
+/* Single grading page: compact header, clean session cards, full-canvas creation form */
+.grading-header {
+  min-height: 48px;
+  padding: 10px 18px !important;
+  gap: 12px;
+  align-items: center !important;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.grading-header-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-width: 0;
+}
+
+.grading-header-title h1 {
+  margin: 0 !important;
+  font-size: 18px !important;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.grading-header-notice {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grading-sidebar-heading > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grading-workflow-tag {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.grading-workflow-tag.is-error {
+  color: var(--color-danger-text);
+}
+
+.grading-workflow-tag.is-confirmed {
+  color: var(--color-success-text);
+}
+
 .grading-split.is-creating {
   grid-template-columns: minmax(0, 1fr) !important;
 }
@@ -488,8 +541,71 @@ textarea:focus-visible {
 }
 
 .grading-split.is-creating .grading-inline-create {
-  max-width: 680px;
-  margin: 24px auto;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 28px 24px;
+  background: var(--bg-canvas);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.grading-new-dialog {
+  width: min(680px, 100%) !important;
+  gap: 14px !important;
+  padding: 24px 28px !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.grading-new-dialog h2 {
+  font-size: 19px;
+  margin: 0;
+}
+
+.grading-new-dialog input,
+.grading-new-dialog select {
+  font-weight: 400;
+  font-size: 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.grading-create-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.grading-file-field {
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  background: var(--bg-canvas);
+}
+
+.grading-file-field input[type="file"] {
+  padding: 4px 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 12px;
+}
+
+.grading-file-field small {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.grading-new-dialog .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
 }
 
 /* Unified light header & clean layout for M5 Batch Grading and Batch Review */
@@ -717,6 +833,485 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+/* Rubric workspace pixel-level polish */
+.rubric-page-header {
+  min-height: 48px;
+  padding: 10px 18px !important;
+  gap: 12px;
+  align-items: center !important;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.rubric-header-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-width: 0;
+}
+
+.rubric-header-title h1 {
+  margin: 0 !important;
+  font-size: 18px !important;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.rubric-header-notice {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rubric-pane-heading > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rubric-pane-collapse {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.rubric-pane-collapse:hover {
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+}
+
+/* Fix horizontal overflow bug in RubricDocument preview levels */
+.rubric-preview-body {
+  overflow-x: hidden !important;
+}
+
+.rubric-document {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: break-word;
+  padding: 20px !important;
+}
+
+.rubric-scorecard,
+.rubric-scorecard > article {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.rubric-scorecard > article > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rubric-scorecard > article > div:first-child strong {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.rubric-scorecard > article > .rubric-preview-levels {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.rubric-scorecard > article > .rubric-preview-levels > .rubric-level-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--bg-surface);
+  min-width: 0;
+}
+
+.rubric-level-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.rubric-level-score {
+  grid-column: 3;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rubric-scorecard > article > .rubric-preview-levels > .rubric-level-card > p {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+/* 5-step graduated green-to-red semantic scale (restrained, high-contrast) */
+.rubric-level-card.tier-high {
+  border-color: #bfe4ce;
+  border-left-color: #218352;
+  background: #f2fbf5;
+}
+.rubric-level-card.tier-high .rubric-level-badge {
+  color: #145b38;
+  background: #cdeed9;
+}
+.rubric-level-card.tier-high .rubric-level-score {
+  color: #16653e;
+  background: #dcf3e5;
+}
+
+.rubric-level-card.tier-good {
+  border-color: #d2ebd9;
+  border-left-color: #52a67a;
+  background: #f7fcf9;
+}
+.rubric-level-card.tier-good .rubric-level-badge {
+  color: #1f6c45;
+  background: #e0f3e7;
+}
+.rubric-level-card.tier-good .rubric-level-score {
+  color: #25724b;
+  background: #ebf7ef;
+}
+
+.rubric-level-card.tier-mid {
+  border-color: #dde8e1;
+  border-left-color: #8fb8a0;
+  background: #fbfdfb;
+}
+.rubric-level-card.tier-mid .rubric-level-badge {
+  color: #3d634d;
+  background: #edf4ef;
+}
+.rubric-level-card.tier-mid .rubric-level-score {
+  color: #456854;
+  background: #f1f6f3;
+}
+
+.rubric-level-card.tier-low {
+  border-color: #f3d2ce;
+  border-left-color: #d97a72;
+  background: #fff8f7;
+}
+.rubric-level-card.tier-low .rubric-level-badge {
+  color: #963830;
+  background: #fce4e1;
+}
+.rubric-level-card.tier-low .rubric-level-score {
+  color: #9e3d35;
+  background: #fdeceb;
+}
+
+.rubric-level-card.tier-fail {
+  border-color: #ebbab5;
+  border-left-color: #c23b33;
+  background: #fdf1f0;
+}
+.rubric-level-card.tier-fail .rubric-level-badge {
+  color: #841f1a;
+  background: #f8ccc7;
+}
+.rubric-level-card.tier-fail .rubric-level-score {
+  color: #8f241e;
+  background: #fadad6;
+}
+
+/* Actionable vs historical question options in rubric chat */
+.rubric-question-options {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.rubric-question-options button {
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 8px;
+  line-height: 1.45;
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-soft);
+}
+
+.rubric-question-options button:hover {
+  background: #e2eefc;
+}
+
+.rubric-question-history {
+  margin-top: 8px;
+  padding: 8px 11px;
+  border-left: 2px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.rubric-question-history small {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.rubric-question-history ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.rubric-question-history li {
+  margin: 2px 0;
+  line-height: 1.45;
+}
+
+/* Lighter process / tool disclosures inside rubric chat */
+.rubric-chat .tool-activity,
+.rubric-chat .assistant-process {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-canvas);
+  font-size: 12px;
+}
+
+.rubric-chat .tool-activity summary,
+.rubric-chat .assistant-process summary {
+  color: var(--text-secondary);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* In-place frozen status bar replacing disabled dead-end composer */
+.rubric-frozen-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 18px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+}
+
+.rubric-frozen-bar strong {
+  display: block;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.rubric-frozen-bar p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Cleaner frozen preview footer */
+.rubric-preview-actions.frozen-footer {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rubric-export-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Rubric structured editor readability & level card layout */
+.rubric-structured-editor input,
+.rubric-structured-editor select,
+.rubric-structured-editor textarea {
+  font-weight: 400 !important;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.rubric-structured-editor textarea {
+  min-height: 82px;
+  padding: 9px 11px;
+  resize: vertical;
+}
+
+.rubric-field-full {
+  grid-column: 1 / -1;
+}
+
+.rubric-advanced-field {
+  margin-top: 2px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 7px;
+  background: var(--bg-canvas);
+}
+
+.rubric-advanced-field summary {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.rubric-advanced-field label {
+  margin-top: 8px;
+}
+
+.rubric-levels {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.rubric-level-editor-card {
+  display: grid;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--bg-surface);
+  min-width: 0;
+}
+
+.rubric-level-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rubric-level-delete {
+  padding: 4px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.rubric-level-delete:hover {
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+  background: var(--color-danger-bg);
+}
+
+.rubric-level-editor-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.rubric-level-editor-meta > label:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.rubric-level-editor-meta label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.rubric-level-editor-meta input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.rubric-level-condition {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.rubric-level-condition textarea {
+  min-height: 58px;
+  width: 100%;
+  padding: 7px 9px;
+}
+
+.rubric-level-editor-card.tier-high {
+  border-color: #bfe4ce;
+  border-left-color: #218352;
+  background: #f5fcf7;
+}
+.rubric-level-editor-card.tier-high .rubric-level-badge {
+  color: #145b38;
+  background: #cdeed9;
+}
+
+.rubric-level-editor-card.tier-good {
+  border-color: #d2ebd9;
+  border-left-color: #52a67a;
+  background: #f9fdfb;
+}
+.rubric-level-editor-card.tier-good .rubric-level-badge {
+  color: #1f6c45;
+  background: #e0f3e7;
+}
+
+.rubric-level-editor-card.tier-mid {
+  border-color: #dde8e1;
+  border-left-color: #8fb8a0;
+  background: #fcfdfc;
+}
+.rubric-level-editor-card.tier-mid .rubric-level-badge {
+  color: #3d634d;
+  background: #edf4ef;
+}
+
+.rubric-level-editor-card.tier-low {
+  border-color: #f3d2ce;
+  border-left-color: #d97a72;
+  background: #fff9f8;
+}
+.rubric-level-editor-card.tier-low .rubric-level-badge {
+  color: #963830;
+  background: #fce4e1;
+}
+
+.rubric-level-editor-card.tier-fail {
+  border-color: #ebbab5;
+  border-left-color: #c23b33;
+  background: #fef4f3;
+}
+.rubric-level-editor-card.tier-fail .rubric-level-badge {
+  color: #841f1a;
+  background: #f8ccc7;
+}
+
 @media (max-width: 960px) {
   .admin-main .qa-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -742,7 +1337,8 @@ textarea:focus-visible {
     display: initial;
   }
   .batch-create-row,
-  .batch-create-row.files-row {
+  .batch-create-row.files-row,
+  .grading-create-row {
     grid-template-columns: 1fr;
   }
   .batch-create-submit {
@@ -750,3 +1346,4 @@ textarea:focus-visible {
     padding-top: 0;
   }
 }
+

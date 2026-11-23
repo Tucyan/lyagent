@@ -47,9 +47,11 @@ export function rubricDeleteWarning(title: string): string {
   return `“${title}”的参考资料、聊天记录、当前草稿和全部冻结正式版本都将从本机永久删除，无法恢复。`;
 }
 
+export type RubricLevelTone = "tier-high" | "tier-good" | "tier-mid" | "tier-low" | "tier-fail";
+
 export interface RubricPreviewSection {
   title: string;
-  rows: Array<{ title: string; score: string; description: string; detail: string; levels?: Array<{ id: string; score: string; condition: string }> }>;
+  rows: Array<{ title: string; score: string; description: string; detail: string; levels?: Array<{ id: string; label: string; tone: RubricLevelTone; score: string; condition: string }> }>;
 }
 
 type PreviewRubric = {
@@ -74,7 +76,7 @@ export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSecti
         score: `${criterion.maxScore} 分`,
         description: criterion.description,
         detail: `${scorePolicyLabel(criterion.scorePolicy)} · ${criterion.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}`,
-        ...((criterion.levels?.length ?? 0) > 0 ? { levels: criterion.levels!.map((level) => ({ id: level.id, score: `${level.minScore === level.maxScore ? level.minScore : `${level.minScore}–${level.maxScore}`} 分`, condition: level.condition })) } : {}),
+        ...((criterion.levels?.length ?? 0) > 0 ? { levels: criterion.levels!.map((level) => ({ id: level.id, label: rubricLevelLabel(level.id), tone: rubricLevelTone(level, criterion.maxScore), score: `${level.minScore === level.maxScore ? level.minScore : `${level.minScore}–${level.maxScore}`} 分`, condition: level.condition })) } : {}),
       })),
     });
   }
@@ -95,6 +97,50 @@ export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSecti
     });
   }
   return sections;
+}
+
+export function rubricLevelLabel(id: string): string {
+  const normalized = id.trim().toLowerCase();
+  const suffix = normalized.split(/[_\-\s]+/).at(-1) ?? normalized;
+  const labels: Record<string, string> = {
+    excellent: "优秀",
+    outstanding: "优秀",
+    superior: "优秀",
+    good: "良好",
+    proficient: "良好",
+    medium: "中等",
+    average: "中等",
+    fair: "中等",
+    moderate: "中等",
+    pass: "合格",
+    passing: "合格",
+    basic: "合格",
+    satisfactory: "合格",
+    marginal: "勉强合格",
+    poor: "较差",
+    fail: "不合格",
+    failing: "不合格",
+    unsatisfactory: "不合格",
+    none: "未达标",
+    missing: "缺失",
+  };
+  return labels[suffix] ?? labels[normalized] ?? id;
+}
+
+export function rubricLevelTone(
+  level: { id: string; minScore: number; maxScore: number },
+  criterionMaxScore: number,
+): RubricLevelTone {
+  const suffix = level.id.trim().toLowerCase().split(/[_\-\s]+/).at(-1) ?? "";
+  if (["fail", "failing", "unsatisfactory", "missing", "none"].includes(suffix)) return "tier-fail";
+  if (["poor", "marginal"].includes(suffix)) return "tier-low";
+  const safeMax = criterionMaxScore > 0 ? criterionMaxScore : Math.max(level.maxScore, 1);
+  const midpointRatio = ((level.minScore + level.maxScore) / 2) / safeMax;
+  if (midpointRatio >= 0.8) return "tier-high";
+  if (midpointRatio >= 0.6) return "tier-good";
+  if (midpointRatio >= 0.4) return "tier-mid";
+  if (midpointRatio >= 0.2) return "tier-low";
+  return "tier-fail";
 }
 
 function scorePolicyLabel(policy: "exact-level" | "range" | "continuous"): string {

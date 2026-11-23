@@ -608,16 +608,18 @@ export function GradingPage() {
   return (
     <div className="grading-page">
       <header className="grading-header">
-        <button
-          type="button"
-          onClick={() => setSidebarCollapsed((value) => !value)}
-        >
-          {sidebarCollapsed ? "显示会话" : "收起会话"}
-        </button>
-        <div>
-          <p className="eyebrow">单份作业批改</p>
-          <h1>{detail ? detail.title : "批改工作台"}</h1>
-          <p>{notice}</p>
+        {sidebarCollapsed && (
+          <button
+            className="rubric-session-toggle"
+            type="button"
+            onClick={() => setSidebarCollapsed(false)}
+          >
+            展开会话
+          </button>
+        )}
+        <div className="grading-header-title">
+          <h1>{detail ? detail.title : "单份作业批改"}</h1>
+          <span className="grading-header-notice">{notice}</span>
         </div>
       </header>
       <div
@@ -641,8 +643,19 @@ export function GradingPage() {
             </select>
           </label>
           <div className="grading-sidebar-heading">
-            <strong>批改会话</strong>
-            <span>{sessions.length}</span>
+            <div>
+              <strong>批改会话</strong>
+              <span>{sessions.length}</span>
+            </div>
+            <button
+              className="rubric-pane-collapse"
+              type="button"
+              onClick={() => setSidebarCollapsed(true)}
+              aria-label="收起批改会话列表"
+              title="收起会话列表"
+            >
+              «
+            </button>
           </div>
           <button type="button" onClick={() => setCreating(true)}>
             ＋ 上传作业
@@ -663,10 +676,12 @@ export function GradingPage() {
                 >
                   <strong>{session.title}</strong>
                   <span>{session.submissionTitle ?? gradingSessionStatusLabel(session)}</span>
-                  <small>
-                    {session.studentName} · {session.studentNumber}
-                  </small>
-                  <small>
+                  {session.title !== `${session.studentName} · ${session.studentNumber}` && (
+                    <small>
+                      {session.studentName} · {session.studentNumber}
+                    </small>
+                  )}
+                  <small className={`grading-workflow-tag ${session.conversionStatus === "conversion_failed" || session.gradingStatus === "failed" ? "is-error" : session.gradingStatus === "confirmed" ? "is-confirmed" : ""}`}>
                     {gradingSessionWorkflowSummary(session)}
                   </small>
                 </a>
@@ -1332,53 +1347,58 @@ function NewSessionPanel({
           评分标准：
           {rubric ? `${rubric.title} · v${rubric.version}` : "请先在左侧选择"}
         </p>
-        <label>
-          学生姓名
-          <input
-            name="studentName"
-            placeholder="两项都留空时从文件名识别"
-            aria-invalid={errorFields.includes("studentName") || undefined}
-          />
-        </label>
-        <label>
-          学号
-          <input
-            name="studentNumber"
-            placeholder="姓名与学号必须同时填写"
-            aria-invalid={errorFields.includes("studentNumber") || undefined}
-          />
-        </label>
+        <div className="grading-create-row">
+          <label>
+            学生姓名
+            <input
+              name="studentName"
+              placeholder="与学号同留空时自动从文件名识别"
+              aria-invalid={errorFields.includes("studentName") || undefined}
+            />
+          </label>
+          <label>
+            学号
+            <input
+              name="studentNumber"
+              placeholder="需与学生姓名同时填写"
+              aria-invalid={errorFields.includes("studentNumber") || undefined}
+            />
+          </label>
+        </div>
         <label>
           作业名称（可选）
           <input
             name="submissionTitle"
             maxLength={200}
-            placeholder="留空时 Agent 会检索正文和文件名，冲突时以正文为准"
+            placeholder="留空时自动从正文或文件名识别（冲突时以正文为准）"
           />
         </label>
-        <label>
-          学生报告
-          <input
-            name="file"
-            type="file"
-            required
-            accept=".md,.pdf,.docx,.pptx,.png,.jpg,.jpeg"
-            aria-invalid={errorFields.includes("file") || undefined}
-          />
-        </label>
-        <label>
-          Markdown 图片目录（可选）
-          <input
-            name="assetDirectory"
-            type="file"
-            multiple
-            accept=".png,.jpg,.jpeg,.gif,.webp"
-            aria-invalid={errorFields.includes("assetManifest") || undefined}
-            onChange={(event) => setAssetFiles(Array.from(event.target.files ?? []))}
-            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-          />
-          <small>{assetFiles.length ? `已选择 ${assetFiles.length} 个附件` : "请选择名为 assets 的目录"}</small>
-        </label>
+        <div className="grading-create-row">
+          <label className="grading-file-field">
+            学生报告
+            <input
+              name="file"
+              type="file"
+              required
+              accept=".md,.pdf,.docx,.pptx,.png,.jpg,.jpeg"
+              aria-invalid={errorFields.includes("file") || undefined}
+            />
+            <small>支持 Markdown、DOCX、PDF、PPTX 与图片</small>
+          </label>
+          <label className="grading-file-field">
+            Markdown 图片目录（可选）
+            <input
+              name="assetDirectory"
+              type="file"
+              multiple
+              accept=".png,.jpg,.jpeg,.gif,.webp"
+              aria-invalid={errorFields.includes("assetManifest") || undefined}
+              onChange={(event) => setAssetFiles(Array.from(event.target.files ?? []))}
+              {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            />
+            <small>{assetFiles.length ? `已选择 ${assetFiles.length} 个附件` : "仅 Markdown 引用本地图片时选择 assets 目录"}</small>
+          </label>
+        </div>
         <label className="inline-check">
           <input
             name="autoStartAfterConversion"
@@ -1401,7 +1421,7 @@ function NewSessionPanel({
           <button type="button" onClick={close}>
             取消
           </button>
-          <button type="submit" disabled={submitting || !rubric}>
+          <button className="primary-button" type="submit" disabled={submitting || !rubric}>
             {submitting ? "正在创建…" : "创建会话"}
           </button>
         </div>

@@ -52,4 +52,39 @@ describe("rubric teacher preview", () => {
     expect(html).toContain("自由区间扣分");
     expect(html).toContain("按严重程度在整数区间内扣分");
   });
+
+  it("localizes technical level ids and assigns graduated green-to-red tone tiers", () => {
+    const html = renderToStaticMarkup(<RubricDocument rubric={{
+      schemaVersion: "1.0",
+      mode: "additive",
+      totalScore: 10,
+      partialCreditAllowed: true,
+      criteria: [{
+        id: "fmt",
+        name: "格式规范",
+        description: "格式与表达",
+        maxScore: 10,
+        scorePolicy: "continuous",
+        evidenceRequired: true,
+        levels: [
+          { id: "fmt_excellent", minScore: 8, maxScore: 10, condition: "非常规范" },
+          { id: "fmt_good", minScore: 6, maxScore: 7, condition: "较规范" },
+          { id: "fmt_medium", minScore: 4, maxScore: 5, condition: "基本规范" },
+          { id: "fmt_pass", minScore: 2, maxScore: 3, condition: "一般" },
+          { id: "fmt_fail", minScore: 0, maxScore: 1, condition: "不合格" },
+        ],
+      }],
+    }} />);
+
+    expect(html).toContain("优秀");
+    expect(html).toContain("良好");
+    expect(html).toContain("中等");
+    expect(html).toContain("合格");
+    expect(html).toContain("不合格");
+    expect(html).toContain("tier-high");
+    expect(html).toContain("tier-good");
+    expect(html).toContain("tier-mid");
+    expect(html).toContain("tier-low");
+    expect(html).toContain("tier-fail");
+  });
 });

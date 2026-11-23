@@ -1,4 +1,4 @@
-import { rubricPreviewSections } from "../pages/rubric-page-model";
+import { rubricLevelLabel, rubricLevelTone, rubricPreviewSections } from "../pages/rubric-page-model";
 import { useToast } from "./ToastProvider";
 
 export type RubricMode = "additive" | "deductive" | "hybrid";
@@ -29,7 +29,7 @@ export function RubricDocument({ rubric }: { rubric: RubricValue }) {
         <div><strong>{row.title}</strong><span>{row.score}</span></div>
         <p>{row.description}</p>
         <small>{row.detail}</small>
-        {row.levels && <div className="rubric-preview-levels">{row.levels.map((level) => <div key={level.id}><strong>{level.id}</strong><span>{level.score}</span><p>{level.condition}</p></div>)}</div>}
+        {row.levels && <div className="rubric-preview-levels">{row.levels.map((level) => <div className={`rubric-level-card ${level.tone}`} data-level-id={level.id} title={level.id} key={level.id}><span className="rubric-level-badge">{level.label}</span><span className="rubric-level-score">{level.score}</span><p>{level.condition}</p></div>)}</div>}
       </article>)}</div>
     </section>)}
   </article>;
@@ -105,10 +105,29 @@ function CriteriaEditor({ criteria, onChange, onRemove, onRemoveLevel }: { crite
   return <section className="rubric-editor-section"><div className="rubric-editor-section-heading"><h4>评分项目</h4><button type="button" onClick={() => onChange([...criteria, { id: `criterion_${criteria.length + 1}`, name: "新评分项目", description: "请填写可观察的评分说明。", maxScore: 1, scorePolicy: "continuous", evidenceRequired: true }])}>＋ 添加项目</button></div>
     {criteria.map((criterion, index) => <article className="rubric-editor-card" key={index}>
       <div className="rubric-editor-card-heading"><strong>项目 {index + 1}</strong><button type="button" onClick={() => onRemove(index)}>删除</button></div>
-      <div className="rubric-editor-grid"><Field label="名称" value={criterion.name} onChange={(name) => update(index, { ...criterion, name })} /><NumberField label="最高分" value={criterion.maxScore} onChange={(maxScore) => update(index, { ...criterion, maxScore })} /><label>评分方式<select value={criterion.scorePolicy} onChange={(event) => update(index, { ...criterion, scorePolicy: event.target.value as ScorePolicy })}><option value="continuous">连续评分</option><option value="range">区间评分</option><option value="exact-level">等级定分</option></select></label><Field label="技术标识（自动生成）" value={criterion.id} onChange={(id) => update(index, { ...criterion, id })} /></div>
-      <label>评分说明<textarea value={criterion.description} onChange={(event) => update(index, { ...criterion, description: event.target.value })} /></label>
+      <div className="rubric-editor-grid">
+        <Field className="rubric-field-full" label="名称" value={criterion.name} onChange={(name) => update(index, { ...criterion, name })} />
+        <NumberField label="最高分" value={criterion.maxScore} onChange={(maxScore) => update(index, { ...criterion, maxScore })} />
+        <label>评分方式<select value={criterion.scorePolicy} onChange={(event) => update(index, { ...criterion, scorePolicy: event.target.value as ScorePolicy })}><option value="continuous">连续评分</option><option value="range">区间评分</option><option value="exact-level">等级定分</option></select></label>
+      </div>
+      <label>评分说明<textarea rows={3} value={criterion.description} onChange={(event) => update(index, { ...criterion, description: event.target.value })} /></label>
       <label className="rubric-checkbox"><input type="checkbox" checked={criterion.evidenceRequired} onChange={(event) => update(index, { ...criterion, evidenceRequired: event.target.checked })} />评分时必须提供分析依据</label>
-      {(criterion.levels?.length ?? 0) > 0 && <div className="rubric-levels"><strong>评分等级</strong>{criterion.levels!.map((level, levelIndex) => <div className="rubric-level-row" key={levelIndex}><Field label="等级" value={level.id} onChange={(id) => updateLevel(criterion, levelIndex, { ...level, id }, (next) => update(index, next))} /><NumberField label="最低分" value={level.minScore} onChange={(minScore) => updateLevel(criterion, levelIndex, { ...level, minScore }, (next) => update(index, next))} /><NumberField label="最高分" value={level.maxScore} onChange={(maxScore) => updateLevel(criterion, levelIndex, { ...level, maxScore }, (next) => update(index, next))} /><Field label="达成条件" value={level.condition} onChange={(condition) => updateLevel(criterion, levelIndex, { ...level, condition }, (next) => update(index, next))} /><button type="button" onClick={() => onRemoveLevel(index, levelIndex)}>删除等级</button></div>)}</div>}
+      <details className="rubric-advanced-field"><summary>高级设置（技术标识：{criterion.id}）</summary><Field label="技术标识（自动生成）" value={criterion.id} onChange={(id) => update(index, { ...criterion, id })} /></details>
+      {(criterion.levels?.length ?? 0) > 0 && <div className="rubric-levels"><strong>评分等级</strong>{criterion.levels!.map((level, levelIndex) => {
+        const tone = rubricLevelTone(level, criterion.maxScore);
+        return <div className={`rubric-level-editor-card ${tone}`} key={levelIndex}>
+          <div className="rubric-level-editor-header">
+            <span className="rubric-level-badge">{rubricLevelLabel(level.id)}</span>
+            <button type="button" className="rubric-level-delete" onClick={() => onRemoveLevel(index, levelIndex)}>删除等级</button>
+          </div>
+          <div className="rubric-level-editor-meta">
+            <NumberField label="最低分" value={level.minScore} onChange={(minScore) => updateLevel(criterion, levelIndex, { ...level, minScore }, (next) => update(index, next))} />
+            <NumberField label="最高分" value={level.maxScore} onChange={(maxScore) => updateLevel(criterion, levelIndex, { ...level, maxScore }, (next) => update(index, next))} />
+            <Field label="等级标识" value={level.id} onChange={(id) => updateLevel(criterion, levelIndex, { ...level, id }, (next) => update(index, next))} />
+          </div>
+          <label className="rubric-level-condition">达成条件<textarea rows={2} value={level.condition} onChange={(event) => updateLevel(criterion, levelIndex, { ...level, condition: event.target.value }, (next) => update(index, next))} /></label>
+        </div>;
+      })}</div>}
       {criterion.scorePolicy !== "continuous" && <button type="button" onClick={() => update(index, { ...criterion, levels: [...(criterion.levels ?? []), { id: `level_${(criterion.levels?.length ?? 0) + 1}`, minScore: 0, maxScore: criterion.maxScore, condition: "请填写该等级的可观察条件。" }] })}>＋ 添加评分等级</button>}
     </article>)}
   </section>;
@@ -140,8 +159,8 @@ function OverlapGroupsEditor({ groups, onChange, onRemove }: { groups: OverlapGr
   return <section className="rubric-editor-section"><div className="rubric-editor-section-heading"><h4>重叠规则组</h4><button type="button" onClick={() => onChange([...groups, { id: `group_${groups.length + 1}`, aggregation: "highest-only" }])}>＋ 添加组</button></div>{groups.map((group, index) => <div className="rubric-overlap-row" key={index}><Field label="组 ID" value={group.id} onChange={(id) => onChange(groups.map((item, itemIndex) => itemIndex === index ? { ...item, id } : item))} /><label>聚合方式<select value={group.aggregation} onChange={(event) => onChange(groups.map((item, itemIndex) => itemIndex === index ? { ...item, aggregation: event.target.value as OverlapGroup["aggregation"] } : item))}><option value="highest-only">仅取最高项</option><option value="sum">累计</option></select></label><button type="button" onClick={() => onRemove(index)}>删除</button></div>)}</section>;
 }
 
-function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  return <label>{label}<input value={value} onChange={(event) => onChange(event.target.value)} /></label>;
+function Field({ label, value, onChange, className }: { label: string; value: string; onChange: (value: string) => void; className?: string }) {
+  return <label className={className}>{label}<input value={value} onChange={(event) => onChange(event.target.value)} /></label>;
 }
 
 function NumberField({ label, value, onChange, step = "0.01" }: { label: string; value: number; onChange: (value: number) => void; step?: string }) {
