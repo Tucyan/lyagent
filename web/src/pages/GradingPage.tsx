@@ -508,6 +508,7 @@ export function GradingPage() {
       setSessionActionError("");
       await refreshList();
       if (detail?.id === sessionToRename.id) await refreshDetail(detail.id);
+      toast.success("会话已重命名。");
     } catch (error) {
       setSessionActionError((error as Error).message);
     }
@@ -675,7 +676,9 @@ export function GradingPage() {
                   }}
                 >
                   <strong>{session.title}</strong>
-                  <span>{session.submissionTitle ?? gradingSessionStatusLabel(session)}</span>
+                  {(!session.submissionTitle || !(session.title ?? "").includes(session.submissionTitle)) && (
+                    <span>{session.submissionTitle ?? gradingSessionStatusLabel(session)}</span>
+                  )}
                   {session.title !== `${session.studentName} · ${session.studentNumber}` && (
                     <small>
                       {session.studentName} · {session.studentNumber}

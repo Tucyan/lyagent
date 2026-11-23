@@ -76,6 +76,7 @@ const createBatchSchema = z.object({
   sessionIds: z.array(z.string().uuid()).min(1).max(120),
 });
 const batchAnswerSchema = z.object({ answer: z.string().trim().min(1).max(8_000) });
+const renameBatchSchema = z.object({ title: z.string().trim().min(1).max(120) });
 const batchUploadParams = z.object({ id: z.string().uuid() });
 const batchUploadItemParams = z.object({ id: z.string().uuid(), itemId: z.string().uuid() });
 const createBatchUploadSchema = z.object({
@@ -362,6 +363,12 @@ export function registerGradingApi(
     });
     scoped.get("/api/grading/batches/:batchId", async (request) =>
       batches.getBatch(batchParams.parse(request.params).batchId),
+    );
+    scoped.patch("/api/grading/batches/:batchId", async (request) =>
+      batches.renameBatch(
+        batchParams.parse(request.params).batchId,
+        renameBatchSchema.parse(request.body).title,
+      ),
     );
     scoped.post("/api/grading/batches/:batchId/start", async (request, reply) =>
       reply.code(202).send(await batches.startBatch(batchParams.parse(request.params).batchId)),

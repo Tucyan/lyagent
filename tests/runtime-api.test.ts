@@ -14,3 +14,45 @@ it("returns only sanitized launcher runtime state", async () => {
   expect((await app.inject({ method: "GET", url: "/api/health" })).json()).toMatchObject({ ok: true, ready: true, instanceId: "instance-1" });
   await app.close(); await rm(workspaceRoot, { recursive: true, force: true });
 });
+
+it("re-checks Docling health dynamically on /api/system/runtime and /api/health", async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-api-live-"));
+  let healthy = false;
+  const conversionClient = {
+    async health() {
+      if (!healthy) throw new Error("converter offline");
+      return { ok: true as const, version: "1.29.0" };
+    },
+    async submit() {
+      throw new Error("not used");
+    },
+    async status() {
+      throw new Error("not used");
+    },
+    async result() {
+      throw new Error("not used");
+    },
+  };
+  const app = await createServer({
+    workspaceRoot,
+    conversionClient,
+    runtimeStatus: {
+      appVersion: "1.2.3",
+      appPort: 3002,
+      converter: { provider: "docling", status: "unavailable", version: "development", device: "auto", port: 5001 },
+      workspaceConfigured: true,
+    },
+  });
+  try {
+    expect((await app.inject({ method: "GET", url: "/api/system/runtime" })).json().converter.status).toBe("unavailable");
+    expect((await app.inject({ method: "GET", url: "/api/health" })).json()).toMatchObject({ ok: true, ready: false });
+
+    healthy = true;
+    const recovered = (await app.inject({ method: "GET", url: "/api/system/runtime" })).json();
+    expect(recovered.converter).toMatchObject({ status: "ready", version: "1.29.0" });
+    expect((await app.inject({ method: "GET", url: "/api/health" })).json()).toMatchObject({ ok: true, ready: true });
+  } finally {
+    await app.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});

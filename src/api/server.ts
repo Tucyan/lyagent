@@ -217,13 +217,39 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     return reply.code(500).send({ code: "INTERNAL_ERROR", message: "Unexpected server error" });
   });
 
+  const defaultRuntimeStatus = {
+    appVersion: "0.1.0",
+    appPort: 0,
+    converter: { provider: "docling" as const, status: "unavailable" as const, version: "development", device: "auto" as const, port: 0 },
+    workspaceConfigured: false,
+  };
+  let inflightConverterCheck: Promise<{ version?: string } | undefined> | undefined;
+  const resolveRuntimeStatus = async () => {
+    const base = options.runtimeStatus ?? defaultRuntimeStatus;
+    if (!options.conversionClient) return base;
+    if (!inflightConverterCheck) {
+      inflightConverterCheck = options.conversionClient
+        .health(AbortSignal.timeout(1_500))
+        .catch(() => undefined)
+        .finally(() => { inflightConverterCheck = undefined; });
+    }
+    const health = await inflightConverterCheck;
+    return {
+      ...base,
+      converter: {
+        ...base.converter,
+        status: health ? "ready" as const : "unavailable" as const,
+        ...(health?.version ? { version: health.version } : {}),
+      },
+    };
+  };
+
   app.get("/api/health", async (_request, reply) => {
     if (options.runtimeOwnerToken) reply.header("x-course-agent-owner", options.runtimeOwnerToken);
-    return { ok: true, ...(options.runtimeStatus ? { ready: options.runtimeStatus.converter.status === "ready" } : {}), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
+    const runtime = options.runtimeStatus ? await resolveRuntimeStatus() : undefined;
+    return { ok: true, ...(runtime ? { ready: runtime.converter.status === "ready" } : {}), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
   });
-  app.get("/api/system/runtime", async () => options.runtimeStatus ?? ({
-    appVersion: "0.1.0", appPort: 0, converter: { provider: "docling", status: "unavailable", version: "development", device: "auto", port: 0 }, workspaceConfigured: false,
-  }));
+  app.get("/api/system/runtime", async () => resolveRuntimeStatus());
   app.post("/api/agent-runs/:runId/cancel", async (request, reply) => {
     const { runId } = z.object({ runId: z.string().uuid() }).parse(request.params);
     const controller = activeAgentRuns.get(runId);

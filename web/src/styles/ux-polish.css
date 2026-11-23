@@ -616,11 +616,347 @@ textarea:focus-visible {
 
 .batch-grading-header,
 .batch-review-header {
-  padding: 18px 24px;
+  min-height: 48px;
+  padding: 10px 20px;
   margin: 0;
   color: var(--text-primary);
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.batch-header-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-width: 0;
+}
+
+.batch-header-title h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.batch-header-notice {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.batch-new-button {
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: 8px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
+.batch-new-button:hover:not(:disabled),
+.batch-new-button.active {
+  color: #fff;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.batch-grading-sidebar select,
+.batch-guided-card input,
+.batch-guided-card select {
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.batch-guided-card {
+  width: min(720px, 100%);
+  margin: 6px auto 0;
+  gap: 16px;
+  padding: 24px 28px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.batch-guided-header h2 {
+  margin: 0;
+  font-size: 19px;
+  color: var(--text-primary);
+}
+
+.batch-guided-header p {
+  margin: 5px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.batch-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: 0;
+  padding: 10px 14px;
+  list-style: none;
+  border-radius: 9px;
+  background: var(--bg-canvas);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.batch-stepper li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 500;
+}
+
+.batch-stepper li span {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #e2e7ef;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.batch-stepper li.current {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.batch-stepper li.current span {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.batch-stepper li.done {
+  color: var(--color-success-text);
+}
+
+.batch-stepper li.done span {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+  border: 1px solid var(--color-success-border);
+}
+
+.batch-step-block {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-surface);
+}
+
+.batch-step-block.active {
+  border-color: var(--color-primary-border);
+  background: #fafcff;
+}
+
+.batch-step-block.compact {
+  background: var(--bg-canvas);
+}
+
+.batch-step-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.batch-step-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.batch-no-rubric {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.batch-no-rubric p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.batch-dropzone {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+  padding: 22px 16px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 9px;
+  background: var(--bg-canvas);
+  cursor: pointer;
+  transition: border-color var(--ease-standard), background-color var(--ease-standard);
+}
+
+.batch-dropzone:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.batch-dropzone input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.batch-dropzone strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.batch-dropzone span {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.batch-file-preview {
+  margin-top: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.batch-title-field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.batch-advanced-options {
+  padding-top: 4px;
+}
+
+.batch-advanced-options summary {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.batch-advanced-grid {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.batch-guided-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.batch-ready-hint {
+  font-size: 12px;
+  color: var(--color-success-text);
+}
+
+/* Unified session & batch sidebar card rename actions */
+.batch-history-card {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: background-color var(--ease-standard), border-color var(--ease-standard);
+}
+
+.batch-history-card:hover,
+.batch-history-card.active {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-soft);
+}
+
+.batch-history-select {
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px 4px;
+  border: 0 !important;
+  background: transparent !important;
+  text-align: left;
+  cursor: pointer;
+}
+
+.batch-history-select strong {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-history-card.active .batch-history-select strong {
+  color: var(--color-primary);
+}
+
+.batch-history-card .grading-session-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 2px 8px 6px;
+  opacity: 0;
+  transition: opacity var(--ease-standard);
+}
+
+.batch-history-card:hover .grading-session-actions,
+.batch-history-card:focus-within .grading-session-actions,
+.batch-history-card.active .grading-session-actions {
+  opacity: 1;
+}
+
+.batch-history-card .grading-session-actions button {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.batch-history-card .grading-session-actions button:hover {
+  color: var(--color-primary);
+  background: rgba(39, 88, 150, 0.08);
 }
 
 .batch-grading-header h1,

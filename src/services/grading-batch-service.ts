@@ -302,6 +302,17 @@ export class GradingBatchService {
     return { ...(await this.getBatchSummary(batchId)), jobs };
   }
 
+  async renameBatch(batchId: string, title: string): Promise<GradingBatch> {
+    await this.getBatchSummary(batchId);
+    const normalized = title.trim();
+    if (!normalized || normalized.length > 120)
+      throw new GradingBatchError("Batch title must contain between 1 and 120 characters");
+    this.database
+      .prepare("UPDATE grading_batches SET title = ?, updated_at = ? WHERE id = ?")
+      .run(normalized, this.now(), batchId);
+    return this.getBatchSummary(batchId);
+  }
+
   async getJob(jobId: string): Promise<GradingBatchJob> {
     const row = this.database.prepare("SELECT * FROM grading_batch_jobs WHERE id = ?").get(jobId) as JobRow | undefined;
     if (!row) throw new GradingBatchError("Grading batch job was not found");

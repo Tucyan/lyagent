@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ConfirmDialog, PromptDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage } from "../lib/api";
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
@@ -60,11 +60,17 @@ export function GradingBatchPage() {
   const [rubricKey, setRubricKey] = useState(localStorage.getItem("batch-grading-rubric") ?? "");
   const [batches, setBatches] = useState<Batch[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
+  const [creatingBatch, setCreatingBatch] = useState(false);
   const [detail, setDetail] = useState<Batch>();
   const [uploadDraft, setUploadDraft] = useState<BatchUpload>();
   const [files, setFiles] = useState<File[]>([]);
   const [assetFiles, setAssetFiles] = useState<File[]>([]);
   const [title, setTitle] = useState("班级批量批改");
+  const [titleManuallyEdited, setTitleManuallyEdited] = useState(false);
+  const [batchToRename, setBatchToRename] = useState<Batch>();
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const [renamingBatch, setRenamingBatch] = useState(false);
   const [concurrency, setConcurrency] = useState(4);
   const [notice, setNotice] = useState("正在加载批次…");
   const [busy, setBusy] = useState(false);
@@ -93,6 +99,12 @@ export function GradingBatchPage() {
     () => rubrics.find((rubric) => `${rubric.assignmentId}:${rubric.version}` === rubricKey),
     [rubrics, rubricKey],
   );
+  useEffect(() => {
+    if (!titleManuallyEdited && selectedRubric) {
+      const next = `${selectedRubric.title} · 批量批改`;
+      setTitle(next.length <= 120 ? next : `${next.slice(0, 119)}…`);
+    }
+  }, [selectedRubric?.assignmentId, selectedRubric?.version, titleManuallyEdited]);
 
   const setItemBusy = (id: string, active: boolean) => {
     setBusyItemIds((current) => active ? (current.includes(id) ? current : [...current, id]) : current.filter((item) => item !== id));
@@ -138,8 +150,10 @@ export function GradingBatchPage() {
       try {
         const nextRubrics = await api<FrozenRubric[]>("/api/grading/rubrics");
         setRubrics(nextRubrics);
-        const key = rubricKey || (nextRubrics[0] ? `${nextRubrics[0].assignmentId}:${nextRubrics[0].version}` : "");
+        const savedValid = rubricKey && nextRubrics.some((item) => `${item.assignmentId}:${item.version}` === rubricKey);
+        const key = savedValid ? rubricKey : (nextRubrics[0] ? `${nextRubrics[0].assignmentId}:${nextRubrics[0].version}` : "");
         setRubricKey(key);
+        if (key) localStorage.setItem("batch-grading-rubric", key);
         await refreshList(nextRubrics.find((item) => `${item.assignmentId}:${item.version}` === key));
         const draftId = localStorage.getItem(DRAFT_STORAGE_KEY);
         if (draftId) {
@@ -217,7 +231,32 @@ export function GradingBatchPage() {
       toast.fromError(error);
     }
   };
+  const renameBatch = async () => {
+    if (!batchToRename) return;
+    const nextTitle = renameTitle.trim();
+    if (!nextTitle) {
+      setRenameError("请输入批次名称");
+      return;
+    }
+    setRenamingBatch(true);
+    setRenameError("");
+    try {
+      const updated = await api<Batch>(`/api/grading/batches/${batchToRename.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: nextTitle }),
+      });
+      setBatches((current) => current.map((item) => item.id === updated.id ? { ...item, title: updated.title } : item));
+      setDetail((current) => current?.id === updated.id ? { ...current, title: updated.title } : current);
+      setBatchToRename(undefined);
+      toast.success("批次已重命名。");
+    } catch (error) {
+      setRenameError((error as Error).message);
+    } finally {
+      setRenamingBatch(false);
+    }
+  };
   const chooseBatch = (id: string) => {
+    setCreatingBatch(false);
     selectedIdRef.current = id;
     detailGate.current.invalidate();
     setSelectedId(id);
@@ -339,6 +378,7 @@ export function GradingBatchPage() {
       setUploadErrors([]);
       selectedIdRef.current = batch.id;
       setSelectedId(batch.id);
+      setCreatingBatch(false);
       await refreshList();
       setNotice("正式批次已创建，点击“启动批改”开始并发评分。");
       toast.success("正式批次已创建，点击“启动批改”即可开始。");
@@ -460,35 +500,78 @@ export function GradingBatchPage() {
     ?? detail?.jobs?.[0];
   const draftReadyCount = uploadDraft ? uploadDraft.items.filter(({ status }) => status === "ready").length : 0;
   const draftPendingCount = uploadDraft ? uploadDraft.items.length - draftReadyCount : 0;
+  const showGuidedCreate = !uploadDraft && (creatingBatch || !detail);
+  const step1Done = Boolean(selectedRubric);
+  const step2Done = files.length >= 1 && files.length <= 120;
 
   return <div className="batch-grading-page">
     <header className="workspace-header batch-grading-header">
-      <div><p className="eyebrow">批量批改工作台</p><h1>批量作业批改</h1><p>{notice}</p></div>
-      <a className="secondary-link-button" href="/grading">切换到单份批改</a>
+      <div className="batch-header-title"><h1>批量作业批改</h1><span className="batch-header-notice">{notice}</span></div>
     </header>
     <div className="batch-grading-layout">
       <aside className="batch-grading-sidebar">
-        <label>评分标准<select aria-label="批量评分标准" value={rubricKey} onChange={(event) => void chooseRubric(event.target.value)}>
+        <button
+          type="button"
+          className={`batch-new-button ${showGuidedCreate ? "active" : ""}`}
+          disabled={Boolean(uploadDraft)}
+          onClick={() => setCreatingBatch(true)}
+        >
+          ＋ 新建批改批次
+        </button>
+        {!showGuidedCreate && <label>评分标准<select aria-label="批量评分标准" value={rubricKey} onChange={(event) => void chooseRubric(event.target.value)}>
           <option value="">选择冻结评分标准</option>{rubrics.map((rubric) => <option key={`${rubric.assignmentId}:${rubric.version}`} value={`${rubric.assignmentId}:${rubric.version}`}>{rubric.title} · v{rubric.version}</option>)}
-        </select></label>
+        </select></label>}
         <p className="batch-sidebar-heading">历史批次（{batches.length}）</p>
-        <nav>{batches.length === 0 ? <p className="muted">该评分标准下尚无批次</p> : batches.map((batch) => <button className={selectedId === batch.id ? "active" : ""} key={batch.id} type="button" onClick={() => chooseBatch(batch.id)}><strong>{batch.title}</strong><span>{batchStatusLabel(batch.status)} · {batch.totalJobs} 份</span></button>)}</nav>
+        <nav>{batches.length === 0 ? <p className="muted">尚无历史批次</p> : batches.map((batch) => <div className={`batch-history-card ${!showGuidedCreate && selectedId === batch.id ? "active" : ""}`} key={batch.id}><button className="batch-history-select" type="button" onClick={() => chooseBatch(batch.id)}><strong>{batch.title}</strong><span>{batchStatusLabel(batch.status)} · {batch.totalJobs} 份</span></button><div className="grading-session-actions"><button type="button" onClick={() => { setBatchToRename(batch); setRenameTitle(batch.title); setRenameError(""); }}>重命名</button></div></div>)}</nav>
       </aside>
       <main className="batch-grading-main">
-        {!uploadDraft && <form className="batch-create-card" onSubmit={create}>
-          <div className="batch-create-heading"><h2>创建新批次</h2><p>先建立可恢复的上传草稿；即使刷新页面或重启应用，已上传成功的报告也不会丢失。</p></div>
-          <div className="batch-create-row">
-            <label>批次名称<input value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="例如：2026 春季班第一次作业" /></label>
-            <label>并发数<select aria-label="并发数" value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8].map((value) => <option key={value}>{value}</option>)}</select></label>
+        {showGuidedCreate && <form className="batch-create-card batch-guided-card" onSubmit={create}>
+          <div className="batch-guided-header">
+            <h2>开始批量批改</h2>
+            <p>按下面两步准备好评分标准与学生报告，即可自动转换并进入并发批改；刷新或重启不会丢失进度。</p>
           </div>
-          <div className="batch-create-row files-row">
-            <label className="batch-file-input">学生报告（1–120 份）<input aria-label="选择学生报告" type="file" multiple accept=".md,.docx,.pdf,.pptx,.png,.jpg,.jpeg" onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /><span>{files.length ? `已选择 ${files.length} 份报告` : "支持 Markdown、DOCX、PDF、PPTX 与图片"}</span></label>
-            <label className="batch-file-input">共享 assets 目录（可选）<input aria-label="选择共享 assets 目录" type="file" multiple {...({ webkitdirectory: "" } as object)} onChange={(event) => setAssetFiles(Array.from(event.target.files ?? []))} /><span>{assetFiles.length ? `已选择 ${assetFiles.length} 个附件` : "仅 Markdown 引用了本地图片时需要选择"}</span></label>
-            <div className="batch-create-submit">
-              <button className="primary-button" disabled={busy || !selectedRubric || files.length < 1 || files.length > 120} type="submit">{busy ? "正在上传…" : "创建上传草稿"}</button>
-              {(!selectedRubric || files.length < 1 || files.length > 120) && <small className="inline-requirement-hint">{!selectedRubric ? "请先在左侧选择冻结评分标准" : files.length > 120 ? "单批次最多支持 120 份报告" : "请先选择至少 1 份学生报告"}</small>}
-            </div>
-          </div>
+          <ol className="batch-stepper" aria-label="批量批改步骤">
+            <li className={step1Done ? "done" : "current"}><span>{step1Done ? "✓" : "1"}</span>选择评分标准</li>
+            <li className={step2Done ? "done" : step1Done ? "current" : ""}><span>{step2Done ? "✓" : "2"}</span>上传学生报告</li>
+            <li className={step1Done && step2Done ? "current" : ""}><span>3</span>确认并开始批改</li>
+          </ol>
+
+          <section className={`batch-step-block ${step1Done ? "completed" : "active"}`}>
+            <div className="batch-step-title"><strong>1. 选择冻结评分标准</strong>{step1Done && <span className="batch-step-badge">已就绪</span>}</div>
+            {rubrics.length === 0 ? <div className="batch-no-rubric">
+              <p>还没有已冻结的评分量表，请先设计并冻结一份评分标准后再开展批量批改。</p>
+              <a className="secondary-link-button" href="/rubrics">前往设计评分量表</a>
+            </div> : <select aria-label="批量评分标准" value={rubricKey} onChange={(event) => void chooseRubric(event.target.value)}>
+              <option value="">请选择一份已冻结的评分标准…</option>
+              {rubrics.map((rubric) => <option key={`${rubric.assignmentId}:${rubric.version}`} value={`${rubric.assignmentId}:${rubric.version}`}>{rubric.title} · v{rubric.version}</option>)}
+            </select>}
+          </section>
+
+          <section className={`batch-step-block ${step2Done ? "completed" : step1Done ? "active" : ""}`}>
+            <div className="batch-step-title"><strong>2. 上传学生报告（1–120 份）</strong>{step2Done && <span className="batch-step-badge">已选 {files.length} 份</span>}</div>
+            <label className="batch-dropzone">
+              <input aria-label="选择学生报告" type="file" multiple accept=".md,.docx,.pdf,.pptx,.png,.jpg,.jpeg" onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
+              <strong>{files.length ? `已选择 ${files.length} 份学生报告（点击可重新选择）` : "点击选择学生报告文件"}</strong>
+              <span>支持 DOCX、PDF、PPTX、Markdown 与图片，单批最多 120 份</span>
+              {files.length > 0 && <small className="batch-file-preview">{files.slice(0, 3).map((file) => file.name).join("、")}{files.length > 3 ? ` 等 ${files.length} 份` : ""}</small>}
+            </label>
+          </section>
+
+          <section className="batch-step-block compact">
+            <label className="batch-title-field">批次名称<input value={title} maxLength={120} onChange={(event) => { setTitle(event.target.value); setTitleManuallyEdited(true); }} placeholder="例如：2026 春季班第一次作业" /></label>
+            <details className="batch-advanced-options">
+              <summary>更多设置（并发数：{concurrency}{assetFiles.length ? ` · 已选 ${assetFiles.length} 个图片附件` : ""}）</summary>
+              <div className="batch-advanced-grid">
+                <label>同时批改并发数<select aria-label="并发数" value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8].map((value) => <option key={value}>{value}</option>)}</select></label>
+                <label className="batch-file-input">Markdown 共享 assets 目录（可选）<input aria-label="选择共享 assets 目录" type="file" multiple {...({ webkitdirectory: "" } as object)} onChange={(event) => setAssetFiles(Array.from(event.target.files ?? []))} /><span>{assetFiles.length ? `已选择 ${assetFiles.length} 个附件` : "仅 Markdown 引用本地图片时需要选择"}</span></label>
+              </div>
+            </details>
+          </section>
+
+          <footer className="batch-guided-footer">
+            {(!selectedRubric || files.length < 1 || files.length > 120) ? <span className="inline-requirement-hint">{!selectedRubric ? "请先在第 1 步选择冻结评分标准" : files.length > 120 ? "单批次最多支持 120 份报告，请减少文件数" : "请在第 2 步选择至少 1 份学生报告"}</span> : <span className="batch-ready-hint">已就绪，点击后将上传并逐份识别学生姓名与学号</span>}
+            <button className="primary-button" disabled={busy || !selectedRubric || files.length < 1 || files.length > 120} type="submit">{busy ? "正在上传报告…" : "下一步：上传并准备批次"}</button>
+          </footer>
         </form>}
         {uploadDraft && <section className="batch-detail">
           <header><div><p className="eyebrow">可恢复上传草稿</p><h2>{uploadDraft.title}</h2><p>每份文件独立处理；补填身份或替换失败项不会丢失其他已就绪的报告。</p></div><strong>{draftReadyCount}/{uploadDraft.items.length}</strong></header>
@@ -507,7 +590,7 @@ export function GradingBatchPage() {
             return <tr key={item.id}><td>{item.filename}{item.sessionId && <small>会话已保留</small>}</td><td>{item.status === "identity_required" ? <div className="batch-answer"><input aria-label={`${item.filename} 姓名`} placeholder="姓名" value={identity.studentName} onChange={(event) => setIdentities({ ...identities, [item.id]: { ...identity, studentName: event.target.value } })} /><input aria-label={`${item.filename} 学号`} placeholder="学号" value={identity.studentNumber} onChange={(event) => setIdentities({ ...identities, [item.id]: { ...identity, studentNumber: event.target.value } })} /><button disabled={itemBusy || !identity.studentName.trim() || !identity.studentNumber.trim()} onClick={() => void patchIdentity(item)}>{busyItemIds.includes(item.id) ? "保存中…" : "保存身份"}</button></div> : <>{item.studentName ?? "—"}<small>{item.studentNumber}</small></>}</td><td><span className={`batch-status ${item.status}`}>{batchUploadItemStatusLabel(item.status)}</span>{(item.errorCode || item.status === "failed") && <small>{userErrorMessage(item.errorCode ?? "GRADING_BATCH_ERROR")}</small>}</td><td><div className="batch-answer">{["failed", "identity_required"].includes(item.status) && <button disabled={itemBusy} onClick={() => draftItemCommand(item, "retry")}>{retryingItemId === item.id ? "重试中…" : "重试"}</button>}<label className="button-link">替换<input hidden type="file" accept=".md,.docx,.pdf,.pptx,.png,.jpg,.jpeg" onChange={(event) => { const replacement = event.target.files?.[0]; if (replacement) { setItemBusy(item.id, true); void uploadItem(uploadDraft, item, replacement).then(() => { toast.success(`已替换 ${item.filename}`); return refreshDraft(uploadDraft.id); }).catch((error) => { setNotice((error as Error).message); toast.fromError(error); }).finally(() => setItemBusy(item.id, false)); } }} /></label><button disabled={itemBusy} onClick={() => draftItemCommand(item, "remove")}>移除</button></div></td></tr>;
           })}</tbody></table></div>
         </section>}
-        {detail ? <section className="batch-detail">
+        {!uploadDraft && !showGuidedCreate && detail && <section className="batch-detail">
           <header><div><p className="eyebrow">{batchStatusLabel(detail.status)}</p><h2>{detail.title}</h2><p>并发 {detail.concurrency} · {progress?.settled}/{detail.totalJobs} 已结束本轮处理</p></div><strong>{progress?.percent}%</strong></header>
           <div className="batch-progress"><i style={{ width: `${progress?.percent ?? 0}%` }} /></div>
           <div className="batch-controls">{actions?.canStart && <button className="primary-button" disabled={busy} onClick={() => void command("start")}>启动批改</button>}{actions?.canPause && <button disabled={busy} onClick={() => void command("pause")}>暂停领取</button>}{actions?.canResume && <button className="primary-button" disabled={busy} onClick={() => void command("resume")}>恢复批改</button>}{actions?.canExport && <a className="button-link" href={`/api/grading/batches/${detail.id}/export.csv`}>导出班级 CSV</a>}<a className="button-link primary-link" href={batchReviewHref(detail.id, firstReviewJob?.sessionId)}>进入复核</a></div>
@@ -517,9 +600,21 @@ export function GradingBatchPage() {
             const jobBusy = busy || busyJobIds.includes(job.id);
             return <tr key={job.id}><td>{job.studentName}<small>{job.studentNumber}</small></td><td><a href={batchReviewHref(detail.id, job.sessionId)}>{job.submissionTitle}</a></td><td><span className={`batch-status ${job.status}`}>{batchJobStatusLabel(job)}</span>{job.lastErrorCode && <small>{userErrorMessage(job.lastErrorCode)}</small>}</td><td>{formatBatchScore(job)}</td><td>{formatBatchConfidence(job)}</td><td>{job.attemptCount}/{job.maxAttempts}</td><td><div className="batch-row-actions">{canRetryBatchJob(job) && <button disabled={jobBusy} onClick={() => void jobCommand(job, "retry")}>{retryingJobId === job.id ? "重试中…" : "重试"}</button>}{canConfirmFromBatchList(job) && <button className="primary-button" disabled={jobBusy} onClick={() => confirmJob(job)}>{busyJobIds.includes(job.id) ? "确认中…" : "确认"}</button>}{job.status === "waiting_for_teacher" && <div className="batch-answer"><span>{job.question}</span><input aria-label={`回答 ${job.studentName}`} value={answers[job.id] ?? ""} onChange={(event) => setAnswers({ ...answers, [job.id]: event.target.value })} /><button disabled={jobBusy || !(answers[job.id] ?? "").trim()} onClick={() => void jobCommand(job, "answer")}>回答</button></div>}{!canRetryBatchJob(job) && !canConfirmFromBatchList(job) && job.status !== "waiting_for_teacher" && "—"}</div></td></tr>;
           })}</tbody></table></div>
-        </section> : !uploadDraft && <section className="batch-empty"><h2>选择或创建批次</h2><p>在左侧选择已有批次查看进度，或在上方上传学生报告开始新的批量批改。</p></section>}
+        </section>}
       </main>
     </div>
+    <PromptDialog
+      open={Boolean(batchToRename)}
+      title="重命名批改批次"
+      label="批次名称"
+      value={renameTitle}
+      maxLength={120}
+      busy={renamingBatch}
+      error={renameError}
+      onChange={setRenameTitle}
+      onConfirm={() => void renameBatch()}
+      onCancel={() => { setBatchToRename(undefined); setRenameError(""); }}
+    />
     <ConfirmDialog
       open={Boolean(confirmState)}
       title={confirmState?.title ?? ""}

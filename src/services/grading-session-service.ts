@@ -115,6 +115,17 @@ interface SessionRow {
   updated_at: string;
 }
 
+function defaultSessionTitle(
+  studentName: string,
+  studentNumber: string,
+  submissionTitle?: string,
+): string {
+  const base = submissionTitle?.trim()
+    ? `${studentName} · ${submissionTitle.trim()}`
+    : `${studentName} · ${studentNumber}`;
+  return base.length <= 80 ? base : `${base.slice(0, 79)}…`;
+}
+
 export class GradingSessionError extends Error {
   constructor(message: string) {
     super(message);
@@ -346,7 +357,7 @@ export class GradingSessionService {
       conversionStatus = "ready";
       if (input.autoStartAfterConversion) gradingStatus = "queued";
     }
-    const title = `${studentName} · ${studentNumber}`;
+    const title = defaultSessionTitle(studentName, studentNumber, submissionTitle);
     const session: GradingSession = {
       id,
       courseId: assignment.courseId,
@@ -470,14 +481,18 @@ export class GradingSessionService {
       session.submissionTitleStatus !== "failed"
     )
       throw new GradingConflictError("Submission title has already been set");
+    const fallbackTitle = `${session.studentName} · ${session.studentNumber}`;
+    const nextTitle = session.title === fallbackTitle
+      ? defaultSessionTitle(session.studentName, session.studentNumber, normalized)
+      : session.title;
     const result = this.database
       .prepare(
-        `UPDATE grading_sessions SET submission_title = ?, submission_title_status = 'resolved',
+        `UPDATE grading_sessions SET title = ?, submission_title = ?, submission_title_status = 'resolved',
          submission_title_error_code = NULL, submission_title_error_message = NULL,
          submission_title_last_failed_at = NULL, updated_at = ?
          WHERE id = ? AND deletion_pending = 0 AND submission_title_status IN ('pending', 'resolving', 'failed')`,
       )
-      .run(normalized, this.now(), sessionId);
+      .run(nextTitle, normalized, this.now(), sessionId);
     if (result.changes !== 1)
       throw new GradingConflictError("Submission title changed concurrently");
     return this.getSession(sessionId);
