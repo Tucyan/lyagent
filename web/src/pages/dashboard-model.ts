@@ -62,7 +62,7 @@ export const dashboardQuickActions = [
   {
     href: "/knowledge",
     label: "整理课程资料",
-    description: "上传 PDF、Word 或讲义，更新课程答疑资料库。",
+    description: "导入 Markdown（.md）讲义或资料，更新课程答疑资料库。",
   },
   {
     href: "/rubrics",
@@ -85,7 +85,7 @@ export const dashboardOnboardingSteps = [
   {
     step: "1",
     title: "创建课程并上传资料",
-    description: "新建课程后导入课件、讲义或作业说明，支持 PDF、Word 与 Markdown。",
+    description: "新建课程后导入 Markdown（.md）讲义或作业说明，保存后发布即可用于答疑。",
     actionLabel: "去创建课程",
     href: "/knowledge",
   },

@@ -3,6 +3,11 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { withJsonHeaders, apiFetch, apiErrorFromResponse, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
+import {
+  COURSE_CHANGED_EVENT,
+  readCourseFromUrl,
+  resolveActiveCourseId,
+} from "../lib/course-context";
 import { LatestRequestGate } from "../lib/async-state";
 import { ConfirmDialog, PromptDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
@@ -37,10 +42,9 @@ function formatDate(value: string): string {
 
 export function KnowledgeLibraryPage() {
   const toast = useToast();
-  const queryCourseId = new URLSearchParams(location.search).get("course") ?? "";
+  const queryCourseId = readCourseFromUrl();
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseId, setCourseId] = useState(queryCourseId);
-  const [courseName, setCourseName] = useState("");
   const [releases, setReleases] = useState<NumberedRelease[]>([]);
   const [activeReleaseId, setActiveReleaseId] = useState("");
   const [selectedReleaseId, setSelectedReleaseId] = useState("");
@@ -128,10 +132,10 @@ export function KnowledgeLibraryPage() {
   const refreshCourses = async (preferredCourseId = courseId) => {
     const next = await api<Course[]>("/api/courses");
     setCourses(next);
-    const selected = next.some((course) => course.id === preferredCourseId) ? preferredCourseId : next[0]?.id ?? "";
+    const selected = resolveActiveCourseId(next, preferredCourseId);
     courseIdRef.current = selected;
     setCourseId(selected);
-    const currentQuery = new URLSearchParams(window.location.search).get("course") ?? "";
+    const currentQuery = readCourseFromUrl();
     if (selected !== currentQuery) navigateWithinApp(selected ? `/knowledge?course=${encodeURIComponent(selected)}` : "/knowledge", true);
     return selected;
   };
@@ -235,7 +239,6 @@ export function KnowledgeLibraryPage() {
   };
 
   useEffect(() => {
-    if (directoryInput.current) (directoryInput.current as HTMLInputElement & { webkitdirectory: boolean }).webkitdirectory = true;
     refreshCourses(queryCourseId).catch((error: Error) => showNotice(error.message, "error"));
   }, []);
 
@@ -245,11 +248,19 @@ export function KnowledgeLibraryPage() {
 
   useEffect(() => {
     const syncRoute = () => {
-      const nextCourseId = new URLSearchParams(window.location.search).get("course") ?? "";
-      if (nextCourseId !== courseIdRef.current) resetCourseState(nextCourseId);
+      const nextCourseId = readCourseFromUrl();
+      if (nextCourseId && nextCourseId !== courseIdRef.current) {
+        setTreeQuery("");
+        setTab("current");
+        resetCourseState(nextCourseId);
+      }
     };
     window.addEventListener("popstate", syncRoute);
-    return () => window.removeEventListener("popstate", syncRoute);
+    window.addEventListener(COURSE_CHANGED_EVENT, syncRoute);
+    return () => {
+      window.removeEventListener("popstate", syncRoute);
+      window.removeEventListener(COURSE_CHANGED_EVENT, syncRoute);
+    };
   }, []);
 
   useEffect(() => {
@@ -271,26 +282,6 @@ export function KnowledgeLibraryPage() {
       });
   }, [courseId]);
 
-  const selectCourse = (id: string) => {
-    setTreeQuery("");
-    setTab("current");
-    navigateWithinApp(id ? `/knowledge?course=${encodeURIComponent(id)}` : "/knowledge");
-  };
-
-  const createCourse = async () => {
-    try {
-      setBusy(true);
-      const course = await api<Course>("/api/courses", { method: "POST", body: JSON.stringify({ name: courseName }) });
-      setCourseName("");
-      await refreshCourses(course.id);
-      showNotice(`已创建课程：${course.name}`);
-    } catch (error) {
-      showNotice((error as Error).message, "error");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const upload = async (files: FileList | null) => {
     if (!courseId || !files?.length) return;
     const requestCourseId = courseId;
@@ -303,7 +294,7 @@ export function KnowledgeLibraryPage() {
           content: await file.text(),
         }))),
       };
-      if (!payload.files.length) throw new Error("目录中没有 Markdown 文件");
+      if (!payload.files.length) throw new Error("未选择有效的 Markdown（.md）文件");
       const imported = await api<ImportSummary>(`/api/courses/${requestCourseId}/imports`, { method: "POST", body: JSON.stringify(payload) });
       if (requestCourseId !== courseIdRef.current) return;
       await loadDraft(requestCourseId, imported);
@@ -548,26 +539,21 @@ export function KnowledgeLibraryPage() {
     <input ref={directoryInput} className="visually-hidden" type="file" multiple accept=".md,text/markdown" aria-hidden="true" tabIndex={-1} onChange={(event) => void upload(event.target.files)} />
 
     <section className="knowledge-toolbar" aria-label="课程与版本概览">
-      <label>当前课程
-        <select value={courseId} onChange={(event) => selectCourse(event.target.value)} disabled={busy}>
-          <option value="">选择课程</option>
-          {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
-        </select>
-      </label>
+      <div className="knowledge-stat">
+        <span>当前课程</span>
+        <strong>{currentCourse?.name ?? "尚未创建课程"}</strong>
+      </div>
       <div className="knowledge-stat"><span>发布版本</span><strong>{releases.length}</strong></div>
       <div className="knowledge-stat"><span>修订草稿</span><strong>{drafts.length}</strong></div>
-      <details className="course-create">
-        <summary>新建课程</summary>
-        <div><input value={courseName} onChange={(event) => setCourseName(event.target.value)} placeholder="输入课程名称" /><button type="button" onClick={() => void createCourse()} disabled={!courseName.trim() || busy}>创建</button></div>
-      </details>
+      <a className="secondary-link-button" href="/">在总览管理课程</a>
     </section>
 
     <div className={`knowledge-notice ${noticeKind}`} role={noticeKind === "error" ? "alert" : "status"}>{busy && <span className="busy-dot" aria-hidden="true" />}{notice}</div>
 
     <nav className="knowledge-tabs" aria-label="资料库视图">
-      <button type="button" className={tab === "current" ? "active" : ""} onClick={() => setTab("current")}>当前版本</button>
-      <button type="button" className={tab === "draft" ? "active" : ""} onClick={() => setTab("draft")}>修订草稿 {drafts.length > 0 && <span>{drafts.length}</span>}</button>
-      <button type="button" className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>版本记录</button>
+      <button type="button" className={tab === "current" ? "active" : ""} onClick={() => { setTreeQuery(""); setTab("current"); }}>当前版本</button>
+      <button type="button" className={tab === "draft" ? "active" : ""} onClick={() => { setTreeQuery(""); setTab("draft"); }}>修订草稿 {drafts.length > 0 && <span>{drafts.length}</span>}</button>
+      <button type="button" className={tab === "history" ? "active" : ""} onClick={() => { setTreeQuery(""); setTab("history"); }}>版本记录</button>
     </nav>
 
     {tab === "current" && <section className="knowledge-workspace">
@@ -580,7 +566,7 @@ export function KnowledgeLibraryPage() {
           <aside className="document-tree"><label>查找资料<input type="search" value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="搜索标题或路径" /></label><p>{filteredReleaseTree.length} / {releaseTree.length} 篇</p><nav>{filteredReleaseTree.map((entry) => <button key={entry.path} type="button" className={entry.path === releasePath ? "selected" : ""} onClick={() => void readReleaseFile(courseId, selectedRelease.id, entry.path).catch((error: Error) => { if (entry.path === releasePathRef.current) showNotice(error.message, "error"); })}><strong>{entry.title}</strong><small>{entry.path}</small></button>)}</nav></aside>
           <article className="document-preview"><div className="document-heading"><div><span>只读预览</span><h2>{releaseTree.find((entry) => entry.path === releasePath)?.title ?? "选择一篇资料"}</h2></div><code title={releasePath}>{releasePath}</code></div>{releaseContent ? <Markdown remarkPlugins={[remarkGfm]}>{releaseContent}</Markdown> : <div className="knowledge-empty"><h3>选择左侧资料开始预览</h3><p>发布版本为不可变快照。如需修改，请先创建修订草稿。</p></div>}</article>
         </div>
-      </> : !courseId ? <div className="knowledge-empty prominent"><h2>还没有课程</h2><p>先为课程起个名称，再导入 Markdown 资料并发布为答疑可读的知识版本。</p><div className="empty-inline-create"><input value={courseName} onChange={(event) => setCourseName(event.target.value)} placeholder="输入课程名称，例如：人工智能导论" /><button className="primary-button" type="button" onClick={() => void createCourse()} disabled={!courseName.trim() || busy}>创建第一门课程</button></div></div> : <div className="knowledge-empty prominent"><h2>还没有正式课程资料</h2><p>选择一个包含 Markdown（.md）文件的文件夹导入草稿，确认内容后发布为首个知识版本。</p><button className="primary-button" type="button" onClick={() => directoryInput.current?.click()} disabled={!courseId || busy}>导入第一批资料（选择目录）</button></div>}
+      </> : !courseId ? <div className="knowledge-empty prominent"><h2>还没有课程</h2><p>请先在课程总览创建课程，再回到这里导入 Markdown 资料并发布。</p><a className="primary-button" href="/">前往课程总览创建课程</a></div> : <div className="knowledge-empty prominent"><h2>还没有正式课程资料</h2><p>选择一个或多个 Markdown（.md）讲义文件导入草稿，确认内容后发布为首个知识版本。</p><button className="primary-button" type="button" onClick={() => directoryInput.current?.click()} disabled={!courseId || busy}>导入 Markdown 资料</button></div>}
     </section>}
 
     {tab === "draft" && <section className="knowledge-workspace">

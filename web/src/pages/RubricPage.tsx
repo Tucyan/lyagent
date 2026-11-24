@@ -8,6 +8,13 @@ import { useToast } from "../components/ToastProvider";
 import { useUnsavedGuard } from "../lib/use-unsaved-guard";
 import { withJsonHeaders, apiFetch, apiErrorFromResponse, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
+import {
+  COURSE_CHANGED_EVENT,
+  readCourseFromUrl,
+  readStoredCourseId,
+  resolveActiveCourseId,
+  withCourseQuery,
+} from "../lib/course-context";
 import { LatestRequestGate, type RequestLease } from "../lib/async-state";
 import { consumeSse } from "../lib/consume-sse";
 import { appendRubricProcess, appendRubricReply, assertRubricStreamSucceeded, assignmentIdFromSearch, clampPreviewPercent, loadRubricSession, rubricCompletionNotice, rubricDeleteWarning, shouldFollowRubricStream } from "./rubric-page-model";
@@ -45,6 +52,8 @@ export function RubricPage() {
   const [assignments, setAssignments] = useState<RubricAssignment[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseId, setCourseId] = useState("");
+  const courseIdRef = useRef("");
+  courseIdRef.current = courseId;
   const [courseName, setCourseName] = useState("");
   const [assignment, setAssignment] = useState<RubricAssignment>();
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
@@ -84,15 +93,31 @@ export function RubricPage() {
   const [assignmentToDelete, setAssignmentToDelete] = useState<RubricAssignment>();
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [sessionQuery, setSessionQuery] = useState("");
+  const assignmentsGate = useRef(new LatestRequestGate());
 
-  const refreshAssignments = async () => setAssignments(await api<RubricAssignment[]>("/api/rubrics/assignments"));
+  const refreshAssignments = async (targetCourseId?: string) => {
+    const effectiveCourseId = targetCourseId ?? (readCourseFromUrl() || courseIdRef.current || readStoredCourseId());
+    const lease = assignmentsGate.current.begin();
+    if (!effectiveCourseId) {
+      if (lease.isCurrent()) setAssignments([]);
+      return [];
+    }
+    const raw = await api<RubricAssignment[]>(
+      `/api/rubrics/assignments?courseId=${encodeURIComponent(effectiveCourseId)}`,
+    );
+    const next = raw.filter((item) => item.courseId === effectiveCourseId);
+    if (!lease.isCurrent()) return next;
+    setAssignments(next);
+    return next;
+  };
   const refreshCourses = async (preferredCourseId?: string) => {
     const next = await api<Course[]>("/api/courses");
     setCourses(next);
     setCourseId((current) => {
       const preferred = preferredCourseId ?? current;
       if (next.some((course) => course.id === preferred)) return preferred;
-      return next.length === 1 ? next[0]!.id : "";
+      return resolveActiveCourseId(next, readCourseFromUrl());
     });
     return next;
   };
@@ -124,8 +149,34 @@ export function RubricPage() {
     return { nextDraft, nextSession, nextVersions };
   };
 
+  const clearSelectedSession = () => {
+    streamControllerRef.current?.abort();
+    streamControllerRef.current = undefined;
+    streamGate.current.invalidate();
+    assignmentGate.current.invalidate();
+    versionsGate.current.invalidate();
+    setAssignment(undefined);
+    setRecommendations([]);
+    setSelectedMode(undefined);
+    setDraft(undefined);
+    setVersions([]);
+    setMessages([]);
+    setSubmitting(false);
+    setStreamingMessageId(undefined);
+  };
+
   useEffect(() => {
-    void Promise.all([refreshAssignments(), refreshCourses()]).then(() => {
+    void refreshCourses(readCourseFromUrl()).then((nextCourses) => {
+      const resolved = resolveActiveCourseId(nextCourses, readCourseFromUrl());
+      courseIdRef.current = resolved;
+      setCourseId(resolved);
+      return refreshAssignments(resolved).then((list) => ({ resolved, list }));
+    }).then(({ resolved, list }) => {
+      if (selectedAssignmentId && !list.some((item) => item.id === selectedAssignmentId)) {
+        clearSelectedSession();
+        navigateWithinApp(withCourseQuery("/rubrics", resolved), true);
+        return;
+      }
       if (!selectedAssignmentId) setNotice("创建新的评分会话，或从左侧继续已有设计。");
     }).catch((error: Error) => setNotice(error.message));
   }, [selectedAssignmentId]);
@@ -149,8 +200,35 @@ export function RubricPage() {
       setSubmitting(false);
       setStreamingMessageId(undefined);
     };
-    window.addEventListener("popstate", syncRoute);
-    return () => window.removeEventListener("popstate", syncRoute);
+    const syncCourseAndAssignments = () => {
+      const nextCourseId = readCourseFromUrl() || readStoredCourseId();
+      if (nextCourseId !== courseIdRef.current) {
+        setAssignments([]);
+        setSessionQuery("");
+      }
+      courseIdRef.current = nextCourseId;
+      setCourseId(nextCourseId);
+      void Promise.all([refreshAssignments(nextCourseId), refreshCourses(nextCourseId)]).then(([list]) => {
+        const currentAssignment = assignmentIdFromSearch(window.location.search);
+        if (currentAssignment && !list.some((item) => item.id === currentAssignment)) {
+          clearSelectedSession();
+          navigateWithinApp(withCourseQuery("/rubrics", nextCourseId), true);
+        }
+      }).catch((error: Error) => setNotice(error.message));
+    };
+    const handlePopState = () => {
+      syncRoute();
+      const nextCourseId = readCourseFromUrl();
+      if (nextCourseId && nextCourseId !== courseIdRef.current) {
+        syncCourseAndAssignments();
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    window.addEventListener(COURSE_CHANGED_EVENT, syncCourseAndAssignments);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener(COURSE_CHANGED_EVENT, syncCourseAndAssignments);
+    };
   }, []);
 
   useEffect(() => {
@@ -186,6 +264,12 @@ export function RubricPage() {
         recommendations: () => api<{ options: Recommendation[] }>(`/api/rubrics/assignments/${selectedAssignmentId}/recommendations`),
         onCore: (nextAssignment, nextDraft, nextSession) => {
           if (!lease.isCurrent() || selectedAssignmentId !== selectedAssignmentIdRef.current) return;
+          const activeCourse = readCourseFromUrl() || courseIdRef.current;
+          if (activeCourse && nextAssignment.courseId && nextAssignment.courseId !== activeCourse) {
+            clearSelectedSession();
+            navigateWithinApp(withCourseQuery("/rubrics", activeCourse), true);
+            return;
+          }
           loadedDraft = nextDraft;
           setAssignment(nextAssignment);
           setDraft(nextDraft ?? undefined);
@@ -250,7 +334,7 @@ export function RubricPage() {
         method: "POST",
         body: JSON.stringify({ courseId, title, totalScore: Number(totalScore), requirements, sources: sourceContent ? [{ role: sourceRole, name: sourceName || (sourceRole === "rubric_draft" ? "评分标准草稿.txt" : "设计备注.txt"), content: sourceContent }] : [] }),
       });
-      navigateWithinApp(`/rubrics?assignment=${encodeURIComponent(created.id)}`);
+      navigateWithinApp(withCourseQuery(`/rubrics?assignment=${encodeURIComponent(created.id)}`, courseId));
     } catch (error) { setNotice((error as Error).message); }
     finally { setSubmitting(false); }
   };
@@ -319,7 +403,7 @@ export function RubricPage() {
       });
       if (eventType === "final") {
         completedKind = event.kind;
-        updateStreamingAssistant(assistantId, (message) => ({ ...message, content: message.content || (event.kind === "draft" ? "评分表草稿已更新，可以在右侧预览并继续修改。" : event.message ?? "本轮处理已完成。") }));
+        updateStreamingAssistant(assistantId, (message) => ({ ...message, content: message.content || (event.kind === "draft" ? event.summary ?? "评分表草稿已更新，可以在右侧预览并继续修改。" : event.message ?? "本轮处理已完成。") }));
       }
       if (eventType === "error") {
         streamFailure = userErrorMessage(event.code ?? "RUBRIC_DESIGN_FAILED");
@@ -439,7 +523,7 @@ export function RubricPage() {
       const deletedSelectedAssignment = assignmentToDelete.id === selectedAssignmentIdRef.current;
       setAssignmentToDelete(undefined);
       if (deletedSelectedAssignment) {
-        navigateWithinApp("/rubrics");
+        navigateWithinApp(withCourseQuery("/rubrics", courseIdRef.current || readCourseFromUrl()));
         return;
       }
       await refreshAssignments();
@@ -456,12 +540,18 @@ export function RubricPage() {
   const frozenWithoutDraft = !draft && versions.length > 0;
   const workspaceStyle = { "--rubric-preview-width": `${previewPercent}%` } as CSSProperties;
 
+  const currentCourse = courses.find((course) => course.id === courseId);
+  const titleReady = Boolean(title.trim());
+  const scoreReady = Number(totalScore) > 0;
+  const reqReady = Boolean(requirements.trim());
+  const sourceReady = Boolean(source.trim());
+  const requirementOrSourceReady = reqReady || sourceReady;
   const chatContent = assignment && selectedMode ? <section className="rubric-chat">
     <div className="rubric-chat-heading"><div><h2>{assignment.title}</h2><p>{assignment.totalScore} 分 · {modeLabel[selectedMode]}</p></div></div>
     <details className="rubric-context"><summary>作业要求与参考资料</summary>{assignment.requirements ? <p>{assignment.requirements}</p> : <p>未单独填写作业要求，将以参考资料为设计依据。</p>}{assignment.sources.length > 0 && <ul>{assignment.sources.map((item) => <li key={item.id}>{item.role === "rubric_draft" ? "评分草稿" : "设计备注"}：{item.name}</li>)}</ul>}</details>
-    <div className="rubric-message-list" ref={messageListRef} aria-live="polite" onScroll={(event) => { const list = event.currentTarget; followStreamRef.current = shouldFollowRubricStream(list.scrollHeight - list.scrollTop - list.clientHeight); }}>{messages.length === 0 ? <div className="rubric-chat-welcome"><h3>{frozenWithoutDraft ? "当前评分表已冻结" : "继续设计评分表"}</h3><p>{frozenWithoutDraft ? "如需继续修改评分标准，请先基于当前冻结版本创建修订草稿。" : "可以直接生成第一版，也可以先补充希望采用的评分维度。"}</p>{!frozenWithoutDraft && <button className="primary-button" type="button" disabled={submitting} onClick={() => void chooseMode(selectedMode)}>直接生成第一版评分表</button>}</div> : messages.map((message, index) => { const isActionableQuestion = Boolean(message.options?.length) && index === messages.length - 1 && !submitting && !frozenWithoutDraft; return <article className={`rubric-chat-message ${message.role}`} key={message.id}>{message.role === "assistant" && <><ToolActivity steps={message.tools ?? []} streaming={streamingMessageId === message.id} title="处理步骤" streamingTitle="正在设计评分表" />{message.process && <details className="assistant-process" open={streamingMessageId === message.id}><summary>处理过程</summary><p>{message.process}</p></details>}</>}<div className="rubric-message-content">{message.role === "assistant" ? <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown> : <p>{message.content}</p>}</div>{message.options && message.options.length > 0 && (isActionableQuestion ? <div className="rubric-question-options">{message.options.map((option) => <button type="button" key={option} onClick={() => setChatInput(option)}>{option}</button>)}</div> : <div className="rubric-question-history"><small>历史提问选项</small><ul>{message.options.map((option) => <li key={option}>{option}</li>)}</ul></div>)}</article>; })}</div>
-    {frozenWithoutDraft && versions[0] ? <div className="rubric-frozen-bar" role="status"><div><strong>当前评分表已冻结（v{versions[0].version}）</strong><p>如需继续对话调整评分标准，请先创建修订草稿。</p></div><button className="primary-button" type="button" disabled={submitting} onClick={() => void createRevision(versions[0]!.version)}>基于 v{versions[0].version} 创建修订</button></div> : <form className="rubric-composer" onSubmit={(event) => void sendMessage(event)}><textarea value={chatInput} disabled={submitting || frozenWithoutDraft} onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return; event.preventDefault(); if (!submitting && !frozenWithoutDraft && chatInput.trim()) event.currentTarget.form?.requestSubmit(); }} placeholder="告诉 Agent 需要调整的评分项目、分值、等级或扣分规则…（Ctrl+Enter 发送）" /><button className="primary-button" disabled={submitting || frozenWithoutDraft || !chatInput.trim()} type="submit">发送</button></form>}
-  </section> : assignment ? <section className="rubric-mode-gate"><div className="rubric-session-heading"><div><p className="eyebrow">当前评分会话</p><h2>{assignment.title}</h2><p>{assignment.totalScore} 分 · {assignment.sources.length} 份参考资料</p></div><a href="/rubrics">新建评分表</a></div><details className="rubric-context"><summary>查看作业要求与参考资料</summary>{assignment.requirements ? <p>{assignment.requirements}</p> : <p>未单独填写作业要求，将以参考资料为设计依据。</p>}{assignment.sources.length > 0 && <ul>{assignment.sources.map((item) => <li key={item.id}>{item.name}</li>)}</ul>}</details><h3>先选择评分制度</h3><p>选择后会直接调用 Agent 生成第一版草稿，无需填写额外备注。</p><div className="rubric-mode-grid">{recommendations.length === 0 ? <p>正在生成评分制度建议…</p> : recommendations.map((item) => <article key={item.mode} className={item.recommended ? "recommended" : ""}><div><strong>{modeLabel[item.mode]}{item.recommended ? "（推荐）" : ""}</strong><p>{item.reason ?? item.benefit ?? "适用于当前评分场景。"}</p></div><button type="button" className={item.recommended ? "primary-button" : ""} disabled={submitting} onClick={() => void chooseMode(item.mode)}>选择并开始</button></article>)}</div></section> : <section className="rubric-create-panel"><div><p className="eyebrow">新评分会话</p><h2>创建评分表设计会话</h2><p>先选择评分表所属课程；作业要求与参考资料至少填写一项。</p></div><form onSubmit={(event) => void createAssignment(event)} className="rubric-create-form"><label>课程<select aria-label="选择课程" required value={courseId} onChange={(event) => setCourseId(event.target.value)}><option value="">选择课程</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label><div className="rubric-course-create"><input aria-label="新课程名称" value={courseName} maxLength={100} onChange={(event) => setCourseName(event.target.value)} placeholder={courses.length === 0 ? "还没有课程，请输入课程名称" : "或在这里新建课程"} /><button type="button" disabled={submitting || !courseName.trim()} onClick={() => void createCourse()}>创建并选择</button></div><label>会话名称<input required value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="例如：AI 与生活的融合及挑战－作业报告评分表" /></label><label>总分<input required type="number" min="0.01" step="0.01" value={totalScore} onChange={(event) => setTotalScore(event.target.value)} /></label><label>作业要求（与参考资料至少填写一项）<textarea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="说明作业目标、提交要求和评分重点；如参考资料中已包含，可留空。" /></label><fieldset className="rubric-source-fieldset"><legend>参考资料（可选）</legend><label className="rubric-file-input">导入文件<input type="file" accept=".txt,.md,.csv,.json,text/plain,text/markdown" onChange={(event) => void readSourceFile(event.target.files?.[0])} /></label><span>{sourceName || "也可以直接粘贴文本"}</span><textarea value={source} onChange={(event) => { setSource(event.target.value); if (!event.target.value) setSourceName(""); }} placeholder="粘贴评分标准草稿或设计备注…" />{source.trim() && <label>资料类型<select value={sourceRole} onChange={(event) => setSourceRole(event.target.value as "rubric_draft" | "note")}><option value="rubric_draft">评分标准草稿</option><option value="note">设计备注</option></select></label>}</fieldset><div className="rubric-form-actions"><button className="primary-button" type="submit" disabled={submitting || !courseId || !title.trim() || (!requirements.trim() && !source.trim())}>创建并选择评分制度</button></div></form></section>;
+    <div className="rubric-message-list" ref={messageListRef} aria-live="polite" onScroll={(event) => { const list = event.currentTarget; followStreamRef.current = shouldFollowRubricStream(list.scrollHeight - list.scrollTop - list.clientHeight); }}>{messages.length === 0 ? <div className="rubric-chat-welcome"><h3>{frozenWithoutDraft ? "当前评分表已冻结" : "继续设计评分表"}</h3><p>{frozenWithoutDraft ? "如需继续修改评分标准，请先基于当前冻结版本创建修订草稿。" : "可以直接生成第一版，也可以先补充希望采用的评分维度。"}</p>{!frozenWithoutDraft && <button className="primary-button" type="button" disabled={submitting} onClick={() => void chooseMode(selectedMode)}>直接生成第一版评分表</button>}</div> : messages.map((message, index) => { const isActionableQuestion = Boolean(message.options?.length) && index === messages.length - 1 && !submitting && !frozenWithoutDraft; return <article className={`rubric-chat-message ${message.role}`} key={message.id}>{message.role === "assistant" && <><ToolActivity steps={message.tools ?? []} streaming={streamingMessageId === message.id} title="处理步骤" streamingTitle="正在设计评分表" />{streamingMessageId === message.id && message.process && <details className="assistant-process" open><summary>处理过程</summary><p>{message.process}</p></details>}</>}<div className="rubric-message-content">{message.role === "assistant" ? <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown> : <p>{message.content}</p>}</div>{message.options && message.options.length > 0 && (isActionableQuestion ? <div className="rubric-question-options">{message.options.map((option) => <button type="button" key={option} onClick={() => setChatInput(option)}>{option}</button>)}</div> : <div className="rubric-question-history"><small>历史提问选项</small><ul>{message.options.map((option) => <li key={option}>{option}</li>)}</ul></div>)}</article>; })}</div>
+    {frozenWithoutDraft && versions[0] ? <div className="rubric-frozen-bar" role="status"><div><strong>当前评分表已定稿（v{versions[0].version}）</strong><p>可直接前往批改作业，或基于当前版本创建修订草稿。</p></div><div className="rubric-frozen-actions"><a className="primary-button" href={withCourseQuery("/grading", courseId)}>前往单份批改</a><a className="secondary-link-button" href={withCourseQuery("/grading/batches", courseId)}>前往批量批改</a><button type="button" disabled={submitting} onClick={() => void createRevision(versions[0]!.version)}>基于 v{versions[0].version} 创建修订</button></div></div> : <form className="rubric-composer" onSubmit={(event) => void sendMessage(event)}><textarea value={chatInput} disabled={submitting || frozenWithoutDraft} onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return; event.preventDefault(); if (!submitting && !frozenWithoutDraft && chatInput.trim()) event.currentTarget.form?.requestSubmit(); }} placeholder="告诉 Agent 需要调整的评分项目、分值、等级或扣分规则…（Ctrl+Enter 发送）" /><button className="primary-button" disabled={submitting || frozenWithoutDraft || !chatInput.trim()} type="submit">发送</button></form>}
+  </section> : assignment ? <section className="rubric-mode-gate"><div className="rubric-session-heading"><div><p className="eyebrow">第 2 步 · 选择评分方式</p><h2>{assignment.title}</h2><p>{assignment.totalScore} 分 · {assignment.sources.length} 份参考资料</p></div><a href={withCourseQuery("/rubrics", courseId)}>新建评分表</a></div><details className="rubric-context"><summary>查看作业要求与参考资料</summary>{assignment.requirements ? <p>{assignment.requirements}</p> : <p>未单独填写作业要求，将以参考资料为设计依据。</p>}{assignment.sources.length > 0 && <ul>{assignment.sources.map((item) => <li key={item.id}>{item.name}</li>)}</ul>}</details><h3>先选择评分制度</h3><p>选择后会直接调用 Agent 生成第一版草稿，无需填写额外备注。</p><div className="rubric-mode-grid">{recommendations.length === 0 ? <p>正在生成评分制度建议…</p> : recommendations.map((item) => <article key={item.mode} className={item.recommended ? "recommended" : ""}><div><strong>{modeLabel[item.mode]}{item.recommended ? "（推荐）" : ""}</strong><p>{item.reason ?? item.benefit ?? "适用于当前评分场景。"}</p></div><button type="button" className={item.recommended ? "primary-button" : ""} disabled={submitting} onClick={() => void chooseMode(item.mode)}>选择并开始</button></article>)}</div></section> : <section className="rubric-create-panel"><div className="rubric-step-strip" aria-label="设计步骤"><span className="active"><b>1</b> 填写作业信息</span><span className="step-sep" aria-hidden="true">→</span><span><b>2</b> AI 生成评分草稿</span><span className="step-sep" aria-hidden="true">→</span><span><b>3</b> 调整并定稿</span></div><div className="rubric-create-heading"><h2>新建评分标准</h2><p>{currentCourse ? `当前课程「${currentCourse.name}」：填写名称、满分，并补充作业要求或参考资料（至少一项）。` : "请先在课程总览创建或选择课程。"}</p></div>{!courseId ? <a className="primary-button" href="/">前往课程总览创建课程</a> : <form onSubmit={(event) => void createAssignment(event)} className="rubric-create-form"><div className="rubric-create-top-row"><label className={`rubric-guided-field ${titleReady ? "is-ready" : "is-missing"}`}><span>评分标准名称 <em>{titleReady ? "已就绪" : "必填"}</em></span><input required value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="例如：第 3 章栈与队列作业评分标准" /></label><label className={`rubric-guided-field ${scoreReady ? "is-ready" : "is-missing"}`}><span>满分 <em>{scoreReady ? "已就绪" : "必填"}</em></span><input required type="number" min="0.01" step="0.01" value={totalScore} onChange={(event) => setTotalScore(event.target.value)} /></label></div><div className="rubric-create-content-grid"><label className={`rubric-guided-field rubric-panel-field ${reqReady ? "is-ready" : requirementOrSourceReady ? "is-optional" : "is-missing"}`}><span>作业要求 <em>{reqReady ? "已就绪" : requirementOrSourceReady ? "可选补充" : "与右侧至少填一项"}</em></span><textarea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="说明作业考察重点、提交格式、字数或代码规范要求；若右侧参考资料已包含，可留空。" /></label><fieldset className={`rubric-source-fieldset rubric-guided-field ${sourceReady ? "is-ready" : "is-optional"}`}><div className="rubric-source-header"><span>参考资料</span><em>{sourceReady ? "已就绪" : "可选补充"}</em></div><div className="rubric-source-file-row"><label className="rubric-file-button">导入文件<input className="visually-hidden" type="file" accept=".txt,.md,.csv,.json,text/plain,text/markdown" onChange={(event) => void readSourceFile(event.target.files?.[0])} /></label><span title={sourceName || undefined}>{sourceName || "支持 .txt / .md / .csv / .json"}</span>{source.trim() && <select className="rubric-source-role-select" aria-label="资料类型" value={sourceRole} onChange={(event) => setSourceRole(event.target.value as "rubric_draft" | "note")}><option value="rubric_draft">评分标准草稿</option><option value="note">设计备注</option></select>}</div><textarea value={source} onChange={(event) => { setSource(event.target.value); if (!event.target.value) setSourceName(""); }} placeholder="直接粘贴现有评分标准草稿或设计说明…" /></fieldset></div><div className="rubric-form-actions">{(!titleReady || !scoreReady || !requirementOrSourceReady) && <small className="inline-requirement-hint">完成红框必填项即可进入下一步</small>}<button className="primary-button" type="submit" disabled={submitting || !courseId || !titleReady || !scoreReady || !requirementOrSourceReady}>下一步：选择评分方式</button></div></form>}</section>;
 
   const previewPanel = <aside className={`rubric-preview-panel ${previewFullscreen ? "fullscreen" : ""}`} aria-label="评分表预览"><div className="rubric-preview-toolbar"><div><h2>评分表预览</h2><span title={selectedFrozen ? "只有冻结版本才允许被正式应用于批改" : undefined}>{previewVersion === "draft" && draft ? `可编辑草稿 v${draft.version}` : selectedFrozen ? `冻结版本 v${selectedFrozen.version}` : "尚无草稿"}</span></div><div>{(draft || versions.length > 0) && <select aria-label="选择预览版本" value={previewVersion} onChange={(event) => { const value = event.target.value; setPreviewVersion(value === "draft" ? "draft" : Number(value)); setEditing(false); setValidation(undefined); }}><option value="draft" disabled={!draft}>当前草稿{draft ? ` v${draft.version}` : "（无）"}</option>{versions.map((version) => <option value={version.version} key={version.version}>冻结版本 v{version.version}</option>)}</select>}{draft && previewVersion === "draft" && <button type="button" onClick={() => { setEditing((value) => !value); setEditedRubric(structuredClone(draft.rubric)); }}>{editing ? "查看预览" : "人工编辑"}</button>}<button type="button" onClick={() => setPreviewFullscreen((value) => !value)}>{previewFullscreen ? "退出全屏" : "全屏预览"}</button></div></div><div className="rubric-preview-body">{previewRubric ? editing && draft && previewVersion === "draft" && editedRubric ? <RubricEditor rubric={editedRubric} onChange={setEditedRubric} /> : <RubricDocument rubric={previewRubric} /> : <div className="rubric-preview-empty"><strong>{assignment ? "等待评分表草稿" : "尚未开始设计"}</strong><p>{assignment ? "选择评分制度后，Agent 生成的草稿会显示在这里。" : "创建会话后，可在这里预览、编辑和冻结评分表。"}</p></div>}</div>{draft && previewVersion === "draft" && <footer className="rubric-preview-actions">{editing ? <><button type="button" onClick={() => { setEditing(false); setEditedRubric(structuredClone(draft.rubric)); }}>取消修改</button><button className="primary-button" type="button" disabled={submitting} onClick={() => void saveManualDraft()}>保存人工修改</button></> : <><button type="button" disabled={submitting} onClick={() => void validateForFreeze()}>校验并准备冻结</button>{freezeReady && <button className="primary-button" type="button" disabled={submitting} onClick={() => void freezeDraft()}>确认冻结为正式版本</button>}</>}{validation && <div className={`rubric-validation ${validation.errors.length ? "error" : "success"}`}><strong>{validation.errors.length ? `${validation.errors.length} 个错误` : "校验通过"}</strong>{[...validation.errors, ...validation.warnings].map((problem, index) => <p key={`${problem.code}-${index}`}>{rubricProblemMessage(problem)}</p>)}</div>}</footer>}{selectedFrozen && <footer className="rubric-preview-actions frozen-footer"><button className="primary-button" type="button" disabled={submitting || Boolean(draft)} onClick={() => void createRevision(selectedFrozen.version)}>基于 v{selectedFrozen.version} 创建修订</button><div className="rubric-export-links"><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.md`} download>导出 Markdown</a><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.json`} download>导出 JSON</a></div></footer>}</aside>;
 
@@ -473,13 +563,14 @@ export function RubricPage() {
     <section className={`rubric-workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={workspaceStyle}>
       <aside className="rubric-session-list" aria-label="评分会话列表">
         <div className="rubric-pane-heading"><div><h2>评分会话</h2><span>{assignments.length}</span></div><button className="rubric-pane-collapse" type="button" onClick={() => setSidebarCollapsed(true)} aria-label="收起评分会话列表" title="收起会话列表">«</button></div>
-        <a className="rubric-new-session" href="/rubrics">＋ 新建评分表</a>
-        {assignments.length === 0 ? <p className="rubric-empty">尚未创建评分会话。</p> : <nav>{assignments.map((item) => <div className={`rubric-session-row ${item.id === selectedAssignmentId ? "active" : ""}`} key={item.id}><a href={`/rubrics?assignment=${encodeURIComponent(item.id)}`}><strong>{item.title}</strong><small>{item.totalScore} 分 · {item.sources.length} 份参考资料</small></a><button type="button" aria-label={`删除评分会话：${item.title}`} title="删除评分会话" disabled={submitting || deleting} onClick={() => { setAssignmentToDelete(item); setDeleteError(""); }}>删除</button></div>)}</nav>}
+        <a className="rubric-new-session" href={withCourseQuery("/rubrics", courseId)}>＋ 新建评分表</a>
+        {assignments.length > 0 && <input type="search" className="grading-session-search" aria-label="搜索评分会话" value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} placeholder="搜索评分标准名称…" />}
+        {assignments.length === 0 ? <p className="rubric-empty">当前课程尚未创建评分会话。</p> : (() => { const q = sessionQuery.trim().toLowerCase(); const filtered = assignments.filter((item) => !q || item.title.toLowerCase().includes(q)); return filtered.length === 0 ? <div className="sidebar-empty-hint"><p className="muted">没有匹配的评分会话</p><button type="button" className="sidebar-clear-filter" onClick={() => setSessionQuery("")}>清除搜索</button></div> : <nav>{filtered.map((item) => <div className={`rubric-session-row ${item.id === selectedAssignmentId ? "active" : ""}`} key={item.id}><a href={withCourseQuery(`/rubrics?assignment=${encodeURIComponent(item.id)}`, courseId)} title={item.title}><strong>{item.title}</strong><small>{item.totalScore} 分 · {item.sources.length} 份参考资料</small></a><button type="button" aria-label={`删除评分会话：${item.title}`} title="删除评分会话" disabled={submitting || deleting} onClick={() => { setAssignmentToDelete(item); setDeleteError(""); }}>删除</button></div>)}</nav>; })()}
       </aside>
-      <section className="rubric-design-split" ref={splitRef}>
+      <section className={`rubric-design-split ${!assignment ? "is-creating" : ""}`} ref={splitRef}>
         <main className="rubric-start-panel">{chatContent}</main>
-        <button className={`rubric-resizer ${dragging ? "dragging" : ""}`} type="button" aria-label="拖动调整会话与预览宽度" onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setDragging(true); }} />
-        {previewPanel}
+        {assignment && <button className={`rubric-resizer ${dragging ? "dragging" : ""}`} type="button" aria-label="拖动调整会话与预览宽度" onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setDragging(true); }} />}
+        {assignment && previewPanel}
       </section>
     </section>
     <ConfirmDialog

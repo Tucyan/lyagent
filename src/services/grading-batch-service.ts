@@ -52,6 +52,7 @@ export interface GradingBatchJob {
 
 export interface GradingBatch {
   id: string;
+  courseId?: string;
   title: string;
   assignmentId: string;
   rubricVersion: number;
@@ -108,6 +109,7 @@ export class GradingBatchConflictError extends GradingBatchError {
 
 interface BatchRow {
   id: string;
+  course_id: string | null;
   title: string;
   assignment_id: string;
   rubric_version: number;
@@ -229,9 +231,10 @@ export class GradingBatchService {
         if (hasRuns && this.database.prepare("SELECT 1 FROM agent_runs WHERE session_id = ? AND status IN ('queued', 'running') LIMIT 1").get(member.id))
           throw new GradingBatchConflictError("A report already has an active grading run");
       }
+      const courseId = (members[0] as { courseId?: string } | undefined)?.courseId ?? null;
       this.database.prepare(
-        "INSERT INTO grading_batches (id, title, assignment_id, rubric_version, status, concurrency, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)",
-      ).run(id, title, input.assignmentId, input.rubricVersion, input.concurrency, now, now);
+        "INSERT INTO grading_batches (id, course_id, title, assignment_id, rubric_version, status, concurrency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?)",
+      ).run(id, courseId, title, input.assignmentId, input.rubricVersion, input.concurrency, now, now);
       const statement = this.database.prepare(
         `INSERT INTO grading_batch_jobs
          (id, batch_id, session_id, student_name, student_number, submission_title, status, attempt_count, max_attempts, created_at, updated_at)
@@ -260,9 +263,10 @@ export class GradingBatchService {
     return this.getBatchSummary(id);
   }
 
-  async listBatches(filter: { assignmentId?: string; rubricVersion?: number } = {}): Promise<GradingBatch[]> {
+  async listBatches(filter: { courseId?: string; assignmentId?: string; rubricVersion?: number } = {}): Promise<GradingBatch[]> {
     const clauses: string[] = [];
     const values: unknown[] = [];
+    if (filter.courseId) { clauses.push("course_id = ?"); values.push(filter.courseId); }
     if (filter.assignmentId) { clauses.push("assignment_id = ?"); values.push(filter.assignmentId); }
     if (filter.rubricVersion) { clauses.push("rubric_version = ?"); values.push(filter.rubricVersion); }
     const rows = this.database.prepare(
@@ -653,6 +657,7 @@ export class GradingBatchService {
     ).all(row.id) as Array<{ status: GradingBatchJobStatus; count: number }>) counts[item.status] = item.count;
     return {
       id: row.id,
+      ...(row.course_id ? { courseId: row.course_id } : {}),
       title: row.title,
       assignmentId: row.assignment_id,
       rubricVersion: row.rubric_version,
@@ -684,6 +689,7 @@ export class GradingBatchService {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS grading_batches (
         id TEXT PRIMARY KEY,
+        course_id TEXT,
         title TEXT NOT NULL,
         assignment_id TEXT NOT NULL,
         rubric_version INTEGER NOT NULL,
@@ -722,7 +728,27 @@ export class GradingBatchService {
     const columns = new Set((this.database.prepare("PRAGMA table_info(grading_batch_jobs)").all() as Array<{ name: string }>).map(({ name }) => name));
     if (!columns.has("next_kind")) this.database.exec("ALTER TABLE grading_batch_jobs ADD COLUMN next_kind TEXT NOT NULL DEFAULT 'grade'");
     if (!columns.has("next_message")) this.database.exec("ALTER TABLE grading_batch_jobs ADD COLUMN next_message TEXT NOT NULL DEFAULT '请开始批改当前作业。'");
-    this.database.pragma("user_version = 5");
+    const batchColumns = new Set((this.database.prepare("PRAGMA table_info(grading_batches)").all() as Array<{ name: string }>).map(({ name }) => name));
+    if (!batchColumns.has("course_id")) {
+      this.database.exec("ALTER TABLE grading_batches ADD COLUMN course_id TEXT");
+    }
+    if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'grading_sessions'").get()) {
+      const sessionColumns = new Set((this.database.prepare("PRAGMA table_info(grading_sessions)").all() as Array<{ name: string }>).map(({ name }) => name));
+      if (sessionColumns.has("course_id")) {
+        this.database.exec(`
+          UPDATE grading_batches
+          SET course_id = (
+            SELECT s.course_id
+            FROM grading_batch_jobs j
+            JOIN grading_sessions s ON s.id = j.session_id
+            WHERE j.batch_id = grading_batches.id
+            LIMIT 1
+          )
+          WHERE course_id IS NULL
+        `);
+      }
+    }
+    this.database.pragma("user_version = 6");
   }
 }
 

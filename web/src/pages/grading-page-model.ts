@@ -375,3 +375,178 @@ export function applyGradingEvent(
     };
   return message;
 }
+
+
+export type GradingExportPreset = "summary" | "detailed" | "full";
+
+export function exportPresetOptions(preset: GradingExportPreset): GradingExportOptions {
+  if (preset === "summary") {
+    return normalizeGradingExportOptions({
+      studentName: true,
+      studentNumber: true,
+      submissionTitle: true,
+      itemDetails: false,
+      itemConfidence: false,
+      totalScore: true,
+      overallConfidence: false,
+    });
+  }
+  if (preset === "full") {
+    return normalizeGradingExportOptions({
+      studentName: true,
+      studentNumber: true,
+      submissionTitle: true,
+      itemDetails: true,
+      itemConfidence: true,
+      totalScore: true,
+      overallConfidence: true,
+    });
+  }
+  return normalizeGradingExportOptions({
+    studentName: true,
+    studentNumber: true,
+    submissionTitle: true,
+    itemDetails: true,
+    itemConfidence: false,
+    totalScore: true,
+    overallConfidence: true,
+  });
+}
+
+export interface CsvPreviewTable {
+  headers: string[];
+  rows: string[][];
+}
+
+export function parseCsvPreview(csvText: string): CsvPreviewTable {
+  const cleaned = csvText.replace(/^\uFEFF/, "");
+  if (!cleaned.trim()) return { headers: [], rows: [] };
+
+  const records: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const char = cleaned[i]!;
+    if (inQuotes) {
+      if (char === '"') {
+        if (cleaned[i + 1] === '"') {
+          field += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+    } else if (char === ",") {
+      row.push(field);
+      field = "";
+    } else if (char === "\r" || char === "\n") {
+      if (char === "\r" && cleaned[i + 1] === "\n") i += 1;
+      row.push(field);
+      field = "";
+      if (row.some((cell) => cell.length > 0)) records.push(row);
+      row = [];
+    } else {
+      field += char;
+    }
+  }
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    if (row.some((cell) => cell.length > 0)) records.push(row);
+  }
+
+  const [headers = [], ...rows] = records;
+  return { headers, rows };
+}
+
+export interface CsvPreviewFilter {
+  query?: string;
+  minScore?: string;
+  maxScore?: string;
+}
+
+function extractNumericScore(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const match = raw.trim().match(/^-?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+export function filterCsvPreviewRows(
+  table: CsvPreviewTable,
+  filter: CsvPreviewFilter,
+): CsvPreviewTable {
+  const query = filter.query?.trim().toLowerCase() ?? "";
+  const minVal = filter.minScore?.trim() ? Number(filter.minScore.trim()) : undefined;
+  const maxVal = filter.maxScore?.trim() ? Number(filter.maxScore.trim()) : undefined;
+  const hasMin = minVal !== undefined && Number.isFinite(minVal);
+  const hasMax = maxVal !== undefined && Number.isFinite(maxVal);
+  const scoreColIndex = table.headers.findIndex((header) =>
+    /总分|score/i.test(header),
+  );
+
+  const rows = table.rows.filter((row) => {
+    if (query && !row.some((cell) => cell.toLowerCase().includes(query))) {
+      return false;
+    }
+    if ((hasMin || hasMax) && scoreColIndex >= 0) {
+      const score = extractNumericScore(row[scoreColIndex]);
+      if (score === undefined) return false;
+      if (hasMin && score < minVal!) return false;
+      if (hasMax && score > maxVal!) return false;
+    }
+    return true;
+  });
+
+  return { headers: table.headers, rows };
+}
+
+function escapeCsvCell(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replaceAll('"', '""')}"`;
+  }
+  return value;
+}
+
+export function serializeCsvTable(table: CsvPreviewTable): string {
+  const lines = [table.headers, ...table.rows].map((row) =>
+    row.map((cell) => escapeCsvCell(cell)).join(","),
+  );
+  return `\uFEFF${lines.join("\r\n")}\r\n`;
+}
+
+export type GradingSessionFilterStatus = "all" | "pending" | "confirmed" | "attention";
+
+export function filterGradingSessions<
+  T extends {
+    studentName: string;
+    studentNumber: string;
+    title: string;
+    conversionStatus: string;
+    gradingStatus: string;
+  },
+>(sessions: T[], status: GradingSessionFilterStatus, query: string): T[] {
+  const normalized = query.trim().toLowerCase();
+  return sessions.filter((session) => {
+    const isAttention =
+      session.conversionStatus === "conversion_failed" ||
+      session.gradingStatus === "failed";
+    const isConfirmed = session.gradingStatus === "confirmed";
+    if (status === "confirmed" && !isConfirmed) return false;
+    if (status === "attention" && !isAttention) return false;
+    if (status === "pending" && (isConfirmed || isAttention)) return false;
+    if (!normalized) return true;
+    return `${session.studentName} ${session.studentNumber} ${session.title}`
+      .toLowerCase()
+      .includes(normalized);
+  });
+}

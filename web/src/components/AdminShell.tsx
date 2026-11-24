@@ -1,4 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { apiFetch } from "../lib/api";
+import {
+  COURSE_CHANGED_EVENT,
+  readCourseFromUrl,
+  resolveActiveCourseId,
+  selectActiveCourse,
+  withCourseQuery,
+} from "../lib/course-context";
+
+type ShellCourse = { id: string; name: string };
 
 export type ActivePage = "dashboard" | "knowledge" | "qa" | "rubrics" | "grading" | "batch-grading" | "model-settings";
 
@@ -68,6 +78,31 @@ export function AdminShell({
 }) {
   const [open, setOpen] = useState(false);
   const [compact, setCompact] = useState(() => readCompactPreference(compactDefault));
+  const [courses, setCourses] = useState<ShellCourse[]>([]);
+  const [activeCourseId, setActiveCourseId] = useState(() => readCourseFromUrl());
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncCourses = () => {
+      void apiFetch("/api/courses", { cache: "no-store" })
+        .then((response) => (response.ok ? response.json() : []))
+        .then((next: ShellCourse[]) => {
+          if (cancelled || !Array.isArray(next)) return;
+          setCourses(next);
+          setActiveCourseId(resolveActiveCourseId(next, readCourseFromUrl()));
+        })
+        .catch(() => undefined);
+    };
+    syncCourses();
+    const onCourseOrRouteChange = () => syncCourses();
+    window.addEventListener("popstate", onCourseOrRouteChange);
+    window.addEventListener(COURSE_CHANGED_EVENT, onCourseOrRouteChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("popstate", onCourseOrRouteChange);
+      window.removeEventListener(COURSE_CHANGED_EVENT, onCourseOrRouteChange);
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -91,7 +126,7 @@ export function AdminShell({
     <a
       className={active === item.id ? "active" : ""}
       key={item.id}
-      href={item.href}
+      href={item.id === "model-settings" ? item.href : withCourseQuery(item.href, activeCourseId)}
       title={compact ? item.label : undefined}
       aria-label={item.label}
       aria-current={active === item.id ? "page" : undefined}
@@ -121,6 +156,34 @@ export function AdminShell({
           {compact ? "»" : "«"}
         </button>
         <button className="admin-nav-close" type="button" aria-label="关闭工作台导航" onClick={() => setOpen(false)}>×</button>
+      </div>
+      <div className="admin-course-switcher">
+        {courses.length > 0 ? (
+          <label>
+            <span className="admin-nav-label">当前课程</span>
+            <select
+              aria-label="切换当前课程"
+              title={courses.find((course) => course.id === activeCourseId)?.name}
+              value={activeCourseId}
+              onChange={(event) => {
+                const nextId = event.target.value;
+                setActiveCourseId(nextId);
+                selectActiveCourse(nextId);
+                setOpen(false);
+              }}
+            >
+              {courses.map((course) => (
+                <option key={course.id} value={course.id}>
+                  {course.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <button type="button" className="admin-course-empty-link" onClick={() => { setOpen(false); window.location.assign("/"); }}>
+            在课程总览创建课程
+          </button>
+        )}
       </div>
       <div className="admin-nav-groups">
         {navGroups.map((group) => <div className="admin-nav-group" key={group.label}>

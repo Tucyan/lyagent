@@ -50,8 +50,10 @@ const confirmSchema = z.object({
   reviewNote: z.string().max(4_000).default(""),
   acknowledgedReasons: z.array(z.string()).default([]),
 });
+const courseFilterSchema = z.object({ courseId: z.string().uuid().optional() });
 const sessionListSchema = z
   .object({
+    courseId: z.string().uuid().optional(),
     assignmentId: z.string().uuid().optional(),
     rubricVersion: z.coerce.number().int().positive().optional(),
   })
@@ -65,6 +67,7 @@ const sessionTitleSchema = z.object({
 const batchParams = z.object({ batchId: z.string().uuid() });
 const batchJobParams = z.object({ batchId: z.string().uuid(), jobId: z.string().uuid() });
 const batchListSchema = z.object({
+  courseId: z.string().uuid().optional(),
   assignmentId: z.string().uuid().optional(),
   rubricVersion: z.coerce.number().int().positive().optional(),
 }).refine((value) => !value.rubricVersion || Boolean(value.assignmentId), "assignmentId is required with rubricVersion");
@@ -258,8 +261,11 @@ export function registerGradingApi(
       },
     });
 
-    scoped.get("/api/grading/rubrics", async () => {
-      const assignments = await options.rubrics.listAssignments();
+    scoped.get("/api/grading/rubrics", async (request) => {
+      const query = courseFilterSchema.parse(request.query);
+      const assignments = (await options.rubrics.listAssignments()).filter((assignment) =>
+        query.courseId ? assignment.courseId === query.courseId : true,
+      );
       const available = [];
       for (const assignment of assignments) {
         for (const version of await options.rubrics.listVersions(assignment.id))
@@ -352,6 +358,7 @@ export function registerGradingApi(
     scoped.get("/api/grading/batches", async (request) => {
       const query = batchListSchema.parse(request.query);
       return batches.listBatches({
+        ...(query.courseId ? { courseId: query.courseId } : {}),
         ...(query.assignmentId ? { assignmentId: query.assignmentId } : {}),
         ...(query.rubricVersion ? { rubricVersion: query.rubricVersion } : {}),
       });
@@ -564,6 +571,7 @@ export function registerGradingApi(
     scoped.get("/api/grading/sessions", async (request) => {
       const query = sessionListSchema.parse(request.query);
       return sessions.listSessions({
+        ...(query.courseId ? { courseId: query.courseId } : {}),
         ...(query.assignmentId ? { assignmentId: query.assignmentId } : {}),
         ...(query.rubricVersion ? { rubricVersion: query.rubricVersion } : {}),
       });

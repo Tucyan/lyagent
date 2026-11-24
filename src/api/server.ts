@@ -18,6 +18,7 @@ import {
 import type { PiRubricDesigner, RubricDesignEvent, RubricDesignerOutcome } from "../agents/rubric-designer/agent.js";
 import { rubricSchema, validateRubric, type Rubric } from "../schemas/rubric.js";
 import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricService, RubricServiceError, RubricRequestError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
+import { summarizeRubricDraftUpdate } from "../services/rubric-diff-summary.js";
 import { registerGradingApi } from "./grading-routes.js";
 import { StudentIdentityError, type StudentIdentityClient } from "../services/student-identity-service.js";
 import type { DocumentConversionClient } from "../services/document-conversion-client.js";
@@ -287,7 +288,10 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     return { provider: status.providerId, model: status.modelId, configured: status.configured };
   });
   app.get("/api/dashboard", async () => dashboard.snapshot());
-  app.get("/api/rubrics/assignments", async () => rubrics.listAssignments());
+  app.get("/api/rubrics/assignments", async (request) => {
+    const query = z.object({ courseId: z.string().uuid().optional() }).parse(request.query);
+    return rubrics.listAssignments(query.courseId ? { courseId: query.courseId } : {});
+  });
   app.post("/api/rubrics/assignments", async (request, reply) => {
     const input = rubricAssignmentSchema.parse(request.body);
     const courses = await materials.listCourses();
@@ -332,7 +336,8 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
       const draft = (await rubrics.getDraft(assignmentId)) ?? await rubrics.createDraft(assignmentId, manualRubric(mode, assignment.totalScore));
       return { selectedMode: mode, state: "manual", draft };
     }
-    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), "请根据当前作业要求和参考资料生成第一版评分表。", (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome), (user, assistant) => rubrics.appendConversationTurn(assignmentId, user, assistant), activeAgentRuns);
+    const previousDraft = await rubrics.getDraft(assignmentId);
+    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), "请根据当前作业要求和参考资料生成第一版评分表。", (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome), (user, assistant) => rubrics.appendConversationTurn(assignmentId, user, assistant), activeAgentRuns, previousDraft?.rubric);
   });
   app.get("/api/rubrics/assignments/:assignmentId/draft", async (request) => (await rubrics.getDraft(rubricAssignmentIdSchema.parse(request.params).assignmentId)) ?? null);
   app.put("/api/rubrics/assignments/:assignmentId/draft", async (request) => {
@@ -378,7 +383,8 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (!await rubrics.getDesignSession(assignmentId)) throw new RubricServiceError("Select a scoring mode before starting rubric design");
     await assertRubricCanOpenDraft(rubrics, assignmentId);
     if (!options.rubricDesignerFactory) return reply.code(200).send({ state: "manual", message: "Manual rubric editing is available while the model is not configured." });
-    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), message, (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome), (user, assistant) => rubrics.appendConversationTurn(assignmentId, user, assistant), activeAgentRuns);
+    const previousDraft = await rubrics.getDraft(assignmentId);
+    return streamRubricDesign(request, reply, options.rubricDesignerFactory(assignmentId, rubrics), message, (outcome) => persistRubricDesignOutcome(rubrics, assignmentId, outcome), (user, assistant) => rubrics.appendConversationTurn(assignmentId, user, assistant), activeAgentRuns, previousDraft?.rubric);
   });
   app.get("/api/courses", async () => materials.listCourses());
   app.post("/api/courses", async (request, reply) => {
@@ -604,6 +610,7 @@ async function streamRubricDesign(
   persistOutcome: (outcome: RubricDesignerOutcome) => Promise<void>,
   persistTurn: (user: { role: "user"; content: string }, assistant: { role: "assistant"; content: string; process?: string; tools?: RubricConversationTool[]; options?: string[] }) => Promise<unknown>,
   activeAgentRuns: Map<string, AbortController>,
+  previousRubric?: Rubric,
 ): Promise<FastifyReply> {
   reply.hijack();
   const controller = new AbortController();
@@ -640,7 +647,7 @@ async function streamRubricDesign(
         ? outcome.question.question
         : outcome.kind === "reply"
           ? outcome.reply
-          : "评分表草稿已更新，可以在右侧预览并继续修改。";
+          : summarizeRubricDraftUpdate(previousRubric, outcome.draft.rubric, outcome.draft.version);
       await persistTurn(
         { role: "user", content: message },
         { role: "assistant", content, ...(process ? { process } : {}), ...(tools.size > 0 ? { tools: [...tools.values()] } : {}), ...(outcome.kind === "question" && outcome.question.options ? { options: outcome.question.options } : {}) },
@@ -648,7 +655,7 @@ async function streamRubricDesign(
       if (outcome.kind === "question") emit("question", { question: outcome.question });
       else if (outcome.kind === "reply") emit("reply", { reply: outcome.reply });
       else emit("draft", { version: outcome.draft.version, updatedAt: outcome.draft.updatedAt });
-      emit("final", { kind: outcome.kind, message: outcome.message });
+      emit("final", { kind: outcome.kind, message: outcome.message, ...(outcome.kind === "draft" ? { summary: content } : {}) });
     }
   } catch (error) {
     if (!controller.signal.aborted) emit("error", { code: error instanceof AgentExecutionLimitError ? error.code : "RUBRIC_DESIGN_FAILED", message: error instanceof AgentExecutionLimitError ? error.message : "评分表设计未能完成，请稍后重试或先使用人工编辑。" });

@@ -16,6 +16,12 @@ import { ConfirmDialog, PromptDialog } from "../components/ConfirmDialog";
 import { DecisionCards, DecisionEditor } from "../components/grading/DecisionPanels";
 import { useToast } from "../components/ToastProvider";
 import { useUnsavedGuard } from "../lib/use-unsaved-guard";
+import { COURSE_CHANGED_EVENT, readCourseFromUrl, resolveActiveCourseId, withCourseQuery } from "../lib/course-context";
+import { navigateWithinApp } from "../lib/app-navigation";
+
+function gradingRubricStorageKey(courseId: string): string {
+  return courseId ? `grading-rubric:${courseId}` : "grading-rubric";
+}
 export { DecisionCards, DecisionEditor };
 import {
   applyGradingEvent,
@@ -31,6 +37,14 @@ import {
   initialLiveMessage,
   normalizeGradingExportOptions,
   parseGradingExportOptions,
+  exportPresetOptions,
+  filterCsvPreviewRows,
+  filterGradingSessions,
+  parseCsvPreview,
+  serializeCsvTable,
+  type CsvPreviewTable,
+  type GradingExportPreset,
+  type GradingSessionFilterStatus,
   resolveGradingSessionScope,
   resolveGradingRubricKey,
   rubricSelectionKey,
@@ -105,6 +119,7 @@ type SessionDetail = GradingSession & {
 };
 type FrozenRubric = {
   assignmentId: string;
+  courseId?: string;
   title: string;
   version: number;
   hash: string;
@@ -125,9 +140,10 @@ export function GradingPage() {
   const [sessions, setSessions] = useState<GradingSession[]>([]),
     [detail, setDetail] = useState<SessionDetail>(),
     [rubrics, setRubrics] = useState<FrozenRubric[]>([]);
+  const [activeCourseId, setActiveCourseId] = useState(() => readCourseFromUrl());
   const [creating, setCreating] = useState(!selectedId),
     [selectedRubricKey, setSelectedRubricKey] = useState(
-      query.get("rubric") ?? localStorage.getItem("grading-rubric") ?? "",
+      query.get("rubric") ?? localStorage.getItem(gradingRubricStorageKey(readCourseFromUrl())) ?? "",
     ),
     [sidebarCollapsed, setSidebarCollapsed] = useState(false),
     [previewPercent, setPreviewPercent] = useState(40),
@@ -146,7 +162,12 @@ export function GradingPage() {
   const [sessionToRename, setSessionToRename] = useState<GradingSession>(),
     [renameTitle, setRenameTitle] = useState(""),
     [sessionToDelete, setSessionToDelete] = useState<GradingSession>(),
-    [sessionActionError, setSessionActionError] = useState("");
+    [sessionActionError, setSessionActionError] = useState(""),
+    [exportModalOpen, setExportModalOpen] = useState(false),
+    [sessionSearch, setSessionSearch] = useState(""),
+    [sessionStatusFilter, setSessionStatusFilter] = useState<GradingSessionFilterStatus>("all"),
+    [rubricPickerOpen, setRubricPickerOpen] = useState(false),
+    [rubricSearch, setRubricSearch] = useState("");
   const [retryingTitle, setRetryingTitle] = useState<string>();
   const [sessionOperations, setSessionOperations] = useState<string[]>([]);
   const [exportOptions, setExportOptions] = useState<GradingExportOptions>(() =>
@@ -165,6 +186,8 @@ export function GradingPage() {
   editingRef.current = editing;
   useUnsavedGuard(editing);
   const navigateWithinGrading = (search: URLSearchParams) => {
+    const currentCourse = readCourseFromUrl() || activeCourseId;
+    if (currentCourse && !search.has("course")) search.set("course", currentCourse);
     const suffix = search.toString();
     const nextSessionId = search.get("session") ?? undefined;
     selectedIdRef.current = nextSessionId;
@@ -233,36 +256,77 @@ export function GradingPage() {
       setLocationSearch(window.location.search);
     };
     window.addEventListener("popstate", updateLocation);
-    return () => window.removeEventListener("popstate", updateLocation);
+    window.addEventListener(COURSE_CHANGED_EVENT, updateLocation);
+    return () => {
+      window.removeEventListener("popstate", updateLocation);
+      window.removeEventListener(COURSE_CHANGED_EVENT, updateLocation);
+    };
   }, []);
   useEffect(() => {
+    setExportModalOpen(false);
+    setRubricPickerOpen(false);
     setCreating(!selectedId && !query.has("rubric"));
   }, [locationSearch]);
+  useEffect(() => {
+    if (!rubricPickerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRubricPickerOpen(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest(".rubric-picker")) setRubricPickerOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [rubricPickerOpen]);
   useEffect(() => {
     const lease = pageLoadGate.current.begin();
     void (async () => {
       try {
-        const [nextRubrics, nextDetail] = await Promise.all([
-          api<FrozenRubric[]>("/api/grading/rubrics"),
+        const courses = await api<Array<{ id: string }>>("/api/courses");
+        const resolvedCourseId = resolveActiveCourseId(courses, readCourseFromUrl());
+        setActiveCourseId(resolvedCourseId);
+        const rubricsUrl = resolvedCourseId
+          ? `/api/grading/rubrics?courseId=${encodeURIComponent(resolvedCourseId)}`
+          : "/api/grading/rubrics";
+        const [rawRubrics, nextDetail] = await Promise.all([
+          api<FrozenRubric[]>(rubricsUrl),
           refreshDetail(),
         ]);
         if (!lease.isCurrent()) return;
+        const nextRubrics = resolvedCourseId
+          ? rawRubrics.filter((item) => !item.courseId || item.courseId === resolvedCourseId)
+          : rawRubrics;
+        const scopedDetail =
+          nextDetail && (!resolvedCourseId || nextDetail.courseId === resolvedCourseId)
+            ? nextDetail
+            : undefined;
+        if (nextDetail && !scopedDetail) {
+          selectedIdRef.current = undefined;
+          setDetail(undefined);
+          navigateWithinApp(withCourseQuery("/grading", resolvedCourseId), true);
+        }
         setRubrics(nextRubrics);
         const requestedRubricKey = new URLSearchParams(locationSearch).get("rubric")
-          ?? selectedRubricKey;
+          ?? localStorage.getItem(gradingRubricStorageKey(resolvedCourseId))
+          ?? "";
         const key = resolveGradingRubricKey(
           nextRubrics,
-          nextDetail
-            ? `${nextDetail.assignmentId}:${nextDetail.rubricVersion}`
+          scopedDetail
+            ? `${scopedDetail.assignmentId}:${scopedDetail.rubricVersion}`
             : requestedRubricKey,
         );
         setSelectedRubricKey(key);
-        if (key) localStorage.setItem("grading-rubric", key);
+        if (key) localStorage.setItem(gradingRubricStorageKey(resolvedCourseId), key);
         const rubric = nextRubrics.find(
           (item) => rubricSelectionKey(item) === key,
         );
         await refreshList(
-          nextDetail ??
+          scopedDetail ??
             (rubric
               ? {
                   assignmentId: rubric.assignmentId,
@@ -493,7 +557,7 @@ export function GradingPage() {
   };
   const chooseRubric = (key: string) => {
     setSelectedRubricKey(key);
-    localStorage.setItem("grading-rubric", key);
+    localStorage.setItem(gradingRubricStorageKey(activeCourseId), key);
     setCreating(false);
     navigateToRubric(key);
   };
@@ -538,6 +602,40 @@ export function GradingPage() {
     setExportOptions((current) =>
       normalizeGradingExportOptions({ ...current, [key]: value }),
     );
+  const fetchExportCsv = async (
+    kind: "student" | "rubric",
+    options: GradingExportOptions,
+  ): Promise<{ filename: string; text: string }> => {
+    if (!selectedRubric || (kind === "student" && !detail)) {
+      throw new Error("请先选择评分标准或批改会话");
+    }
+    const scope =
+      kind === "student"
+        ? {
+            kind,
+            courseId: detail!.courseId,
+            studentNumber: detail!.studentNumber,
+          }
+        : {
+            kind,
+            assignmentId: selectedRubric.assignmentId,
+            rubricVersion: selectedRubric.version,
+          };
+    const response = await apiFetch(
+      "/api/grading/exports/csv",
+      withJsonHeaders({
+        method: "POST",
+        body: JSON.stringify({ scope, columns: options }),
+      }),
+    );
+    if (!response.ok) throw await apiErrorFromResponse(response, "导出失败");
+    const text = await response.text();
+    const filename =
+      kind === "student"
+        ? `${detail!.studentNumber}-全部作业.csv`
+        : `${selectedRubric.title}-v${selectedRubric.version}-全部学生.csv`;
+    return { filename, text };
+  };
   const downloadCsv = async (kind: "student" | "rubric") => {
     if (!selectedRubric || (kind === "student" && !detail)) return;
     const scope =
@@ -619,30 +717,92 @@ export function GradingPage() {
           </button>
         )}
         <div className="grading-header-title">
-          <h1>{detail ? detail.title : "单份作业批改"}</h1>
+          <h1 title={detail ? detail.title : "单份作业批改"}>{detail ? detail.title : "单份作业批改"}</h1>
           <span className="grading-header-notice">{notice}</span>
+        </div>
+        <div className="grading-header-tools">
+          <div className="grading-header-rubric">
+            <span className="grading-header-rubric-label">评分标准</span>
+            <div className="rubric-picker">
+              <button
+                type="button"
+                className="rubric-picker-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={rubricPickerOpen}
+                onClick={() => {
+                  setRubricPickerOpen((open) => !open);
+                  setRubricSearch("");
+                }}
+              >
+                <span className="rubric-picker-value" title={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}>
+                  {selectedRubric
+                    ? `${selectedRubric.title} · v${selectedRubric.version}`
+                    : rubrics.length === 0
+                      ? "当前课程暂无评分标准"
+                      : "选择评分标准"}
+                </span>
+                <span className="rubric-picker-caret" aria-hidden="true">▾</span>
+              </button>
+              {rubricPickerOpen && (
+                <div className="rubric-picker-popover" role="listbox" aria-label="选择评分标准">
+                  <input
+                    type="search"
+                    className="rubric-picker-search"
+                    aria-label="搜索评分标准"
+                    value={rubricSearch}
+                    onChange={(event) => setRubricSearch(event.target.value)}
+                    placeholder="搜索评分标准…"
+                    autoFocus
+                  />
+                  <div className="rubric-picker-list">
+                    {(() => {
+                      const q = rubricSearch.trim().toLowerCase();
+                      const matched = rubrics.filter((rubric) =>
+                        !q || `${rubric.title} v${rubric.version}`.toLowerCase().includes(q),
+                      );
+                      if (matched.length === 0) {
+                        return <p className="rubric-picker-empty">没有匹配的评分标准</p>;
+                      }
+                      return matched.map((rubric) => {
+                        const key = rubricSelectionKey(rubric);
+                        const active = key === selectedRubricKey;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            role="option"
+                            aria-selected={active}
+                            title={`${rubric.title} · v${rubric.version}`}
+                            className={`rubric-picker-option ${active ? "active" : ""}`}
+                            onClick={() => {
+                              setRubricPickerOpen(false);
+                              setRubricSearch("");
+                              chooseRubric(key);
+                            }}
+                          >
+                            <strong>{rubric.title}</strong>
+                            <span>v{rubric.version}</span>
+                          </button>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          <ExportPanel
+            options={exportOptions}
+            active={exportModalOpen}
+            disabled={!selectedRubric && !detail}
+            onOpen={() => setExportModalOpen((current) => !current)}
+          />
         </div>
       </header>
       <div
         className={`grading-workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
       >
         <aside className="grading-sessions">
-          <label className="grading-rubric-filter">
-            <span>当前评分标准</span>
-            <select
-              value={selectedRubricKey}
-              onChange={(event) => chooseRubric(event.target.value)}
-            >
-              {rubrics.map((rubric) => (
-                <option
-                  key={rubricSelectionKey(rubric)}
-                  value={rubricSelectionKey(rubric)}
-                >
-                  {rubric.title} · v{rubric.version}
-                </option>
-              ))}
-            </select>
-          </label>
           <div className="grading-sidebar-heading">
             <div>
               <strong>批改会话</strong>
@@ -658,19 +818,75 @@ export function GradingPage() {
               «
             </button>
           </div>
-          <button type="button" onClick={() => setCreating(true)}>
+          <button type="button" onClick={() => { setExportModalOpen(false); setCreating(true); }}>
             ＋ 上传作业
           </button>
+          {sessions.length > 0 && (
+            <div className="grading-session-filter-box">
+              <input
+                type="search"
+                className="grading-session-search"
+                aria-label="搜索批改会话"
+                value={sessionSearch}
+                onChange={(event) => setSessionSearch(event.target.value)}
+                placeholder="搜索姓名、学号或作业…"
+              />
+              <div className="grading-session-filters" role="tablist" aria-label="按批改状态筛选">
+                {(
+                  [
+                    ["all", "全部"],
+                    ["pending", "待确认"],
+                    ["confirmed", "已确认"],
+                    ["attention", "异常"],
+                  ] as Array<[GradingSessionFilterStatus, string]>
+                ).map(([statusKey, label]) => (
+                  <button
+                    key={statusKey}
+                    type="button"
+                    className={sessionStatusFilter === statusKey ? "active" : ""}
+                    onClick={() => setSessionStatusFilter(statusKey)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <nav>
-            {sessions.map((session) => (
+            {(() => {
+              const filteredSessions = filterGradingSessions(
+                sessions,
+                sessionStatusFilter,
+                sessionSearch,
+              );
+              if (sessions.length > 0 && filteredSessions.length === 0) {
+                return (
+                  <div className="sidebar-empty-hint">
+                    <p className="muted">没有符合筛选条件的作业</p>
+                    <button
+                      type="button"
+                      className="sidebar-clear-filter"
+                      onClick={() => {
+                        setSessionSearch("");
+                        setSessionStatusFilter("all");
+                      }}
+                    >
+                      清除筛选
+                    </button>
+                  </div>
+                );
+              }
+              return filteredSessions.map((session) => (
               <article
                 className={session.id === selectedId ? "active" : ""}
                 key={session.id}
               >
                 <a
                   href={`/grading?session=${session.id}`}
+                  title={`${session.studentName}（${session.studentNumber}）· ${session.title}`}
                   onClick={(event) => {
                     event.preventDefault();
+                    setExportModalOpen(false);
                     setCreating(false);
                     navigateToSession(session.id);
                   }}
@@ -710,32 +926,30 @@ export function GradingPage() {
                   </button>
                 </div>
               </article>
-            ))}
+              ));
+            })()}
           </nav>
-          <ExportPanel
-            options={exportOptions}
-            setOption={updateExportOption}
-            canExportStudent={Boolean(detail)}
-            canExportRubric={Boolean(selectedRubric)}
-            exportStudent={() =>
-              void downloadCsv("student").catch((error: Error) =>
-                setNotice(error.message),
-              )
-            }
-            exportRubric={() =>
-              void downloadCsv("rubric").catch((error: Error) =>
-                setNotice(error.message),
-              )
-            }
-          />
         </aside>
         <section
-          className={`grading-split ${creating ? "is-creating" : ""}`}
+          className={`grading-split ${creating || exportModalOpen ? "is-creating" : ""}`}
           ref={splitRef}
           style={{ "--grading-preview": `${previewPercent}%` } as CSSProperties}
         >
           <main className="grading-conversation">
-            {creating ? (
+            {exportModalOpen ? (
+              <ExportPreviewDialog
+                open={exportModalOpen}
+                options={exportOptions}
+                setOption={updateExportOption}
+                applyPreset={(preset) => setExportOptions(exportPresetOptions(preset))}
+                canExportStudent={Boolean(detail)}
+                canExportRubric={Boolean(selectedRubric)}
+                studentLabel={detail ? `${detail.studentName}（${detail.studentNumber}）` : undefined}
+                rubricLabel={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}
+                fetchCsv={fetchExportCsv}
+                onClose={() => setExportModalOpen(false)}
+              />
+            ) : creating ? (
               <NewSessionPanel
                 rubric={selectedRubric}
                 close={() => setCreating(false)}
@@ -1318,6 +1532,11 @@ function NewSessionPanel({
     try {
       const form = new FormData(event.currentTarget);
       if (!rubric) throw new Error("请选择冻结评分表");
+      const file = form.get("file");
+      if (!(file instanceof File) || file.size === 0) {
+        setErrorFields(["file"]);
+        throw new Error("请先选择学生报告文件");
+      }
       form.set("assignmentId", rubric.assignmentId);
       form.set("rubricVersion", String(rubric.version));
       form.delete("assetDirectory");
@@ -1343,6 +1562,7 @@ function NewSessionPanel({
     <div className="grading-inline-create">
       <form
         className="grading-new-dialog"
+        noValidate
         onSubmit={(event) => void submit(event)}
       >
         <h2>新建批改会话</h2>
@@ -1383,10 +1603,10 @@ function NewSessionPanel({
               name="file"
               type="file"
               required
-              accept=".md,.pdf,.docx,.pptx,.png,.jpg,.jpeg"
+              accept=".md,.txt,.pdf,.docx,.pptx,.png,.jpg,.jpeg"
               aria-invalid={errorFields.includes("file") || undefined}
             />
-            <small>支持 Markdown、DOCX、PDF、PPTX 与图片</small>
+            <small>支持 Markdown、TXT、DOCX、PDF、PPTX 与图片</small>
           </label>
           <label className="grading-file-field">
             Markdown 图片目录（可选）
@@ -1435,19 +1655,117 @@ function NewSessionPanel({
 
 function ExportPanel({
   options,
-  setOption,
-  canExportStudent,
-  canExportRubric,
-  exportStudent,
-  exportRubric,
+  active,
+  disabled,
+  onOpen,
 }: {
   options: GradingExportOptions;
+  active: boolean;
+  disabled: boolean;
+  onOpen(): void;
+}) {
+  const selectedCount = Object.values(options).filter(Boolean).length;
+  return (
+    <button
+      type="button"
+      className={`grading-export-header-button ${active ? "active" : ""}`}
+      aria-pressed={active}
+      disabled={disabled}
+      title={`预览并导出成绩表 CSV（已选 ${selectedCount} 列）`}
+      onClick={onOpen}
+    >
+      {active ? "返回批改" : `导出 CSV（${selectedCount}列）`}
+    </button>
+  );
+}
+
+function ExportPreviewDialog({
+  open,
+  options,
+  setOption,
+  applyPreset,
+  canExportStudent,
+  canExportRubric,
+  studentLabel,
+  rubricLabel,
+  fetchCsv,
+  onClose,
+}: {
+  open: boolean;
+  options: GradingExportOptions;
   setOption(key: keyof GradingExportOptions, value: boolean): void;
+  applyPreset(preset: GradingExportPreset): void;
   canExportStudent: boolean;
   canExportRubric: boolean;
-  exportStudent(): void;
-  exportRubric(): void;
+  studentLabel?: string;
+  rubricLabel?: string;
+  fetchCsv(
+    kind: "student" | "rubric",
+    options: GradingExportOptions,
+  ): Promise<{ filename: string; text: string }>;
+  onClose(): void;
 }) {
+  const [scopeKind, setScopeKind] = useState<"student" | "rubric">(
+    canExportRubric ? "rubric" : "student",
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [csvText, setCsvText] = useState("");
+  const [filename, setFilename] = useState("grades.csv");
+  const [preview, setPreview] = useState<CsvPreviewTable>({ headers: [], rows: [] });
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [minScore, setMinScore] = useState("");
+  const [maxScore, setMaxScore] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    if (scopeKind === "student" && !canExportStudent && canExportRubric) {
+      setScopeKind("rubric");
+    } else if (scopeKind === "rubric" && !canExportRubric && canExportStudent) {
+      setScopeKind("student");
+    }
+  }, [open, canExportStudent, canExportRubric, scopeKind]);
+
+  useEffect(() => {
+    if (!open) return;
+    if ((scopeKind === "student" && !canExportStudent) || (scopeKind === "rubric" && !canExportRubric)) {
+      setPreview({ headers: [], rows: [] });
+      setCsvText("");
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    void fetchCsv(scopeKind, options)
+      .then((result) => {
+        if (cancelled) return;
+        setCsvText(result.text);
+        setFilename(result.filename);
+        setPreview(parseCsvPreview(result.text));
+      })
+      .catch((cause: Error) => {
+        if (cancelled) return;
+        setError(cause.message);
+        setCsvText("");
+        setPreview({ headers: [], rows: [] });
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, scopeKind, options, canExportStudent, canExportRubric, reloadNonce]);
+
+  useEffect(() => {
+    setSearchQuery("");
+    setMinScore("");
+    setMaxScore("");
+  }, [scopeKind]);
+
+  if (!open) return null;
+
   const fields: Array<[keyof GradingExportOptions, string]> = [
     ["studentName", "学生姓名"],
     ["studentNumber", "学号"],
@@ -1456,46 +1774,213 @@ function ExportPanel({
     ["totalScore", "总分"],
     ["overallConfidence", "总置信度"],
   ];
+
+  const scoreFilterAvailable =
+    options.totalScore && preview.headers.some((header) => /总分|score/i.test(header));
+  const hasActiveFilter = Boolean(
+    searchQuery.trim() || (scoreFilterAvailable && (minScore.trim() || maxScore.trim())),
+  );
+  const filteredPreview = filterCsvPreviewRows(preview, {
+    query: searchQuery,
+    minScore: scoreFilterAvailable ? minScore : "",
+    maxScore: scoreFilterAvailable ? maxScore : "",
+  });
+
+  const triggerDownload = () => {
+    if (!csvText || filteredPreview.rows.length === 0) return;
+    const outputText = hasActiveFilter ? serializeCsvTable(filteredPreview) : csvText;
+    const blob = new Blob([outputText], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <details className="grading-export-panel">
-      <summary>导出成绩表 CSV</summary>
-      <div>
-        {fields.map(([key, label]) => (
-          <label key={key}>
+    <section
+      className="export-workspace"
+      aria-label="导出成绩表预览"
+    >
+      <div className="export-preview-modal">
+        <header className="export-preview-header">
+          <div>
+            <h2>导出成绩表 CSV</h2>
+            <p>选择导出范围与列，筛选并实时预览表格内容后再下载。</p>
+          </div>
+          <button type="button" className="export-preview-close" aria-label="返回批改视图" onClick={onClose}>
+            返回批改
+          </button>
+        </header>
+
+        <section className="export-preview-controls">
+          <div className="export-scope-row" role="radiogroup" aria-label="导出范围">
+            <button
+              type="button"
+              className={`export-scope-tab ${scopeKind === "rubric" ? "active" : ""}`}
+              disabled={!canExportRubric}
+              onClick={() => setScopeKind("rubric")}
+            >
+              <strong>当前评分标准全部学生</strong>
+              <small title={rubricLabel}>{rubricLabel ?? "请先选择评分标准"}</small>
+            </button>
+            <button
+              type="button"
+              className={`export-scope-tab ${scopeKind === "student" ? "active" : ""}`}
+              disabled={!canExportStudent}
+              onClick={() => setScopeKind("student")}
+            >
+              <strong>当前学生全部作业</strong>
+              <small title={studentLabel}>{studentLabel ?? "请先选择一份批改会话"}</small>
+            </button>
+          </div>
+
+          <div className="export-presets-row">
+            <span>快捷方案：</span>
+            <button type="button" onClick={() => applyPreset("summary")}>仅成绩汇总</button>
+            <button type="button" onClick={() => applyPreset("detailed")}>完整明细</button>
+            <button type="button" onClick={() => applyPreset("full")}>含子项置信度</button>
+          </div>
+
+          <div className="export-column-chips" aria-label="导出列选择">
+            {fields.map(([key, label]) => (
+              <label key={key} className={options[key] ? "checked" : ""}>
+                <input
+                  type="checkbox"
+                  checked={options[key]}
+                  onChange={(event) => setOption(key, event.target.checked)}
+                />
+                {label}
+              </label>
+            ))}
+            <label className={`${options.itemConfidence ? "checked" : ""} ${!options.itemDetails ? "disabled" : ""}`}>
+              <input
+                type="checkbox"
+                checked={options.itemConfidence}
+                disabled={!options.itemDetails}
+                onChange={(event) => setOption("itemConfidence", event.target.checked)}
+              />
+              子项置信度
+            </label>
+          </div>
+        </section>
+
+        <section className="export-preview-table-section" aria-label="导出数据预览">
+          <div className="export-filter-bar" aria-label="数据筛选">
             <input
-              type="checkbox"
-              checked={options[key]}
-              onChange={(event) => setOption(key, event.target.checked)}
+              type="search"
+              className="export-filter-search"
+              aria-label="关键词筛选"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="搜索学生姓名、学号、作业名称或评语…"
             />
-            {label}
-          </label>
-        ))}
-        <label className="grading-export-child">
-          <input
-            type="checkbox"
-            checked={options.itemConfidence}
-            disabled={!options.itemDetails}
-            onChange={(event) =>
-              setOption("itemConfidence", event.target.checked)
-            }
-          />
-          子项置信度
-        </label>
-        <button
-          type="button"
-          disabled={!canExportStudent}
-          onClick={exportStudent}
-        >
-          导出当前学生全部作业
-        </button>
-        <button
-          type="button"
-          disabled={!canExportRubric}
-          onClick={exportRubric}
-        >
-          导出当前评分标准全部学生
-        </button>
+            <div
+              className={`export-score-range ${!scoreFilterAvailable ? "disabled" : ""}`}
+              title={!scoreFilterAvailable ? "勾选「总分」列后可按总分区间筛选" : undefined}
+            >
+              <span>总分区间</span>
+              <input
+                type="number"
+                aria-label="最低分"
+                disabled={!scoreFilterAvailable}
+                value={minScore}
+                onChange={(event) => setMinScore(event.target.value)}
+                placeholder="最低"
+              />
+              <span>–</span>
+              <input
+                type="number"
+                aria-label="最高分"
+                disabled={!scoreFilterAvailable}
+                value={maxScore}
+                onChange={(event) => setMaxScore(event.target.value)}
+                placeholder="最高"
+              />
+            </div>
+            {hasActiveFilter && (
+              <button
+                type="button"
+                className="export-filter-reset"
+                onClick={() => {
+                  setSearchQuery("");
+                  setMinScore("");
+                  setMaxScore("");
+                }}
+              >
+                重置筛选
+              </button>
+            )}
+          </div>
+          <div className="export-preview-bar">
+            <span>
+              {loading
+                ? "正在生成预览…"
+                : hasActiveFilter
+                  ? `筛选结果：显示 ${filteredPreview.rows.length} / 共 ${preview.rows.length} 条记录 · ${preview.headers.length} 列（导出将仅包含筛选结果）`
+                  : `预览结果：共 ${preview.rows.length} 条记录 · ${preview.headers.length} 列`}
+            </span>
+            <button type="button" disabled={loading} onClick={() => setReloadNonce((n) => n + 1)}>
+              刷新预览
+            </button>
+          </div>
+          {error ? (
+            <p className="export-preview-error" role="alert">{error}</p>
+          ) : loading ? (
+            <div className="export-preview-empty">正在读取当前范围的成绩数据…</div>
+          ) : preview.headers.length === 0 || preview.rows.length === 0 ? (
+            <div className="export-preview-empty">
+              当前范围内暂无已确认发布的成绩记录。请先在批改会话中确认并发布正式结果后再导出。
+            </div>
+          ) : filteredPreview.rows.length === 0 ? (
+            <div className="export-preview-empty">
+              没有符合当前筛选条件的记录，请调整关键词或总分区间。
+            </div>
+          ) : (
+            <div className="export-preview-table-wrap">
+              <table className="export-preview-table">
+                <thead>
+                  <tr>
+                    {filteredPreview.headers.map((header, index) => (
+                      <th key={`${header}-${index}`}>{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPreview.rows.map((row, rowIndex) => (
+                    <tr key={rowIndex}>
+                      {filteredPreview.headers.map((_, colIndex) => {
+                        const value = row[colIndex] ?? "";
+                        return (
+                          <td key={colIndex} title={value}>
+                            {value}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <footer className="export-preview-footer">
+          <span className="export-preview-filename" title={filename}>文件名：{filename}</span>
+          <div className="export-preview-footer-actions">
+            <button type="button" onClick={onClose}>返回</button>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={loading || !csvText || filteredPreview.rows.length === 0}
+              onClick={triggerDownload}
+            >
+              确认下载 CSV（{filteredPreview.rows.length} 条）
+            </button>
+          </div>
+        </footer>
       </div>
-    </details>
+    </section>
   );
 }

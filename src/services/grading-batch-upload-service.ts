@@ -131,7 +131,7 @@ export class GradingBatchUploadError extends Error {
   }
 }
 
-const reportExtensions = new Set([".md", ".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg"]);
+const reportExtensions = new Set([".md", ".txt", ".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg"]);
 
 export class GradingBatchUploadService {
   private readonly database: Database.Database;
@@ -149,8 +149,8 @@ export class GradingBatchUploadService {
     this.database = new Database(path.join(path.resolve(root), "grading.sqlite"));
     this.database.pragma("journal_mode = WAL");
     this.database.pragma("foreign_keys = ON");
-    this.filesystem = new SafeFilesystem(root, {
-      allowedExtensions: new Set([".md", ".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".json"]),
+        this.filesystem = new SafeFilesystem(root, {
+      allowedExtensions: new Set([".md", ".txt", ".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".json"]),
     });
     this.removeDirectory = fileOperations.removeDirectory ?? (async (relativePath) => {
       try { await this.filesystem.removeDirectory(relativePath); }
@@ -245,7 +245,9 @@ export class GradingBatchUploadService {
     let selectedAssets: Array<{ path: string; bytes: Uint8Array }>;
     try {
       validateSubmissionAssets(input.assets);
-      const markdown = extension === ".md" ? Buffer.from(input.bytes).toString("utf8") : undefined;
+      const markdown = extension === ".md" || extension === ".txt"
+        ? Buffer.from(input.bytes).toString("utf8")
+        : undefined;
       selectedAssets = markdown === undefined
         ? []
         : selectReferencedAssets(markdown, input.assets);

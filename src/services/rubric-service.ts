@@ -148,11 +148,14 @@ export class RubricService {
     return assignment;
   }
 
-  async listAssignments(): Promise<RubricAssignment[]> {
+  async listAssignments(filter: { courseId?: string } = {}): Promise<RubricAssignment[]> {
     try {
       const entries = await readdir(path.join(this.root, "assignments"), { withFileTypes: true });
       const assignments = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => this.getAssignment(entry.name)));
-      return assignments.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      const filtered = filter.courseId
+        ? assignments.filter((item) => item.courseId === filter.courseId)
+        : assignments;
+      return filtered.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;

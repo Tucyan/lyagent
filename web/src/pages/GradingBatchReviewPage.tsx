@@ -8,6 +8,7 @@ import type { RubricValue } from "../components/RubricPreviewEditor.js";
 import { useToast } from "../components/ToastProvider";
 import { apiErrorFromResponse, withJsonHeaders, apiFetch } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
+import { readCourseFromUrl, withCourseQuery } from "../lib/course-context";
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import { useUnsavedGuard } from "../lib/use-unsaved-guard";
 import {
@@ -176,12 +177,14 @@ export function GradingBatchReviewPage() {
   );
   const currentIndex = filteredJobs.findIndex((job) => job.sessionId === selectedJob?.sessionId);
   const prevJob = currentIndex > 0 ? filteredJobs[currentIndex - 1] : undefined;
-  const nextJob = currentIndex >= 0 && currentIndex < filteredJobs.length - 1 ? filteredJobs[currentIndex + 1] : undefined;
+  const nextJob = currentIndex >= 0
+    ? (currentIndex < filteredJobs.length - 1 ? filteredJobs[currentIndex + 1] : undefined)
+    : filteredJobs[0];
 
   useEffect(() => {
     if (!batch || batch.id !== batchId || !selectedJob) return;
     if (selectedJob.sessionId !== sessionId) {
-      navigateWithinApp(batchReviewHref(batch.id, selectedJob.sessionId), true);
+      navigateWithinApp(withCourseQuery(batchReviewHref(batch.id, selectedJob.sessionId), readCourseFromUrl()), true);
       return;
     }
     if (detail?.id !== selectedJob.sessionId) setDetail(undefined);
@@ -229,7 +232,7 @@ export function GradingBatchReviewPage() {
     sessionIdRef.current = nextSessionId;
     sessionGate.current.invalidate();
     setDetail(undefined);
-    navigateWithinApp(batchReviewHref(batch.id, nextSessionId));
+    navigateWithinApp(withCourseQuery(batchReviewHref(batch.id, nextSessionId), readCourseFromUrl()));
   };
   const chooseSession = (nextSessionId: string) => {
     if (!batch || nextSessionId === selectedJob?.sessionId) return;
@@ -350,10 +353,16 @@ export function GradingBatchReviewPage() {
   const unconfirmedCount = batch?.jobs.filter((job) => job.reviewStatus !== "confirmed").length ?? 0;
   const attentionCount = batch?.jobs.filter((job) => ["failed", "waiting_for_teacher", "interrupted"].includes(job.status)).length ?? 0;
 
+  useEffect(() => {
+    if (filter === "attention" && attentionCount === 0) {
+      setFilter("all");
+    }
+  }, [filter, attentionCount]);
+
   return <div className="batch-review-page">
     <header className="workspace-header batch-review-header">
       <div><p className="eyebrow">批次复核工作台</p><h1>{batch?.title ?? "批次复核"}</h1><p>{notice}</p></div>
-      <a className="secondary-link-button" href="/grading/batches">返回批量批改</a>
+      <a className="secondary-link-button" href={withCourseQuery("/grading/batches", readCourseFromUrl())}>返回批量批改</a>
     </header>
     <div className="batch-review-layout">
       <aside className="batch-review-sidebar">
@@ -367,7 +376,7 @@ export function GradingBatchReviewPage() {
             {attentionCount > 0 && <button type="button" className={filter === "attention" ? "active" : ""} onClick={() => setFilter("attention")}>异常 ({attentionCount})</button>}
           </div>
         </div>
-        <nav>{filteredJobs.length === 0 ? <p className="muted sidebar-empty-hint">当前筛选条件下没有匹配的作业</p> : filteredJobs.map((job) => <button className={job.sessionId === selectedJob?.sessionId ? "active" : ""} key={job.id} type="button" onClick={() => chooseSession(job.sessionId)}>
+        <nav>{filteredJobs.length === 0 ? <div className="sidebar-empty-hint"><p className="muted">当前筛选条件下没有匹配的作业</p>{(filter !== "all" || searchQuery.trim()) && <button type="button" className="sidebar-clear-filter" onClick={() => { setFilter("all"); setSearchQuery(""); }}>清除筛选</button>}</div> : filteredJobs.map((job) => <button className={job.sessionId === selectedJob?.sessionId ? "active" : ""} key={job.id} type="button" onClick={() => chooseSession(job.sessionId)}>
           <span><strong>{job.studentName}</strong><small>{job.studentNumber}</small></span>
           <span><b>{formatBatchScore(job)}</b><small>置信度 {formatBatchConfidence(job)}</small></span>
           <em>{batchJobStatusLabel(job)}</em>
@@ -394,7 +403,7 @@ export function GradingBatchReviewPage() {
                 {!editing && currentDetail?.draft && !currentDetail.confirmed && <button type="button" onClick={() => setEditing(true)}>修改评分结果</button>}
                 {currentDetail?.draft && !currentDetail.confirmed && <label className="batch-review-note">复核备注{requiresReview ? "（必填）" : "（可选）"}<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder={requiresReview ? "请说明核对结果与确认依据…" : "可选：补充复核说明"} /></label>}
               </>}
-              {currentDetail?.confirmed ? <section className="confirmed-badge"><p>成绩已确认，教师复核记录已保存。</p><a href={`/grading?session=${currentDetail.id}`}>查看正式结果与导出；需要改分时创建结果修订</a></section> : <footer>
+              {currentDetail?.confirmed ? <section className="confirmed-badge"><p>成绩已确认，教师复核记录已保存。</p><a href={withCourseQuery(`/grading?session=${currentDetail.id}`, readCourseFromUrl())}>查看正式结果与导出；需要改分时创建结果修订</a></section> : <footer>
                 {confirmBlockHint && <span className="inline-requirement-hint">{confirmBlockHint}</span>}
                 <div className="batch-review-footer-buttons">
                   <button type="button" disabled={busy || !selectedJob || !canRetryBatchJob(selectedJob)} onClick={() => void retry()}>{busyAction === "retry" ? "重试中…" : "重试"}</button>

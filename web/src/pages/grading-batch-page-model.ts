@@ -167,3 +167,33 @@ export async function waitForBatchSessionsReady(
   }
   throw new Error("等待作业转换超时；已上传的会话仍保留，可在单份批改页检查状态");
 }
+
+
+export type BatchDetailJobFilter =
+  | "all"
+  | "needs_review"
+  | "waiting_for_teacher"
+  | "failed"
+  | "confirmed";
+
+export function filterBatchDetailJobs<
+  T extends {
+    studentName: string;
+    studentNumber: string;
+    submissionTitle: string;
+    status: string;
+    reviewStatus?: "needs_review" | "confirmed";
+  },
+>(jobs: T[], statusFilter: BatchDetailJobFilter, query: string): T[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  return jobs.filter((job) => {
+    if (statusFilter === "needs_review" && job.reviewStatus !== "needs_review") return false;
+    if (statusFilter === "confirmed" && job.reviewStatus !== "confirmed") return false;
+    if (statusFilter === "waiting_for_teacher" && job.status !== "waiting_for_teacher") return false;
+    if (statusFilter === "failed" && !["failed", "interrupted"].includes(job.status)) return false;
+    if (!normalizedQuery) return true;
+    return `${job.studentName} ${job.studentNumber} ${job.submissionTitle}`
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
+}

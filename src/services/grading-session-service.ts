@@ -212,6 +212,7 @@ const supportedExtensions = new Set([
   ".jpg",
   ".jpeg",
   ".md",
+  ".txt",
 ]);
 const submissionAssetExtensions = new Set([
   ".png",
@@ -313,7 +314,8 @@ export class GradingSessionService {
     );
     const originalBytes = await readFile(input.originalPath);
     validateFileSignature(extension, originalBytes);
-    const markdown = extension === ".md" ? originalBytes.toString("utf8") : undefined;
+    const isPlainTextSubmission = extension === ".md" || extension === ".txt";
+    const markdown = isPlainTextSubmission ? originalBytes.toString("utf8") : undefined;
     const revisionAssets = extension === ".md" ? input.revisionAssets ?? [] : [];
     if (markdown !== undefined) {
       validateSubmissionAssets(revisionAssets);
@@ -338,7 +340,7 @@ export class GradingSessionService {
     let submissionVersion: number | undefined;
     let submissionHash: string | undefined;
     let storedAssets: string[] = [];
-    if (extension === ".md") {
+    if (isPlainTextSubmission) {
       storedAssets = revisionAssets.map(({ path: assetPath }) => assetPath);
       submissionVersion = 1;
       await this.filesystem.writeText(
@@ -415,6 +417,7 @@ export class GradingSessionService {
 
   async listSessions(
     filter: {
+      courseId?: string;
       assignmentId?: string;
       rubricVersion?: number;
       studentNumber?: string;
@@ -422,6 +425,10 @@ export class GradingSessionService {
   ): Promise<GradingSession[]> {
     const clauses: string[] = ["deletion_pending = 0"];
     const values: Array<string | number> = [];
+    if (filter.courseId) {
+      clauses.push("course_id = ?");
+      values.push(filter.courseId);
+    }
     if (filter.assignmentId) {
       clauses.push("assignment_id = ?");
       values.push(filter.assignmentId);
@@ -1610,6 +1617,7 @@ function validateFileSignature(extension: string, bytes: Buffer): void {
       : new Set<string>();
   const valid =
     extension === ".md" ||
+    extension === ".txt" ||
     (extension === ".pdf" &&
       bytes.subarray(0, 5).toString("ascii") === "%PDF-") ||
     (extension === ".docx" &&

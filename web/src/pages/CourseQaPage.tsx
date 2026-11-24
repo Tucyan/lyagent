@@ -8,6 +8,7 @@ import { useToast } from "../components/ToastProvider";
 import { ToolActivity, type ToolStep } from "../components/ToolActivity";
 import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
 import { navigateWithinApp } from "../lib/app-navigation";
+import { COURSE_CHANGED_EVENT, readCourseFromUrl, resolveActiveCourseId } from "../lib/course-context";
 import { LatestRequestGate } from "../lib/async-state";
 import { consumeSse } from "../lib/consume-sse";
 import { appendProcessText, shouldOpenProcess } from "../lib/qa-presentation";
@@ -75,7 +76,7 @@ export function CourseQaPage() {
     return { nextActive, nextSessions };
   };
 
-  useEffect(() => { Promise.all([api<QaCourse[]>("/api/courses"), api<{ configured: boolean }>("/api/system/model")]).then(([nextCourses, model]) => { setCourses(nextCourses); setModelReady(model.configured); const first = courseIdRef.current || nextCourses[0]?.id || ""; if (first && !courseIdRef.current) navigateWithinApp(`/qa?course=${encodeURIComponent(first)}`, true); }).catch((error: Error) => setNotice(error.message)); }, []);
+  useEffect(() => { Promise.all([api<QaCourse[]>("/api/courses"), api<{ configured: boolean }>("/api/system/model")]).then(([nextCourses, model]) => { setCourses(nextCourses); setModelReady(model.configured); const selected = resolveActiveCourseId(nextCourses, courseIdRef.current || readCourseFromUrl()); if (selected && selected !== courseIdRef.current) navigateWithinApp(`/qa?course=${encodeURIComponent(selected)}`, true); }).catch((error: Error) => setNotice(error.message)); }, []);
   useEffect(() => {
     const syncLocation = () => {
       const nextQuery = new URLSearchParams(window.location.search);
@@ -96,8 +97,10 @@ export function CourseQaPage() {
       setSidebarOpen(false);
     };
     window.addEventListener("popstate", syncLocation);
+    window.addEventListener(COURSE_CHANGED_EVENT, syncLocation);
     return () => {
       window.removeEventListener("popstate", syncLocation);
+      window.removeEventListener(COURSE_CHANGED_EVENT, syncLocation);
       controller.current?.abort();
       streamGate.current.invalidate();
     };
@@ -249,11 +252,11 @@ export function CourseQaPage() {
 
   return <div className="qa-shell">
     <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="打开会话侧栏">☰</button>
-    <ChatSidebar courses={courses} courseId={courseId} sessions={sessions} activeSessionId={sessionId || undefined} onCourseChange={selectCourse} onNewChat={beginNewChat} onRename={(session) => { setSessionToRename(session); setRenameTitle(session.summary); setSessionActionError(""); }} onDelete={(session) => { setSessionToDelete(session); setSessionActionError(""); }} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    <ChatSidebar courses={courses} courseId={courseId} sessions={sessions} activeSessionId={sessionId || undefined} onCourseChange={selectCourse} onNewChat={beginNewChat} onRename={(session) => { setSessionToRename(session); setRenameTitle(session.summary); setSessionActionError(""); }} onDelete={(session) => { setSessionToDelete(session); setSessionActionError(""); }} open={sidebarOpen} onClose={() => setSidebarOpen(false)} hideCourseSelect />
     <main className="qa-main">
       <header className="qa-header"><span>{currentCourse?.name ?? "课程答疑"}</span><small>{notice}</small></header>
       <section className="message-list" aria-live="polite">
-        {messages.length === 0 ? <div className="qa-welcome"><h1>{currentCourse ? `你好，准备学习 ${currentCourse.name}` : "选择一门课程开始答疑"}</h1><p>我会优先依据当前已发布的课程资料作答，并附上可核查的引用。</p>{examples.map((example) => <button key={example} onClick={() => setInput(example)}>{example}</button>)}</div> : messages.map((message) => <article className={`chat-message ${message.role}`} key={message.id}>{message.role === "assistant" && <><ToolActivity steps={message.steps ?? []} streaming={isCurrentAssistantMessage(message)} />{message.process && <details className="assistant-process" open={shouldOpenProcess(isCurrentAssistantMessage(message))}><summary>模型处理过程 <small>非最终回答</small></summary><p>{message.process}</p></details>}</>}{message.content && (message.role === "assistant" ? <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown> : <p>{message.content}</p>)}{message.insufficient && <p className="insufficient">资料不足：当前可用资料无法支持这个问题。</p>}{message.citations?.map((citation) => <button className="citation" key={citation.type === "knowledge" ? `${citation.path}-${citation.startLine}` : `${citation.sourceId}-${citation.startLine}`} onClick={() => void openCitation(citation)}>{citation.type === "knowledge" ? `${citation.path.split("/").at(-1)} · L${citation.startLine}–L${citation.endLine}` : `${citation.title || new URL(citation.url).hostname} · 网络来源`}</button>)}{message.stopped && <p className="stopped">已停止，未保存本轮回答。</p>}</article>)}</section>
+        {messages.length === 0 ? <div className="qa-welcome"><h1>{currentCourse ? `你好，准备学习 ${currentCourse.name}` : "选择一门课程开始答疑"}</h1><p>{knowledgeStatus === "missing" || knowledgeStatus === "error" ? notice : "我会优先依据当前已发布的课程资料作答，并附上可核查的引用。"}</p>{courseId && (knowledgeStatus === "missing" || knowledgeStatus === "error") && <a className="primary-button qa-recovery-link" href={`/knowledge?course=${encodeURIComponent(courseId)}`}>前往整理课程资料</a>}{examples.map((example) => <button key={example} onClick={() => setInput(example)}>{example}</button>)}</div> : messages.map((message) => <article className={`chat-message ${message.role}`} key={message.id}>{message.role === "assistant" && <><ToolActivity steps={message.steps ?? []} streaming={isCurrentAssistantMessage(message)} />{message.process && <details className="assistant-process" open={shouldOpenProcess(isCurrentAssistantMessage(message))}><summary>模型处理过程 <small>非最终回答</small></summary><p>{message.process}</p></details>}</>}{message.content && (message.role === "assistant" ? <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown> : <p>{message.content}</p>)}{message.insufficient && <p className="insufficient">资料不足：当前可用资料无法支持这个问题。</p>}{message.citations?.map((citation) => <button className="citation" key={citation.type === "knowledge" ? `${citation.path}-${citation.startLine}` : `${citation.sourceId}-${citation.startLine}`} onClick={() => void openCitation(citation)}>{citation.type === "knowledge" ? `${citation.path.split("/").at(-1)} · L${citation.startLine}–L${citation.endLine}` : `${citation.title || new URL(citation.url).hostname} · 网络来源`}</button>)}{message.stopped && <p className="stopped">已停止，未保存本轮回答。</p>}</article>)}</section>
       <ChatComposer value={input} onChange={setInput} onSend={() => void send()} onStop={() => void stopCurrentRun()} allowWebSearch={allowWebSearch} onAllowWebSearchChange={setAllowWebSearch} disabled={composerState.disabled} placeholder={composerState.placeholder} streaming={streaming} />
     </main>
     <PromptDialog
