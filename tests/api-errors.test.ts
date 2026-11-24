@@ -1,9 +1,14 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { apiErrorFromResponse, apiFetch, reviewReasonLabel, rubricProblemMessage } from "../web/src/lib/api.js";
+import { apiErrorFromResponse, apiFetch, reviewReasonLabel, rubricProblemMessage, userErrorMessage } from "../web/src/lib/api.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("API error presentation", () => {
+  it("offers separate recovery actions for missing identity and damaged or unprocessable reports", () => {
+    expect(userErrorMessage("STUDENT_IDENTITY_NOT_FOUND")).toContain("补填姓名和学号");
+    expect(userErrorMessage("SUBMISSION_CONTENT_MISMATCH")).toContain("重新导出");
+    expect(userErrorMessage("BATCH_UPLOAD_PROCESSING_FAILED")).toContain("替换报告文件");
+  });
   it("turns network exceptions into a recovery prompt and preserves deliberate cancellation", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch SECRET")).mockRejectedValueOnce(new DOMException("cancel", "AbortError")));
     await expect(apiFetch("/api/courses")).rejects.toMatchObject({ code: "NETWORK_ERROR", message: expect.stringContaining("启动窗口") });

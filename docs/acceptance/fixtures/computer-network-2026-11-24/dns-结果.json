@@ -1,0 +1,316 @@
+{
+  "assignmentId": "49f982c5-981d-4ffc-a069-cf41ca0310b1",
+  "mode": "hybrid",
+  "expected": [
+    20,
+    19
+  ],
+  "graded": [
+    {
+      "number": "CN301",
+      "id": "49296851-0f58-4769-8289-01a549413314",
+      "draft": {
+        "version": 1,
+        "result": {
+          "schemaVersion": "1.0",
+          "mode": "hybrid",
+          "submissionHash": "1a7efc662db3403d41728e6054ecb9f027273b474f4bcded2022c4befdc963e9",
+          "score": {
+            "earned": 0,
+            "possible": 20
+          },
+          "confidence": {
+            "overall": 0.87,
+            "minimum": 0.8,
+            "lowCount": 0
+          },
+          "review": {
+            "requiresReview": true,
+            "reasons": [
+              "CONVERSION_WARNING"
+            ]
+          },
+          "decisions": {
+            "schemaVersion": "1.0",
+            "mode": "hybrid",
+            "criteria": [
+              {
+                "criterionId": "client-query",
+                "selectedLevelId": "client-none",
+                "score": 0,
+                "reason": "仅写“客户端向递归解析器查询 A 记录”，未指明域名 example.test，也未说明本地缓存为空/无缓存场景；按冻结标准该层级要求同时具备域名/A记录查询与无缓存说明，因此判为不完整。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业三：DNS 递归解析与缓存（完整样例）",
+                    "startLine": 3,
+                    "endLine": 3,
+                    "quote": "客户端向递归解析器查询 A 记录。"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "全文只有一句“客户端向递归解析器查询 A 记录”，没有出现 example.test，也没有任何关于缓存为空或首次查询的说明。",
+                    "rubricBasis": "client-query 层级 client-full 要求明确写出客户端向递归解析器发起 example.test 的 A 记录查询并说明无缓存场景；client-none 覆盖“未说明无缓存，或对 A 记录/域名表述错误”。",
+                    "scoreJustification": "域名缺失且无缓存场景缺失，两项必备要素均不满足，只能落入 client-none，计 0 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.95,
+                "confidenceReason": "文本极短且完整可读，缺少要素可明确核实。"
+              },
+              {
+                "criterionId": "recursive-resolution-path",
+                "selectedLevelId": "path-none",
+                "score": 0,
+                "reason": "虽提到依次向根、TLD 和权威服务器查询并按转介取得结果，但全文未说明最终获得 example.test 的 A 记录答案，也不存在客户端→解析器的显式链路完整性之外的答案返回环节；按标准要求“最终从权威服务器获得 A 记录答案”，故判为不完整。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业三：DNS 递归解析与缓存（完整样例）",
+                    "startLine": 3,
+                    "endLine": 3,
+                    "quote": "解析器依次向根、TLD 和权威服务器查询，按转介取得结果并返回客户端。"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "三级层次顺序正确（根→TLD→权威），并提到“按转介取得结果”，但“结果”未明确为 A 记录答案，也未经由权威服务器明确给出最终 A 记录。",
+                    "rubricBasis": "path-full 要求完整呈现根→TLD→权威三级迭代查询链路且最终从权威服务器获得 A 记录答案；path-none 包含“未说明最终获得 A 记录答案”。",
+                    "scoreJustification": "缺少“最终从权威获取 A 记录答案”这一必备要素，落入 path-none，计 0 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.8,
+                "confidenceReason": "层级顺序可核实完整，但答案记录类型的表述含糊，导致满分要素不成立；文本简短可完全审阅。"
+              },
+              {
+                "criterionId": "ttl-expiry",
+                "selectedLevelId": "ttl-none",
+                "score": 0,
+                "reason": "仅提到“TTL 到期后旧记录不再直接使用，需要重新查询”，未解释 TTL 计时/递减机制，也未明确说明到期后缓存条目失效；三项必备要素只覆盖“到期需重新查询”，按冻结标准判为不完整。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业三：DNS 递归解析与缓存（完整样例）",
+                    "startLine": 3,
+                    "endLine": 3,
+                    "quote": "TTL 到期后旧记录不再直接使用，需要重新查询。"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "存在“到期→不再直接使用→需要重新查询”的表述，但完全缺失 TTL 计时/递减的描述，缓存失效也仅为隐含而非明确表述。",
+                    "rubricBasis": "ttl-full 要求说明 TTL 计时/递减、到期后缓存失效、并指出须重新发起查询；ttl-none 覆盖“未提到 TTL 到期失效，或未说明需重新查询”。",
+                    "scoreJustification": "TTL 递减机制缺失，未完整满足全部要素，不能进入 ttl-full，只能计 0 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.8,
+                "confidenceReason": "TTL 相关句子明确可读，缺少计时机制可核实；是否已足够体现“缓存失效”存在一定解释空间，但不改变结果。"
+              }
+            ],
+            "bonuses": [
+              {
+                "ruleId": "nxdomain-vs-timeout",
+                "triggered": false,
+                "bonus": 0,
+                "reason": "报告中完全未出现 NXDOMAIN 或超时的内容，也未讨论重试或换服务器，不满足加分条件。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "全文仅 3 行内容，未提及 NXDOMAIN、超时、无应答、重试等概念。",
+                    "rubricBasis": "加分规则要求明确区分 NXDOMAIN 与超时并说明二者含义与处理方式不同。",
+                    "scoreJustification": "未涉及该主题，不触发加分，加 0 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.97,
+                "confidenceReason": "全文篇幅极短，不存在可被忽略的相关段落。"
+              }
+            ],
+            "deductions": [
+              {
+                "ruleId": "dns-as-http",
+                "triggered": false,
+                "deduction": 0,
+                "reason": "报告未将 DNS 描述为 HTTP 协议，也未提及通过 HTTP 解析域名，不触发扣分。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "全文未出现 HTTP 字样或“通过 HTTP 解析域名”之类表述。",
+                    "rubricBasis": "扣分规则仅在报告明确将 DNS 说成 HTTP 协议时触发。",
+                    "scoreJustification": "条件未满足，扣 0 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.97,
+                "confidenceReason": "全文内容简短，无遗漏可能。"
+              }
+            ],
+            "strengths": [
+              "正确列出了递归解析器根→TLD→权威服务器的查询顺序。",
+              "提及 TTL 到期后需要重新查询，方向正确。"
+            ],
+            "improvements": [
+              "明确写出被查询的域名 example.test 以及本地缓存为空的前提。",
+              "补充说明权威服务器返回的最终 A 记录答案内容。",
+              "补充 TTL 逐秒递减与到期后缓存条目失效的具体机制。",
+              "如需加分，可对比 NXDOMAIN 与查询超时的不同含义与处理方式。"
+            ],
+            "warnings": [
+              "提交内容极其简短，绝大多数必需细节仅为一句概括，整体证据支撑有限。"
+            ]
+          }
+        },
+        "updatedAt": "2026-11-24T15:36:49.098Z"
+      },
+      "status": "needs_review",
+      "terminal": [
+        "event: tool_end",
+        "event: tool_start",
+        "event: tool_end",
+        "event: final"
+      ]
+    },
+    {
+      "number": "CN302",
+      "id": "a1078ca0-7a72-4be7-ae49-69a83be9c1b9",
+      "draft": {
+        "version": 1,
+        "result": {
+          "schemaVersion": "1.0",
+          "mode": "hybrid",
+          "submissionHash": "67ec734ba73bf21afc14b2653fcec2d1cf9d7165a3e19bb356c418d90a215366",
+          "score": {
+            "earned": 5,
+            "possible": 20
+          },
+          "confidence": {
+            "overall": 0.85,
+            "minimum": 0.72,
+            "lowCount": 0
+          },
+          "review": {
+            "requiresReview": false,
+            "reasons": []
+          },
+          "decisions": {
+            "schemaVersion": "1.0",
+            "mode": "hybrid",
+            "criteria": [
+              {
+                "criterionId": "client-query",
+                "selectedLevelId": "client-none",
+                "score": 0,
+                "reason": "报告仅笼统写“客户端向递归解析器查询 A 记录”，未写出目标域名 example.test，也未说明本地缓存为空/无缓存场景，按冻结等级只能评为不完整，0 分。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "全文仅有“客户端向递归解析器查询 A 记录”一句，未出现 example.test 域名、查询类型与域名的完整绑定，也未提及递归查询报文/RD 标志或缓存为空。",
+                    "rubricBasis": "client-full 要求明确写出客户端向递归解析器发起 example.test 的 A 记录查询，且说明无缓存场景；缺失或对域名/记录表述不完整即归入 client-none。",
+                    "scoreJustification": "缺少域名和无缓存说明，属于“缺失、错误或不完整”，故取 0 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.88,
+                "confidenceReason": "文本简短且明确，缺失项可直接确认。"
+              },
+              {
+                "criterionId": "recursive-resolution-path",
+                "selectedLevelId": "path-full",
+                "score": 8,
+                "reason": "报告明确写出解析器依次向根、TLD 和权威服务器查询，并称按转介取得结果并返回客户端，三级链路与最终取得答案均在，给予满分。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "原文：“解析器依次向根、TLD 和权威服务器查询，按转介取得结果并返回客户端。”层级顺序正确且指明最终从权威链路得到结果并返回。",
+                    "rubricBasis": "path-full 要求完整呈现根→TLD→权威三级迭代查询链路并说明最终获得 A 记录答案。",
+                    "scoreJustification": "虽未重复“A 记录”字样，但上下文紧接 A 记录查询，三级链路及结果返回完整，满足最高标准，取 8 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.82,
+                "confidenceReason": "链路层级与顺序清晰；最终答案收获的表述略简但可确认。"
+              },
+              {
+                "criterionId": "ttl-expiry",
+                "selectedLevelId": "ttl-none",
+                "score": 0,
+                "reason": "报告仅称“TTL 到期后旧记录不再直接使用，需要重新查询”，未解释 TTL 递减/计时机制及缓存条目失效过程，按冻结等级归为不完整，0 分。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "原文仅一句“TTL 到期后旧记录不再直接使用，需要重新查询”，无倒计时/递减机制、无缓存条目失效说明。",
+                    "rubricBasis": "ttl-full 要求同时说明 TTL 计时/递减、到期后缓存失效，并指出须重新发起查询。",
+                    "scoreJustification": "缺少 TTL 递减与缓存失效机制说明，属“缺失、错误或不完整”，取 0 分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.85,
+                "confidenceReason": "文本明确简短，缺失要素可确认。"
+              }
+            ],
+            "bonuses": [
+              {
+                "ruleId": "nxdomain-vs-timeout",
+                "triggered": false,
+                "bonus": 0,
+                "reason": "报告区分了 NXDOMAIN 与超时的含义，但未说明二者处理方式不同（如超时需重试或更换服务器），未满足加分条件的完整要求。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "原文：“NXDOMAIN 是域名不存在的应答，超时是未及时收到响应。”仅说明含义，未提及处理方式差异。",
+                    "rubricBasis": "加分条件要求同时说明二者含义与处理方式不同。",
+                    "scoreJustification": "缺少处理方式区分，不加分，取 0。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.72,
+                "confidenceReason": "含义已区分但处理方式缺失，判断为不满足完整条件。"
+              }
+            ],
+            "deductions": [
+              {
+                "ruleId": "dns-as-http",
+                "triggered": true,
+                "deduction": 3,
+                "reason": "报告明确写道“DNS 就是 HTTP 协议”，直接触发将 DNS 说成 HTTP 协议的固定扣分规则。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "原文：“DNS 就是 HTTP 协议。”",
+                    "rubricBasis": "dns-as-http 条件：报告明确将 DNS 描述为 HTTP 协议。",
+                    "scoreJustification": "触发固定扣分规则，扣 3 分（一次）。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.95,
+                "confidenceReason": "表述直接、无歧义。"
+              }
+            ],
+            "strengths": [
+              "清晰给出客户端→递归解析器及根→TLD→权威的解析路径与顺序",
+              "正确区分了 NXDOMAIN 与超时的基本含义"
+            ],
+            "improvements": [
+              "补充目标域名 example.test 及本地缓存为空的前提",
+              "说明 TTL 递减计时与缓存条目失效过程",
+              "说明 NXDOMAIN 与超时在处理方式上的差异",
+              "纠正“DNS 就是 HTTP 协议”的错误说法"
+            ],
+            "warnings": []
+          }
+        },
+        "updatedAt": "2026-11-24T15:36:47.103Z"
+      },
+      "status": "draft_ready",
+      "terminal": [
+        "event: tool_end",
+        "event: tool_start",
+        "event: tool_end",
+        "event: final"
+      ]
+    }
+  ]
+}

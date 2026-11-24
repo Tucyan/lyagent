@@ -1152,8 +1152,8 @@ textarea:focus-visible {
 
 /* Batch Review sidebar filters & workflow bar */
 .batch-review-sidebar-tools {
-  position: sticky;
-  top: 0;
+  position: relative;
+  flex-shrink: 0;
   z-index: 2;
   display: grid;
   gap: 8px;
@@ -2839,6 +2839,17 @@ fieldset.rubric-guided-field.is-ready {
   height: 22px;
 }
 
+.rubric-page,
+.rubric-workspace,
+.rubric-design-split {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.rubric-page {
+  overflow-x: hidden;
+}
+
 @media (max-width: 960px) {
   .admin-main .qa-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -2895,7 +2906,10 @@ fieldset.rubric-guided-field.is-ready {
   .workspace-header,
   .grading-header,
   .rubric-page-header,
-  .batch-grading-header {
+  .batch-grading-header,
+  .batch-review-header,
+  .qa-header,
+  .model-settings-page > header {
     padding-left: 52px !important;
   }
   .admin-shell.nav-compact .admin-nav {

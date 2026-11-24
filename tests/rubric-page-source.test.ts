@@ -16,5 +16,6 @@ describe("rubric page state synchronization", () => {
     expect(source).toContain("selectedAssignmentIdRef");
     expect(source).toContain("lease.isCurrent()");
     expect(source).toContain("评分表设计连接已中断，请重试");
+    expect(source).toContain("Agent 正在根据你的反馈更新评分表…");
   });
 });

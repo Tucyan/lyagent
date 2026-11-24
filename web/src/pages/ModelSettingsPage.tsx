@@ -64,10 +64,14 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
     } finally { setBusy(undefined); }
   };
 
-  if (!form) return <main className="model-settings-page"><section><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1><p>{error || "正在读取安全配置…"}</p></section></main>;
+  if (!form) {
+    const LoadingWrapper = mode === "setup" ? "main" : "div";
+    return <LoadingWrapper className="model-settings-page"><section><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1><p>{error || "正在读取安全配置…"}</p></section></LoadingWrapper>;
+  }
+  const PageWrapper = mode === "setup" ? "main" : "div";
   const updatePrimary = (field: "providerId" | "modelId" | "baseUrl" | "apiKey", value: string) => setForm({ ...form, primary: { ...form.primary, [field]: value } });
   const handleSubmit = (event: FormEvent) => { event.preventDefault(); void submit("save"); };
-  return <main className="model-settings-page">
+  return <PageWrapper className="model-settings-page">
     <header><div><p className="eyebrow">Course Agent</p><h1>{mode === "setup" ? "首次设置" : "模型设置"}</h1></div></header>
     <section className="model-settings-card">
       {converter && <p className="model-routing-note">文档转换服务（Docling）：{converter.status === "ready" ? "已就绪" : converter.status === "starting" ? "正在启动" : "暂不可用"} · {converter.device === "cpu" ? "CPU 模式" : "自动加速"}</p>}
@@ -77,7 +81,7 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
           <label>模型供应商<select value={form.primary.providerId} onChange={(event) => updatePrimary("providerId", event.target.value)}><option value="qwen-openai">Qwen（Chat Completions）</option><option value="openai">OpenAI（按 URL 自动识别）</option></select></label>
           <label>模型 ID<input required value={form.primary.modelId} onChange={(event) => updatePrimary("modelId", event.target.value)} /></label>
           <label>Base URL<input required type="url" value={form.primary.baseUrl} onChange={(event) => updatePrimary("baseUrl", event.target.value)} /></label>
-          <label>API Key<input required={!form.primary.configured} type="password" autoComplete="new-password" value={form.primary.apiKey} placeholder={form.primary.configured ? "已安全保存；留空表示保持不变" : "请输入 API Key"} onChange={(event) => updatePrimary("apiKey", event.target.value)} /></label>
+          <label>API Key<input required={!form.primary.configured} type="password" autoComplete="new-password" value={form.primary.apiKey} placeholder={form.primary.configured ? "已安全保存；留空表示保持不变" : form.primary.legacyConfigured ? "当前服务已就绪；修改并保存设置时需重新输入 API Key" : "请输入 API Key"} onChange={(event) => updatePrimary("apiKey", event.target.value)} /></label>
         </fieldset>
         <fieldset><legend>视觉模型（可选）</legend>
           <label className="model-inline"><input type="checkbox" checked={form.visionEnabled} onChange={(event) => setForm({ ...form, visionEnabled: event.target.checked })} />启用视觉模型</label>
@@ -97,5 +101,5 @@ export function ModelSettingsPage({ mode }: { mode: "setup" | "settings" }) {
       </form>
     </section>
     <aside className="model-about" aria-label="关于与第三方组件"><strong>关于与第三方组件</strong><p>文档解析能力由 Docling 提供；完整第三方许可证随发布包提供。</p></aside>
-  </main>;
+  </PageWrapper>;
 }

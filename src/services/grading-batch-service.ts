@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
 import PQueue from "p-queue";
-import { GradingSummaryService, type BatchResultSnapshot } from "./grading-summary-service.js";
+import { GradingSummaryService, renderBatchCsv, type BatchResultSnapshot } from "./grading-summary-service.js";
 
 export type GradingBatchStatus = "draft" | "running" | "paused" | "completed";
 export type GradingBatchJobStatus =
@@ -463,6 +463,16 @@ export class GradingBatchService {
       ).run(nextStatus, this.now(), job.id);
     }
     return this.rebuildSummary(batchId);
+  }
+
+  async exportConfirmedResults(batchId: string): Promise<string> {
+    const jobs = this.listJobs(batchId).filter(({ status }) => status === "completed" || status === "needs_review");
+    const entries: Parameters<typeof renderBatchCsv>[0] = [];
+    for (const job of jobs) {
+      const source = await this.dependencies.readResult(job.sessionId);
+      if (source?.reviewStatus === "confirmed") entries.push({ ...job, jobId: job.id, ...source });
+    }
+    return renderBatchCsv(entries);
   }
 
   owningBatchId(sessionId: string): string | undefined {

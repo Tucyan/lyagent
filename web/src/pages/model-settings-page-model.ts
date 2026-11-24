@@ -24,7 +24,7 @@ export interface ModelSettingsStatus {
 }
 
 export interface ModelSettingsFormState {
-  primary: ModelEndpointStatus & { apiKey: string };
+  primary: ModelEndpointStatus & { apiKey: string; legacyConfigured?: boolean };
   visionEnabled: boolean;
   visionConfigured: boolean;
   visionUsesPrimaryCredentials: boolean;
@@ -77,7 +77,7 @@ export function modelSettingsStateFromStatus(status: ModelSettingsStatus): Model
   const visionProviderId = vision ? supportedProviderId(vision) : "qwen-openai";
   const shared = Boolean(vision && visionProviderId === primaryProviderId && vision.baseUrl === status.primary.baseUrl);
   return {
-    primary: { ...status.primary, providerId: primaryProviderId, configured: status.primary.configured && primaryProviderId === status.primary.providerId, apiKey: "" },
+    primary: { ...status.primary, providerId: primaryProviderId, configured: status.primary.configured && primaryProviderId === status.primary.providerId, legacyConfigured: status.primary.configured && primaryProviderId !== status.primary.providerId, apiKey: "" },
     visionEnabled: Boolean(vision),
     visionConfigured: Boolean(vision?.configured),
     visionUsesPrimaryCredentials: vision ? shared : true,

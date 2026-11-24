@@ -48,4 +48,20 @@ describe("GradingCsvExportService", () => {
     expect(csv).not.toContain("李华");
     await expect(service.export({ scope: { kind: "rubric", assignmentId: "a1", rubricVersion: 1 }, columns: {} })).rejects.toThrow(/column/i);
   });
+
+  it("includes rubric detail column headers even when no confirmed rows exist for rubric scope", async () => {
+    const emptyService = new GradingCsvExportService(
+      { async listSessions() { return []; } } as any,
+      { async readConfirmedResult() { return undefined; } } as any,
+      rubrics as any,
+    );
+    const csv = await emptyService.export({
+      scope: { kind: "rubric", assignmentId: "a1", rubricVersion: 1 },
+      columns: { studentName: true, studentNumber: true, submissionTitle: true, itemDetails: true, totalScore: true, overallConfidence: true },
+    });
+    const headerLine = csv.replace(/^\ufeff/, "").trim().split(/\r?\n/)[0] ?? "";
+    expect(headerLine).toContain("学生姓名,学号,作业名称");
+    expect(headerLine).toContain("报告评分表 v1 · 扣分点：论证不足");
+    expect(headerLine.split(",")).toHaveLength(6);
+  });
 });

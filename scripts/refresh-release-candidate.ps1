@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$BaseArchive,
   [Parameter(Mandatory = $true)][string]$OutputArchive
@@ -34,11 +34,11 @@ foreach ($name in @('start-course-agent.bat', 'release-lock.json', 'THIRD_PARTY_
 $releaseReadme = "# Course Agent Windows 试用候选`n`n从[逐步图文使用说明](docs/acceptance/2026-10-08-step-by-step-usage.md)开始。先核对ZIP与外部SHA256SUMS.txt，再使用WinRAR解压到新目录，双击start-course-agent.bat并保持窗口运行。`n`n业务数据默认保存在%LOCALAPPDATA%\CourseAgent\workspace，请保留该目录。首次网页中配置自己的模型；本包不含API密钥或示例Workspace。`n`n这是当前工作树的试用候选，复用历史full包运行时和依赖，并更新当前构建；不是全量重建。来源见release-manifest.json。评分需教师复核确认，模型相同正文的分数一致性尚未保证。`n"
 [IO.File]::WriteAllText((Join-Path $stage 'README.md'), $releaseReadme, [Text.UTF8Encoding]::new($false))
 [IO.Directory]::CreateDirectory((Join-Path $stage 'docs\acceptance')) | Out-Null
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\acceptance\2026-10-08-step-by-step-usage.md') -Destination (Join-Path $stage 'docs\acceptance')
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\acceptance\2026-10-08-real-interaction-report.md') -Destination (Join-Path $stage 'docs\acceptance')
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\acceptance\2026-10-07-storage-release-baseline.md') -Destination (Join-Path $stage 'docs\acceptance')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\archive\2026-10-trial\2026-10-08-step-by-step-usage.md') -Destination (Join-Path $stage 'docs\acceptance')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\archive\2026-10-trial\2026-10-08-real-interaction-report.md') -Destination (Join-Path $stage 'docs\acceptance')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\archive\2026-10-trial\2026-10-07-storage-release-baseline.md') -Destination (Join-Path $stage 'docs\acceptance')
 [IO.Directory]::CreateDirectory((Join-Path $stage 'docs\acceptance\screenshots')) | Out-Null
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\acceptance\screenshots\2026-10-08') -Destination (Join-Path $stage 'docs\acceptance\screenshots') -Recurse
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\archive\2026-10-trial\screenshots\2026-10-08') -Destination (Join-Path $stage 'docs\acceptance\screenshots') -Recurse
 $head = (& git -C $repoRoot rev-parse HEAD).Trim()
 $lock = [IO.File]::ReadAllText((Join-Path $repoRoot 'release-lock.json')) | ConvertFrom-Json
 $manifest = [ordered]@{

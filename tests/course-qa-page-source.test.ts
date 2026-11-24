@@ -15,4 +15,9 @@ describe("course QA page state synchronization", () => {
     expect(source).toContain("lease.isCurrent()");
     expect(source).toContain("答疑连接已中断，请重试");
   });
+
+  it("preserves Q&A session history when /qa/active fails with 409 or 422", () => {
+    const source = readFileSync(new URL("../web/src/pages/CourseQaPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain("Promise.allSettled");
+  });
 });

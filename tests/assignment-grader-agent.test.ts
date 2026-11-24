@@ -54,6 +54,7 @@ describe("assignment grader Agent", () => {
     expect(prompt).toContain("evidenceInsufficient");
     expect(prompt).toContain("ask_grading_question");
     expect(prompt).toContain("Teacher-facing options must describe the consequence");
+    expect(prompt).toContain("Upload time is not an assignment deadline");
     sessions.close();
   });
 

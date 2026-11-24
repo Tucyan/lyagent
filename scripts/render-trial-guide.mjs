@@ -7,7 +7,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = path.join(root, 'docs/acceptance');
+const source = path.join(root, 'docs/archive/2026-10-trial');
 const guide = await readFile(path.join(source, '2026-10-08-step-by-step-usage.md'), 'utf8');
 const report = await readFile(path.join(source, '2026-10-08-real-interaction-report.md'), 'utf8');
 const pictures = new Map();

@@ -24,7 +24,7 @@ import { StudentIdentityError, type StudentIdentityClient } from "../services/st
 import type { DocumentConversionClient } from "../services/document-conversion-client.js";
 import type { SubmissionConversionOptions } from "../services/submission-conversion-service.js";
 import type { GradingAgentBuilder } from "./grading-routes.js";
-import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, SubmissionAssetError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
+import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, SubmissionAssetError, SubmissionContentMismatchError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
 import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequiredError } from "../services/grading-result-service.js";
 import { GradingResultValidationError } from "../schemas/grading.js";
 import { GradingBatchConflictError, GradingBatchError } from "../services/grading-batch-service.js";
@@ -167,6 +167,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
       return reply.code(422).send({ code: "RUBRIC_STATE_ERROR", message: "The rubric request is not valid for the current session state" });
     }
     if (error instanceof UnsupportedSubmissionTypeError) return reply.code(415).send({ code: error.code, message: error.message });
+    if (error instanceof SubmissionContentMismatchError) return reply.code(422).send({ code: error.code });
     if (error instanceof StudentIdentityError) return reply.code(422).send({
       code: error.code,
       message: error.message,

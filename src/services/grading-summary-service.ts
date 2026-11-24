@@ -56,22 +56,8 @@ export class GradingSummaryService {
           if (!snapshot) return false;
           const job = jobs[index];
           return job !== undefined && snapshot.attemptCount === job.attemptCount;
-        })
-        .sort((left, right) => left.studentNumber.localeCompare(right.studentNumber, "zh-CN") || left.jobId.localeCompare(right.jobId));
-      const header = ["学号", "学生姓名", "作业名称", "总分", "满分", "总置信度", "复核状态"];
-      const rows = snapshots.map((snapshot) => {
-        const result = snapshot.result as { score?: { earned?: unknown; possible?: unknown }; confidence?: { overall?: unknown } };
-        return [
-          snapshot.studentNumber,
-          snapshot.studentName,
-          snapshot.submissionTitle,
-          printable(result.score?.earned),
-          printable(result.score?.possible),
-          printable(result.confidence?.overall),
-          snapshot.reviewStatus === "confirmed" ? "已确认" : "待复核",
-        ];
-      });
-      content = `\ufeff${[header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
+        });
+      content = renderBatchCsv(snapshots);
       await this.filesystem.writeText(`batch-grading/${batchId}/summary.csv`, content);
     });
     return content;
@@ -116,6 +102,23 @@ export class GradingSummaryService {
   private markdownPath(batchId: string, jobId: string, attemptCount: number): string {
     return `batch-grading/${batchId}/results/${jobId}-attempt-${attemptCount}.md`;
   }
+}
+
+type BatchCsvRow = Pick<BatchResultSnapshot, "jobId" | "studentNumber" | "studentName" | "submissionTitle" | "result" | "reviewStatus">;
+
+export function renderBatchCsv(entries: BatchCsvRow[]): string {
+  const header = ["学号", "学生姓名", "作业名称", "总分", "满分", "总置信度", "复核状态"];
+  const rows = [...entries]
+    .sort((left, right) => left.studentNumber.localeCompare(right.studentNumber, "zh-CN") || left.jobId.localeCompare(right.jobId))
+    .map((entry) => {
+      const result = entry.result as { score?: { earned?: unknown; possible?: unknown }; confidence?: { overall?: unknown } };
+      return [
+        entry.studentNumber, entry.studentName, entry.submissionTitle,
+        printable(result.score?.earned), printable(result.score?.possible), printable(result.confidence?.overall),
+        entry.reviewStatus === "confirmed" ? "已确认" : "待复核",
+      ];
+    });
+  return `\ufeff${[header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
 }
 
 function renderMarkdown(snapshot: BatchResultSnapshot): string {

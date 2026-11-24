@@ -116,6 +116,7 @@ export function DashboardPage() {
   useEffect(() => {
     void refresh();
     const syncCourse = () => {
+      setErrorMessage(undefined);
       setSnapshot((current) => {
         if (current) setActiveCourseId(resolveActiveCourseId(current.courses, readCourseFromUrl()));
         return current;
@@ -136,11 +137,13 @@ export function DashboardPage() {
     setCreatingCourse(true);
     setErrorMessage(undefined);
     try {
-      const response = await apiFetch("/api/courses", {
-        ...withJsonHeaders(),
-        method: "POST",
-        body: JSON.stringify({ name }),
-      });
+      const response = await apiFetch(
+        "/api/courses",
+        withJsonHeaders({
+          method: "POST",
+          body: JSON.stringify({ name }),
+        }),
+      );
       if (!response.ok) throw await apiErrorFromResponse(response, "创建课程失败");
       const created = (await response.json()) as { id: string };
       setNewCourseName("");
@@ -168,9 +171,11 @@ export function DashboardPage() {
           <p>
             {errorMessage
               ? errorMessage
-              : activeCourse
-                ? `当前正在处理「${activeCourse.name}」，可按下方流程直接开始备课或批改。`
-                : "先创建一门课程，再按下方流程开始资料答疑或作业批改。"}
+              : !snapshot
+                ? "正在加载课程数据…"
+                : activeCourse
+                  ? `当前正在处理「${activeCourse.name}」，可按下方流程直接开始备课或批改。`
+                  : "先创建一门课程，再按下方流程开始资料答疑或作业批改。"}
           </p>
         </div>
         <div className="dashboard-header-actions">
@@ -323,14 +328,14 @@ export function DashboardPage() {
                 <a className="dashboard-flow-card" href={withCourseQuery("/grading", activeCourse?.id ?? "")}>
                   <SingleGradingFlowIcon />
                   <div className="dashboard-flow-body">
-                    <strong>2. 单份批改</strong>
+                    <strong>2A. 单份批改</strong>
                     <p>上传一份学生报告，逐项生成得分、评语并支持对话微调。</p>
                   </div>
                 </a>
                 <a className="dashboard-flow-card" href={withCourseQuery("/grading/batches", activeCourse?.id ?? "")}>
                   <BatchGradingFlowIcon />
                   <div className="dashboard-flow-body">
-                    <strong>2. 批量批改</strong>
+                    <strong>2B. 批量批改</strong>
                     <p>一次上传全班作业，自动批改后集中复核并导出成绩表。</p>
                   </div>
                 </a>

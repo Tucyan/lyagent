@@ -172,6 +172,15 @@ export class UnsupportedSubmissionTypeError extends GradingSessionError {
   }
 }
 
+export class SubmissionContentMismatchError extends GradingSessionError {
+  readonly code = "SUBMISSION_CONTENT_MISMATCH";
+
+  constructor() {
+    super("Submission content does not match its filename extension");
+    this.name = "SubmissionContentMismatchError";
+  }
+}
+
 export class GradingConflictError extends GradingSessionError {
   constructor(message = "Grading session version has changed") {
     super(message);
@@ -1608,7 +1617,7 @@ function decodeNumericHtmlEntities(value: string): string {
   );
 }
 
-function validateFileSignature(extension: string, bytes: Buffer): void {
+export function validateFileSignature(extension: string, bytes: Uint8Array): void {
   const starts = (...values: number[]) =>
     values.every((value, index) => bytes[index] === value);
   const zipNames =
@@ -1618,8 +1627,7 @@ function validateFileSignature(extension: string, bytes: Buffer): void {
   const valid =
     extension === ".md" ||
     extension === ".txt" ||
-    (extension === ".pdf" &&
-      bytes.subarray(0, 5).toString("ascii") === "%PDF-") ||
+    (extension === ".pdf" && starts(0x25, 0x50, 0x44, 0x46, 0x2d)) ||
     (extension === ".docx" &&
       zipNames.has("[Content_Types].xml") &&
       zipNames.has("word/document.xml")) ||
@@ -1629,10 +1637,7 @@ function validateFileSignature(extension: string, bytes: Buffer): void {
     (extension === ".png" &&
       starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) ||
     ([".jpg", ".jpeg"].includes(extension) && starts(0xff, 0xd8, 0xff));
-  if (!valid)
-    throw new GradingSessionError(
-      "Submission content does not match its filename extension",
-    );
+  if (!valid) throw new SubmissionContentMismatchError();
 }
 
 function readZipEntryNames(bytes: Uint8Array): Set<string> {

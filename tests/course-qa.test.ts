@@ -60,8 +60,12 @@ describe("course QA agent", () => {
     const faux = fauxProvider({ tokensPerSecond: 10_000 });
     const models = createModels();
     models.setProvider(faux.provider);
+    let groundingInstructions = "";
     faux.setResponses([
-      fauxAssistantMessage([fauxText("我先检索课程资料。"), fauxToolCall("search_knowledge", { query: "进程", offset: 0, maxResults: 5 })], { stopReason: "toolUse" }),
+      (context) => {
+        groundingInstructions = context.systemPrompt ?? "";
+        return fauxAssistantMessage([fauxText("我先检索课程资料。"), fauxToolCall("search_knowledge", { query: "进程", offset: 0, maxResults: 5 })], { stopReason: "toolUse" });
+      },
       fauxAssistantMessage([fauxToolCall("read_knowledge_lines", { path: "第一章/进程.md", startLine: 1, endLine: 2 })], { stopReason: "toolUse" }),
       fauxAssistantMessage([fauxToolCall("submit_answer", {
         answer: "进程是正在执行的程序。",
@@ -79,6 +83,7 @@ describe("course QA agent", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "answer_delta", delta: "我先检索课程资料。" }));
     expect(JSON.stringify(events)).not.toContain("正在执行的程序");
     expect(JSON.stringify(events)).not.toContain("submit_answer");
+    expect(groundingInstructions).toContain("additional policies, penalties, records, or procedures");
   });
 
   it("keeps web sessions course-bound and writes an assistant answer only after completion", async () => {

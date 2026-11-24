@@ -187,4 +187,18 @@ describe("Unified course switching & course isolation", () => {
     expect(rubric).toContain("item.courseId === effectiveCourseId");
     expect(rubric).toContain("搜索评分会话");
   });
+
+  it("sends JSON Content-Type when creating a course and carries frozen rubric selection to single and batch grading", () => {
+    const dashboard = readFileSync(path.resolve("web/src/pages/DashboardPage.tsx"), "utf8");
+    expect(dashboard).not.toContain("...withJsonHeaders()");
+    expect(dashboard).toMatch(/withJsonHeaders\(\{\s*method:\s*"POST"/);
+    expect(dashboard).toContain("正在加载课程数据");
+
+    const rubric = readFileSync(path.resolve("web/src/pages/RubricPage.tsx"), "utf8");
+    expect(rubric).toContain('rubric=${encodeURIComponent(');
+
+    const batch = readFileSync(path.resolve("web/src/pages/GradingBatchPage.tsx"), "utf8");
+    expect(batch).toContain("!item.courseId || item.courseId === nextCourseId");
+    expect(batch).toMatch(/new URLSearchParams\(window\.location\.search\)[\s\S]*?params\.get\("rubric"\)/);
+  });
 });

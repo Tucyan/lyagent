@@ -56,7 +56,13 @@ export class GradingCsvExportService {
       const [assignment, frozen] = await Promise.all([this.rubrics.getAssignment(session.assignmentId), this.rubrics.getVersion(session.assignmentId, session.rubricVersion)]);
       rows.push({ session, confirmed, rubricTitle: assignment.title, rubric: frozen.rubric });
     }
-    const details = columns.itemDetails ? detailColumns(rows) : [];
+    const details = columns.itemDetails
+      ? rows.length > 0
+        ? detailColumns(rows)
+        : request.scope.kind === "rubric"
+          ? await rubricScopeDetailColumns(this.rubrics, request.scope.assignmentId, request.scope.rubricVersion)
+          : []
+      : [];
     const headings: string[] = [];
     if (columns.studentName) headings.push("学生姓名");
     if (columns.studentNumber) headings.push("学号");
@@ -98,24 +104,53 @@ function normalizeColumns(columns: GradingCsvColumns): Required<GradingCsvColumn
   };
 }
 
+function rubricDetailColumns(
+  assignmentId: string,
+  rubricVersion: number,
+  rubricTitle: string,
+  rubric: ExportRow["rubric"],
+  seen: Set<string>,
+  output: DetailColumn[],
+): void {
+  const prefix = `${rubricTitle} v${rubricVersion}`;
+  const add = (kind: DetailColumn["kind"], id: string, name: string, label: string) => {
+    const key = `${assignmentId}:${rubricVersion}:${kind}:${id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    output.push({ key, kind, id, heading: `${prefix} · ${label}：${name}`, confidenceHeading: `${prefix} · 置信度：${name}` });
+  };
+  if (rubric.mode === "additive") for (const item of rubric.criteria) add("criterion", item.id, item.name, "得分点");
+  if (rubric.mode === "deductive") for (const item of rubric.rules) add("deduction", item.id, item.name, "扣分点");
+  if (rubric.mode === "hybrid") {
+    for (const item of rubric.criteria) add("criterion", item.id, item.name, "得分点");
+    for (const item of rubric.bonusRules) add("bonus", item.id, item.name, "加分点");
+    for (const item of rubric.deductionRules) add("deduction", item.id, item.name, "扣分点");
+  }
+}
+
+async function rubricScopeDetailColumns(
+  rubrics: RubricService,
+  assignmentId: string,
+  rubricVersion: number,
+): Promise<DetailColumn[]> {
+  try {
+    const [assignment, frozen] = await Promise.all([
+      rubrics.getAssignment(assignmentId),
+      rubrics.getVersion(assignmentId, rubricVersion),
+    ]);
+    const output: DetailColumn[] = [];
+    rubricDetailColumns(assignmentId, rubricVersion, assignment.title, frozen.rubric, new Set<string>(), output);
+    return output;
+  } catch {
+    return [];
+  }
+}
+
 function detailColumns(rows: ExportRow[]): DetailColumn[] {
   const seen = new Set<string>();
   const output: DetailColumn[] = [];
   for (const row of rows) {
-    const prefix = `${row.rubricTitle} v${row.session.rubricVersion}`;
-    const add = (kind: DetailColumn["kind"], id: string, name: string, label: string) => {
-      const key = `${row.session.assignmentId}:${row.session.rubricVersion}:${kind}:${id}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      output.push({ key, kind, id, heading: `${prefix} · ${label}：${name}`, confidenceHeading: `${prefix} · 置信度：${name}` });
-    };
-    if (row.rubric.mode === "additive") for (const item of row.rubric.criteria) add("criterion", item.id, item.name, "得分点");
-    if (row.rubric.mode === "deductive") for (const item of row.rubric.rules) add("deduction", item.id, item.name, "扣分点");
-    if (row.rubric.mode === "hybrid") {
-      for (const item of row.rubric.criteria) add("criterion", item.id, item.name, "得分点");
-      for (const item of row.rubric.bonusRules) add("bonus", item.id, item.name, "加分点");
-      for (const item of row.rubric.deductionRules) add("deduction", item.id, item.name, "扣分点");
-    }
+    rubricDetailColumns(row.session.assignmentId, row.session.rubricVersion, row.rubricTitle, row.rubric, seen, output);
   }
   return output;
 }

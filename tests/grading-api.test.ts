@@ -525,12 +525,27 @@ describe("grading API", () => {
       payload: { expectedVersion: confirmJob.resultVersion, reviewNote: "批次复核确认", acknowledgedReasons: confirmJob.reviewReasons },
     });
     expect(confirmed.statusCode, confirmed.body).toBe(200);
+    for (const format of ["json", "md"]) {
+      const file = await app.inject({ method: "GET", url: `/api/grading/sessions/${confirmJob.sessionId}/export.${format}` });
+      expect(file.statusCode, file.body).toBe(200);
+      expect(file.headers["content-disposition"]).toBe(`attachment; filename="grading-result-${confirmJob.sessionId}.${format}"`);
+      if (format === "json") expect(file.json().result.score).toEqual({ earned: 8, possible: 10 });
+      else expect(file.body).toContain("8/10");
+    }
     detail = (await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}` })).json();
     expect(detail.counts).toMatchObject({ needs_review: 29, completed: 1 });
     const exported = await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}/export.csv` });
     expect(exported.statusCode, exported.body).toBe(200);
     expect(exported.headers["content-disposition"]).toContain("batch-grading-summary.csv");
     expect(exported.body.split("\r\n").filter(Boolean)).toHaveLength(31);
+    const official = await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}/export.csv?scope=confirmed` });
+    expect(official.statusCode, official.body).toBe(200);
+    expect(official.headers["content-disposition"]).toContain("batch-grading-confirmed.csv");
+    expect(official.body.split("\r\n").filter(Boolean)).toHaveLength(2);
+    expect(official.body).toContain("已确认");
+    expect(official.body).not.toContain("待复核");
+    const summaryAgain = await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}/export.csv` });
+    expect(summaryAgain.body).toBe(exported.body);
     await app.close();
   }, 30_000);
 

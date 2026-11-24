@@ -39,6 +39,8 @@ type BatchJob = {
 };
 type Batch = {
   id: string;
+  assignmentId: string;
+  rubricVersion: number;
   title: string;
   status: string;
   counts: BatchJobCounts;
@@ -359,10 +361,16 @@ export function GradingBatchReviewPage() {
     }
   }, [filter, attentionCount]);
 
+  const returnParams = new URLSearchParams();
+  if (batch) {
+    returnParams.set("batch", batch.id);
+    returnParams.set("rubric", `${batch.assignmentId}:${batch.rubricVersion}`);
+  }
+  const returnHref = batch ? `/grading/batches?${returnParams}` : "/grading/batches";
   return <div className="batch-review-page">
     <header className="workspace-header batch-review-header">
       <div><p className="eyebrow">批次复核工作台</p><h1>{batch?.title ?? "批次复核"}</h1><p>{notice}</p></div>
-      <a className="secondary-link-button" href={withCourseQuery("/grading/batches", readCourseFromUrl())}>返回批量批改</a>
+      <a className="secondary-link-button" href={withCourseQuery(returnHref, readCourseFromUrl())}>返回批量批改</a>
     </header>
     <div className="batch-review-layout">
       <aside className="batch-review-sidebar">

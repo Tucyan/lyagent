@@ -1809,9 +1809,6 @@ function ExportPreviewDialog({
             <h2>导出成绩表 CSV</h2>
             <p>选择导出范围与列，筛选并实时预览表格内容后再下载。</p>
           </div>
-          <button type="button" className="export-preview-close" aria-label="返回批改视图" onClick={onClose}>
-            返回批改
-          </button>
         </header>
 
         <section className="export-preview-controls">

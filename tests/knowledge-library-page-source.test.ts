@@ -16,4 +16,10 @@ describe("knowledge library page state synchronization", () => {
     expect(source).toContain("lease.isCurrent()");
     expect(source).toMatch(/useEffect\(\(\) => \{[\s\S]*resetCourseState\(queryCourseId\)[\s\S]*\}, \[queryCourseId\]\)/);
   });
+
+  it("loads releases and drafts even when /active fails and does not claim ready without an active release", () => {
+    const source = readFileSync(new URL("../web/src/pages/KnowledgeLibraryPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain("Promise.allSettled");
+    expect(source).toContain("尚未发布课程资料");
+  });
 });

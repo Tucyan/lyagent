@@ -413,10 +413,11 @@ export function registerGradingApi(
     });
     scoped.get("/api/grading/batches/:batchId/export.csv", async (request, reply) => {
       const batchId = batchParams.parse(request.params).batchId;
+      const { scope } = z.object({ scope: z.enum(["summary", "confirmed"]).default("summary") }).parse(request.query);
       await batches.getBatch(batchId);
-      return reply.header("content-disposition", 'attachment; filename="batch-grading-summary.csv"')
-        .type("text/csv; charset=utf-8")
-        .send(await batches.refreshResultsAndRebuildSummary(batchId));
+      const csv = scope === "confirmed" ? await batches.exportConfirmedResults(batchId) : await batches.refreshResultsAndRebuildSummary(batchId);
+      return reply.header("content-disposition", `attachment; filename="batch-grading-${scope}.csv"`)
+        .type("text/csv; charset=utf-8").send(csv);
     });
 
     scoped.post("/api/grading/sessions", async (request, reply) => {
@@ -943,6 +944,7 @@ async function exportResult(
         code: "RESULT_NOT_CONFIRMED",
         message: "Only confirmed results can be exported",
       });
+  reply.header("content-disposition", `attachment; filename="grading-result-${sessionId}.${format}"`);
   if (format === "json")
     return reply.type("application/json; charset=utf-8").send(confirmed);
   return reply

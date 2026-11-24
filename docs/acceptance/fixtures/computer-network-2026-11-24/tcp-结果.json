@@ -1,0 +1,228 @@
+{
+  "assignmentId": "8aeeb1ed-e1d5-499c-8e4d-a40c7f4d3df8",
+  "mode": "deductive",
+  "expected": [
+    20,
+    14
+  ],
+  "graded": [
+    {
+      "number": "CN201",
+      "id": "ac441692-bb3e-4ee1-a541-a4c88235454d",
+      "draft": {
+        "version": 1,
+        "result": {
+          "schemaVersion": "1.0",
+          "mode": "deductive",
+          "submissionHash": "34a079fd194cf15e7830c9d78d07df23fb6bf9c631724001313ba51937578311",
+          "score": {
+            "earned": 20,
+            "possible": 20
+          },
+          "confidence": {
+            "overall": 0.94,
+            "minimum": 0.93,
+            "lowCount": 0
+          },
+          "review": {
+            "requiresReview": false,
+            "reasons": []
+          },
+          "decisions": {
+            "schemaVersion": "1.0",
+            "mode": "deductive",
+            "deductions": [
+              {
+                "ruleId": "ack1-wrong",
+                "triggered": false,
+                "deduction": 0,
+                "reason": "学生明确给出第二段先到时回复 ACK=1000，数值正确。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业二：TCP 序号与累计确认（完整样例）",
+                    "startLine": 3,
+                    "endLine": 3,
+                    "quote": "第二段先到 ACK=1000"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "学生指出 seq=1500 到达但 1000–1499 存在缺口，累计确认仍指向下一期待连续字节，即 1000。",
+                    "rubricBasis": "第一条累计 ACK 应为 1000。",
+                    "scoreJustification": "数值正确，不扣分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.95,
+                "confidenceReason": "文本明确给出 ACK=1000。"
+              },
+              {
+                "ruleId": "ack2-wrong",
+                "triggered": false,
+                "deduction": 0,
+                "reason": "学生明确写出缺口补齐后累计 ACK=2000。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业二：TCP 序号与累计确认（完整样例）",
+                    "startLine": 3,
+                    "endLine": 3,
+                    "quote": "第一段重传补齐后，缓存中的第二段连起来，累计 ACK=2000"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "第二段重传成功、缺口补齐后累计确认到 2000。",
+                    "rubricBasis": "第二条累计 ACK 应为 2000。",
+                    "scoreJustification": "数值正确，不扣分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.95,
+                "confidenceReason": "文本明确给出 ACK=2000。"
+              },
+              {
+                "ruleId": "gap-cumack-misunderstood",
+                "triggered": false,
+                "deduction": 0,
+                "reason": "学生正确解释接收端只能按连续字节累计确认，缺口存在时 ACK 停在 1000，补齐后才推进到 2000，未出现错误解释。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业二：TCP 序号与累计确认（完整样例）",
+                    "startLine": 3,
+                    "endLine": 3,
+                    "quote": "虽然 seq=1500 到了，但 1000–1499 存在缺口，累计确认仍指向下一期待连续字节。第一段重传补齐后，缓存中的第二段连起来，累计 ACK=2000。"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "学生说明缓存第二段并不立即确认到 2000，而须等待缺口补齐、形成连续字节后才推进累计 ACK。",
+                    "rubricBasis": "需正确解释连续字节缺口与累计确认机制。",
+                    "scoreJustification": "机制解释正确且完整，不扣分。"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.93,
+                "confidenceReason": "解释明确覆盖缺口暂停与补齐推进两点。"
+              }
+            ],
+            "strengths": [
+              "两个累计 ACK 数值均正确（1000、2000）。",
+              "正确指出 1000–1499 缺口使确认点停在该处，并说明补齐后缓存数据可连续确认。"
+            ],
+            "improvements": [
+              "可补充说明 ACK 号为期望收到的下一个字节序号，而非已收到的最新字节序号，使机制表述更严谨。"
+            ],
+            "warnings": []
+          }
+        },
+        "updatedAt": "2026-11-24T15:36:44.733Z"
+      },
+      "status": "draft_ready",
+      "terminal": [
+        "event: tool_end",
+        "event: tool_start",
+        "event: tool_end",
+        "event: final"
+      ]
+    },
+    {
+      "number": "CN202",
+      "id": "f5b9015d-bf43-4103-97a9-25d833c41ab9",
+      "draft": {
+        "version": 1,
+        "result": {
+          "schemaVersion": "1.0",
+          "mode": "deductive",
+          "submissionHash": "4891ff0cb57f42ffd0a781cb0c8a317157c45c75b3f4b7f3512ae8a473ce42cf",
+          "score": {
+            "earned": 14,
+            "possible": 20
+          },
+          "confidence": {
+            "overall": 0.94,
+            "minimum": 0.9,
+            "lowCount": 0
+          },
+          "review": {
+            "requiresReview": false,
+            "reasons": []
+          },
+          "decisions": {
+            "schemaVersion": "1.0",
+            "mode": "deductive",
+            "deductions": [
+              {
+                "ruleId": "ack1-wrong",
+                "triggered": false,
+                "deduction": 0,
+                "reason": "学生明确给出第一条累计 ACK=1000，数值正确。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "提交写道“第二段先到 ACK=1000”。",
+                    "rubricBasis": "第一条累计 ACK 应为 1000，答对则不扣分。",
+                    "scoreJustification": "数值为 1000，故不触发该条，扣 0 分。"
+                  }
+                ],
+                "confidence": 0.97,
+                "confidenceReason": "首条 ACK 数值在提交中直接给出。"
+              },
+              {
+                "ruleId": "ack2-wrong",
+                "triggered": true,
+                "deduction": 6,
+                "reason": "补齐缺口后学生给出的第二条累计 ACK 为 1999，而非 2000，属于数值错误。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "提交写道“补齐后连续数据到 1999，确认号指向下一期待字节，但我把数值写成 ACK=1999”。",
+                    "rubricBasis": "第二条累计 ACK 数值不是 2000 或未给出时固定扣 6 分。",
+                    "scoreJustification": "第二条 ACK 写成 1999，触发该条，按固定额度扣 6 分。"
+                  }
+                ],
+                "confidence": 0.97,
+                "confidenceReason": "提交原文明确写出 ACK=1999。"
+              },
+              {
+                "ruleId": "gap-cumack-misunderstood",
+                "triggered": false,
+                "deduction": 0,
+                "reason": "学生对缺口与累计确认的机制解释正确：缓存先到段后仍按连续字节确认，补齐后确认号指向下一期待字节；仅最终数值笔误，不视为机制误解。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "提交指出“虽然 seq=1500 到了，但 1000–1499 存在缺口，累计确认仍指向下一期待连续字节”，并说明“确认号指向下一期待字节”。",
+                    "rubricBasis": "本条只考察机制解释是否正确，数值错误不自动触发；正确的累计确认描述不扣分。",
+                    "scoreJustification": "机制描述符合连续字节累计确认，未出现“收到即确认”或“逐段确认”的错误解释，扣 0 分。"
+                  }
+                ],
+                "confidence": 0.9,
+                "confidenceReason": "机制表述清晰；末句数值自认笔误，不影响机制判断。"
+              }
+            ],
+            "strengths": [
+              "正确识别首条累计 ACK 为 1000。",
+              "正确理解缺口场景下累计确认只覆盖连续字节，并能说明补齐后确认号指向下一期待字节。"
+            ],
+            "improvements": [
+              "第二段补齐后确认号应为 2000（下一期待字节），而非 1999。",
+              "建议明确写出“下一期待字节序号”与确认号数值的对应关系，避免边界笔误。"
+            ],
+            "warnings": []
+          }
+        },
+        "updatedAt": "2026-11-24T15:36:44.955Z"
+      },
+      "status": "draft_ready",
+      "terminal": [
+        "event: tool_end",
+        "event: tool_start",
+        "event: tool_end",
+        "event: final"
+      ]
+    }
+  ]
+}

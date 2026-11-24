@@ -120,6 +120,15 @@ describe("model settings page model", () => {
     expect(await modelConfigurationFailureReason(response)).toBe("model_not_found");
     expect(await modelConfigurationFailureReason(new Response("not-json", { status: 422 }))).toBeUndefined();
   });
+
+  it("marks legacyConfigured when primary credentials are already saved under a legacy provider id", () => {
+    const state = modelSettingsStateFromStatus({
+      primary: { providerId: "deepseek", modelId: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com", configured: true },
+    });
+    expect(state.primary.providerId).toBe("openai");
+    expect(state.primary.configured).toBe(false);
+    expect(state.primary.legacyConfigured).toBe(true);
+  });
 });
 
 it("presents Docling converter status and attribution without legacy MinerU wording", async () => {

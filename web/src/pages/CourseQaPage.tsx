@@ -70,9 +70,21 @@ export function CourseQaPage() {
       return undefined;
     }
     setKnowledgeStatus("loading");
-    const [nextActive, nextSessions] = await Promise.all([api<ActiveKnowledge>(`/api/courses/${id}/qa/active`), api<QaSessionSummary[]>(`/api/courses/${id}/qa/sessions`)]);
+    const [activeResult, sessionsResult] = await Promise.allSettled([
+      api<ActiveKnowledge>(`/api/courses/${id}/qa/active`),
+      api<QaSessionSummary[]>(`/api/courses/${id}/qa/sessions`),
+    ]);
     if (!lease.isCurrent() || id !== courseIdRef.current) return undefined;
-    setActive(nextActive); setSessions(nextSessions); setKnowledgeStatus("ready"); setNotice(allowWebSearch ? "课程资料优先；可使用网络补充当前信息" : "仅依据已发布课程资料回答");
+    const nextSessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : [];
+    setSessions(nextSessions);
+    if (activeResult.status === "rejected") {
+      setActive(undefined);
+      throw activeResult.reason;
+    }
+    const nextActive = activeResult.value;
+    setActive(nextActive);
+    setKnowledgeStatus("ready");
+    setNotice(allowWebSearch ? "课程资料优先；可使用网络补充当前信息" : "仅依据已发布课程资料回答");
     return { nextActive, nextSessions };
   };
 
@@ -108,7 +120,6 @@ export function CourseQaPage() {
   useEffect(() => { refreshCourse(courseId).catch((error: Error) => {
     if (courseId !== courseIdRef.current) return;
     setActive(undefined);
-    setSessions([]);
     if (error instanceof ApiError && error.code === "ACTIVE_RELEASE_NOT_FOUND") {
       setKnowledgeStatus("missing");
       setNotice("当前课程尚未发布资料，请先到课程资料库发布后再开始答疑");

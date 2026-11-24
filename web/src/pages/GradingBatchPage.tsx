@@ -27,7 +27,7 @@ import {
 } from "./grading-batch-page-model";
 import { buildAssetManifest } from "./grading-page-model";
 
-type FrozenRubric = { assignmentId: string; title: string; version: number };
+type FrozenRubric = { assignmentId: string; courseId?: string; title: string; version: number };
 type BatchJob = {
   id: string; sessionId: string; studentName: string; studentNumber: string;
   submissionTitle: string; status: string; attemptCount: number; maxAttempts: number;
@@ -50,6 +50,7 @@ type BatchUpload = {
 };
 
 const DRAFT_STORAGE_KEY = "batch-grading-upload-draft";
+const reportAccept = ".md,.txt,.docx,.pdf,.pptx,.png,.jpg,.jpeg";
 
 function batchRubricStorageKey(courseId: string): string {
   return courseId ? `batch-grading-rubric:${courseId}` : "batch-grading-rubric";
@@ -129,16 +130,17 @@ export function GradingBatchPage() {
     setBusyJobIds((current) => active ? (current.includes(id) ? current : [...current, id]) : current.filter((item) => item !== id));
   };
 
-  const refreshList = async (rubric = selectedRubric) => {
+  const refreshList = async (rubric = selectedRubric, preferredBatchId = "") => {
     const lease = listGate.current.begin();
     const next = rubric
       ? await api<Batch[]>(`/api/grading/batches?assignmentId=${encodeURIComponent(rubric.assignmentId)}&rubricVersion=${rubric.version}`)
       : [];
     if (!lease.isCurrent()) return undefined;
     setBatches(next);
-    if (!selectedIdRef.current && next[0]) {
-      selectedIdRef.current = next[0].id;
-      setSelectedId(next[0].id);
+    const preferred = next.find((batch) => batch.id === preferredBatchId) ?? next[0];
+    if (!selectedIdRef.current && preferred) {
+      selectedIdRef.current = preferred.id;
+      setSelectedId(preferred.id);
     }
     return next;
   };
@@ -172,15 +174,22 @@ export function GradingBatchPage() {
         setActiveCourseId(nextCourseId);
         const rubricStorageKey = batchRubricStorageKey(nextCourseId);
         const draftStorageKey = batchDraftStorageKey(nextCourseId);
-        const nextRubrics = await api<FrozenRubric[]>(
+        const rawRubrics = await api<FrozenRubric[]>(
           nextCourseId
             ? `/api/grading/rubrics?courseId=${encodeURIComponent(nextCourseId)}`
             : "/api/grading/rubrics",
         );
+        const nextRubrics = nextCourseId
+          ? rawRubrics.filter((item) => !item.courseId || item.courseId === nextCourseId)
+          : rawRubrics;
         setRubrics(nextRubrics);
+        const params = new URLSearchParams(window.location.search);
+        const requestedRubricKey = params.get("rubric") ?? "";
+        const requestedBatchId = params.get("batch") ?? "";
         const storedRubricKey = localStorage.getItem(rubricStorageKey) ?? "";
-        const savedValid = storedRubricKey && nextRubrics.some((item) => `${item.assignmentId}:${item.version}` === storedRubricKey);
-        const key = savedValid ? storedRubricKey : (nextRubrics[0] ? `${nextRubrics[0].assignmentId}:${nextRubrics[0].version}` : "");
+        const preferredRubricKey = requestedRubricKey || storedRubricKey;
+        const savedValid = preferredRubricKey && nextRubrics.some((item) => `${item.assignmentId}:${item.version}` === preferredRubricKey);
+        const key = savedValid ? preferredRubricKey : (nextRubrics[0] ? `${nextRubrics[0].assignmentId}:${nextRubrics[0].version}` : "");
         setRubricKey(key);
         if (key) localStorage.setItem(rubricStorageKey, key);
         selectedIdRef.current = "";
@@ -188,7 +197,12 @@ export function GradingBatchPage() {
         setDetail(undefined);
         uploadDraftIdRef.current.set(undefined);
         setUploadDraft(undefined);
-        await refreshList(nextRubrics.find((item) => `${item.assignmentId}:${item.version}` === key));
+        const nextBatches = await refreshList(nextRubrics.find((item) => `${item.assignmentId}:${item.version}` === key), requestedBatchId);
+        if (nextBatches?.some((batch) => batch.id === requestedBatchId)) {
+          setCreatingBatch(false);
+          setNotice("已返回当前批次。");
+          return;
+        }
         const draftId = localStorage.getItem(draftStorageKey);
         if (draftId) {
           try {
@@ -312,7 +326,14 @@ export function GradingBatchPage() {
     form.set("assetManifest", JSON.stringify(manifest));
     const response = await apiFetch(`/api/grading/batch-uploads/${draft.id}/items/${item.id}/file`, { method: "PUT", body: form });
     if (!response.ok) throw await apiErrorFromResponse(response, `${file.name} 上传失败`);
-    return response.json() as Promise<BatchUploadItem>;
+    const uploaded = await response.json() as BatchUploadItem;
+    if (uploaded.status === "failed") {
+      setUploadDraft((current) => current?.id === draft.id
+        ? { ...current, items: current.items.map((entry) => entry.id === uploaded.id ? uploaded : entry) }
+        : current);
+      throw new Error(userErrorMessage(uploaded.errorCode ?? "BATCH_UPLOAD_PROCESSING_FAILED"));
+    }
+    return uploaded;
   };
   const create = async (event: FormEvent) => {
     event.preventDefault();
@@ -570,7 +591,7 @@ export function GradingBatchPage() {
         {showGuidedCreate && <form className="batch-create-card batch-guided-card" onSubmit={create}>
           <div className="batch-guided-header">
             <h2>开始批量批改</h2>
-            <p>按下面两步准备好评分标准与学生报告，即可自动转换并进入并发批改；刷新或重启不会丢失进度。</p>
+            <p>选择评分标准，上传并核对报告，然后创建批次并启动批改。</p>
           </div>
           <ol className="batch-stepper" aria-label="批量批改步骤">
             <li className={step1Done ? "done" : "current"}><span>{step1Done ? "✓" : "1"}</span>选择评分标准</li>
@@ -592,7 +613,7 @@ export function GradingBatchPage() {
           <section className={`batch-step-block ${step2Done ? "completed" : step1Done ? "active" : ""}`}>
             <div className="batch-step-title"><strong>2. 上传学生报告（1–120 份）</strong>{step2Done && <span className="batch-step-badge">已选 {files.length} 份</span>}</div>
             <label className="batch-dropzone">
-              <input aria-label="选择学生报告" type="file" multiple accept=".md,.txt,.docx,.pdf,.pptx,.png,.jpg,.jpeg" onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
+              <input aria-label="选择学生报告" type="file" multiple accept={reportAccept} onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
               <strong>{files.length ? `已选择 ${files.length} 份学生报告（点击可重新选择）` : "点击选择学生报告文件"}</strong>
               <span>支持 DOCX、PDF、PPTX、Markdown、TXT 与图片，单批最多 120 份</span>
               {files.length > 0 && <small className="batch-file-preview">{files.slice(0, 3).map((file) => file.name).join("、")}{files.length > 3 ? ` 等 ${files.length} 份` : ""}</small>}
@@ -629,14 +650,21 @@ export function GradingBatchPage() {
           <div className="batch-job-table"><table><thead><tr><th>文件</th><th>身份</th><th>状态</th><th>操作</th></tr></thead><tbody>{uploadDraft.items.map((item) => {
             const identity = identities[item.id] ?? { studentName: item.studentName ?? "", studentNumber: item.studentNumber ?? "" };
             const itemBusy = busy || busyItemIds.includes(item.id);
-            return <tr key={item.id}><td>{item.filename}{item.sessionId && <small>会话已保留</small>}</td><td>{item.status === "identity_required" ? <div className="batch-answer"><input aria-label={`${item.filename} 姓名`} placeholder="姓名" value={identity.studentName} onChange={(event) => setIdentities({ ...identities, [item.id]: { ...identity, studentName: event.target.value } })} /><input aria-label={`${item.filename} 学号`} placeholder="学号" value={identity.studentNumber} onChange={(event) => setIdentities({ ...identities, [item.id]: { ...identity, studentNumber: event.target.value } })} /><button disabled={itemBusy || !identity.studentName.trim() || !identity.studentNumber.trim()} onClick={() => void patchIdentity(item)}>{busyItemIds.includes(item.id) ? "保存中…" : "保存身份"}</button></div> : <>{item.studentName ?? "—"}<small>{item.studentNumber}</small></>}</td><td><span className={`batch-status ${item.status}`}>{batchUploadItemStatusLabel(item.status)}</span>{(item.errorCode || item.status === "failed") && <small>{userErrorMessage(item.errorCode ?? "GRADING_BATCH_ERROR")}</small>}</td><td><div className="batch-answer">{["failed", "identity_required"].includes(item.status) && <button disabled={itemBusy} onClick={() => draftItemCommand(item, "retry")}>{retryingItemId === item.id ? "重试中…" : "重试"}</button>}<label className="button-link">替换<input hidden type="file" accept=".md,.docx,.pdf,.pptx,.png,.jpg,.jpeg" onChange={(event) => { const replacement = event.target.files?.[0]; if (replacement) { setItemBusy(item.id, true); void uploadItem(uploadDraft, item, replacement).then(() => { toast.success(`已替换 ${item.filename}`); return refreshDraft(uploadDraft.id); }).catch((error) => { setNotice((error as Error).message); toast.fromError(error); }).finally(() => setItemBusy(item.id, false)); } }} /></label><button disabled={itemBusy} onClick={() => draftItemCommand(item, "remove")}>移除</button></div></td></tr>;
+            return <tr key={item.id}><td>{item.filename}{item.sessionId && <small>会话已保留</small>}</td><td>{item.status === "identity_required" ? <div className="batch-answer"><input aria-label={`${item.filename} 姓名`} placeholder="姓名" value={identity.studentName} onChange={(event) => setIdentities({ ...identities, [item.id]: { ...identity, studentName: event.target.value } })} /><input aria-label={`${item.filename} 学号`} placeholder="学号" value={identity.studentNumber} onChange={(event) => setIdentities({ ...identities, [item.id]: { ...identity, studentNumber: event.target.value } })} /><button disabled={itemBusy || !identity.studentName.trim() || !identity.studentNumber.trim()} onClick={() => void patchIdentity(item)}>{busyItemIds.includes(item.id) ? "保存中…" : "保存身份"}</button></div> : <>{item.studentName ?? "—"}<small>{item.studentNumber}</small></>}</td><td><span className={`batch-status ${item.status}`}>{batchUploadItemStatusLabel(item.status)}</span>{(item.errorCode || item.status === "failed") && <small>{userErrorMessage(item.errorCode ?? "GRADING_BATCH_ERROR")}</small>}</td><td><div className="batch-answer">{["failed", "identity_required"].includes(item.status) && <button disabled={itemBusy} onClick={() => draftItemCommand(item, "retry")}>{retryingItemId === item.id ? "重试中…" : "重试"}</button>}<label className="button-link">替换<input hidden type="file" accept={reportAccept} onChange={(event) => { const replacement = event.target.files?.[0]; if (replacement) { setItemBusy(item.id, true); void uploadItem(uploadDraft, item, replacement).then(() => { toast.success(`已替换 ${item.filename}`); return refreshDraft(uploadDraft.id); }).catch((error) => { setNotice((error as Error).message); toast.fromError(error); }).finally(() => setItemBusy(item.id, false)); } }} /></label><button disabled={itemBusy} onClick={() => draftItemCommand(item, "remove")}>移除</button></div></td></tr>;
           })}</tbody></table></div>
         </section>}
         {!uploadDraft && !showGuidedCreate && detail && <section className="batch-detail">
           <header><div><p className="eyebrow">{batchStatusLabel(detail.status)}</p><h2>{detail.title}</h2><p>并发 {detail.concurrency} · {progress?.settled}/{detail.totalJobs} 已结束本轮处理</p></div><strong>{progress?.percent}%</strong></header>
           <div className="batch-progress"><i style={{ width: `${progress?.percent ?? 0}%` }} /></div>
-          <div className="batch-controls">{actions?.canStart && <button className="primary-button" disabled={busy} onClick={() => void command("start")}>启动批改</button>}{actions?.canPause && <button disabled={busy} onClick={() => void command("pause")}>暂停领取</button>}{actions?.canResume && <button className="primary-button" disabled={busy} onClick={() => void command("resume")}>恢复批改</button>}{actions?.canExport && <a className="button-link" href={`/api/grading/batches/${detail.id}/export.csv`}>导出班级 CSV</a>}<a className="button-link primary-link" href={withCourseQuery(batchReviewHref(detail.id, firstReviewJob?.sessionId), activeCourseId)}>进入复核</a></div>
-          <div className="batch-counts">{Object.entries(detail.counts).filter(([, count]) => count > 0).map(([status, count]) => <span key={status}>{batchStatusLabel(status)} <strong>{count}</strong></span>)}</div>
+          <div className="batch-controls">
+            {actions?.canStart && <button className="primary-button" disabled={busy} onClick={() => void command("start")}>启动批改</button>}
+            {actions?.canPause && <button disabled={busy} onClick={() => void command("pause")}>暂停领取</button>}
+            {actions?.canResume && <button className="primary-button" disabled={busy} onClick={() => void command("resume")}>恢复批改</button>}
+            {detail.counts.completed > 0 && <a className="button-link" href={`/api/grading/batches/${detail.id}/export.csv?scope=confirmed`}>导出已确认成绩 CSV</a>}
+            {actions?.canExport && <a className="button-link" href={`/api/grading/batches/${detail.id}/export.csv`}>导出处理汇总 CSV（含待复核）</a>}
+            {detail.status !== "draft" && <a className="button-link primary-link" href={withCourseQuery(batchReviewHref(detail.id, firstReviewJob?.sessionId), activeCourseId)}>进入复核</a>}
+          </div>
+          <div className="batch-counts">{Object.entries(detail.counts).filter(([, count]) => count > 0).map(([status, count]) => <span key={status}>{status === "completed" ? "已确认" : batchStatusLabel(status)} <strong>{count}</strong></span>)}</div>
           {detail.status === "completed" && <p className="batch-review-hint">本轮自动处理已结束；待复核成绩仍需进入复核工作台核对并正式确认。</p>}
           {(() => {
             const allJobs = detail.jobs ?? [];

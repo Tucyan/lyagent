@@ -1898,7 +1898,7 @@ code {
 }
 .rubric-session-toggle {
   flex: 0 0 auto;
-  margin-top: 20px !important;
+  margin-left: auto;
   color: #315eaa;
   background: #f4f7fc;
   border-color: #dbe4f1;
@@ -3508,12 +3508,15 @@ code {
   }
   .rubric-workspace,
   .rubric-workspace.sidebar-collapsed {
-    grid-template-columns: 0 minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
   .rubric-session-list {
-    overflow: hidden;
-    padding: 0;
-    opacity: 0;
+    max-height: min(50vh, 360px);
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  .sidebar-collapsed .rubric-session-list {
+    display: none;
   }
   .rubric-design-split {
     display: block;

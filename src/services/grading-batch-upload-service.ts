@@ -5,6 +5,8 @@ import { SafeFilesystem } from "../core/safe-filesystem.js";
 import {
   referencedMarkdownAssetPaths,
   SubmissionAssetError,
+  SubmissionContentMismatchError,
+  validateFileSignature,
   validateSubmissionAssets,
 } from "./grading-session-service.js";
 import { StudentIdentityError, type StudentIdentity } from "./student-identity-service.js";
@@ -244,6 +246,7 @@ export class GradingBatchUploadService {
     const base = this.itemBase(uploadId, itemId);
     let selectedAssets: Array<{ path: string; bytes: Uint8Array }>;
     try {
+      validateFileSignature(extension, input.bytes);
       validateSubmissionAssets(input.assets);
       const markdown = extension === ".md" || extension === ".txt"
         ? Buffer.from(input.bytes).toString("utf8")
@@ -728,6 +731,7 @@ function selectReferencedAssets(
 }
 
 function safeItemError(error: unknown): { code: string; message: string } {
+  if (error instanceof SubmissionContentMismatchError) return { code: error.code, message: "报告文件内容与格式不匹配，请重新导出后替换报告文件" };
   if (error instanceof SubmissionAssetError) return { code: error.code, message: error.message };
   if (error instanceof GradingBatchUploadError) return { code: error.code, message: error.message };
   const code = (error as { code?: unknown }).code;

@@ -1,0 +1,301 @@
+{
+  "assignmentId": "a82b1e35-53b2-4243-bd6b-71bf90a18353",
+  "mode": "additive",
+  "expected": [
+    20,
+    19
+  ],
+  "graded": [
+    {
+      "number": "CN101",
+      "id": "a747d8f0-3ed0-4404-893a-5991994671f3",
+      "draft": {
+        "version": 1,
+        "result": {
+          "schemaVersion": "1.0",
+          "mode": "additive",
+          "submissionHash": "fba6002cdb3e466cea9979f428ec2e190f87bd4d478892c49a2a08aa87fe4591",
+          "score": {
+            "earned": 20,
+            "possible": 20
+          },
+          "confidence": {
+            "overall": 0.97,
+            "minimum": 0.97,
+            "lowCount": 0
+          },
+          "review": {
+            "requiresReview": false,
+            "reasons": []
+          },
+          "decisions": {
+            "schemaVersion": "1.0",
+            "mode": "additive",
+            "criteria": [
+              {
+                "criterionId": "subnet1",
+                "selectedLevelId": "s1_5",
+                "score": 5,
+                "reason": "表中给出网络 192.0.2.0/26、可用范围 .1–.62、广播 .63，且说明每个 /26 可用 62 台主机，四项全部正确。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（完整样例）",
+                    "startLine": 3,
+                    "endLine": 7,
+                    "quote": "|192.0.2.0/26|.1–.62|.63|"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "首个子网网络地址 192.0.2.0、可用区间 .1–.62（即 192.0.2.1–192.0.2.62）、广播 .63（192.0.2.63），配合开头“每个子网 /26 均可用 62 台主机”。",
+                    "rubricBasis": "四项全部正确对应最高档 s1_5（5 分）。",
+                    "scoreJustification": "四项均与冻结标准一致，得分 5。"
+                  }
+                ],
+                "confidence": 0.97,
+                "confidenceReason": "表格与说明文字均明确且一致。"
+              },
+              {
+                "criterionId": "subnet2",
+                "selectedLevelId": "s2_5",
+                "score": 5,
+                "reason": "网络 192.0.2.64/26、可用 .65–.126、广播 .127、可用主机数 62 四项全部正确。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（完整样例）",
+                    "startLine": 3,
+                    "endLine": 8,
+                    "quote": "|192.0.2.64/26|.65–.126|.127|"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "第二子网网络地址 192.0.2.64，可用区间 .65–.126 对应 192.0.2.65–192.0.2.126，广播 .127 即 192.0.2.127，主机数 62。",
+                    "rubricBasis": "四项全部正确触发 s2_5（5 分）。",
+                    "scoreJustification": "无错误，5 分。"
+                  }
+                ],
+                "confidence": 0.97,
+                "confidenceReason": "内容明确无歧义。"
+              },
+              {
+                "criterionId": "subnet3",
+                "selectedLevelId": "s3_5",
+                "score": 5,
+                "reason": "网络 192.0.2.128/26、可用 .129–.190、广播 .191、可用主机数 62 四项全部正确。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（完整样例）",
+                    "startLine": 3,
+                    "endLine": 9,
+                    "quote": "|192.0.2.128/26|.129–.190|.191|"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "第三子网网络地址 192.0.2.128，可用区间 .129–.190 即 192.0.2.129–192.0.2.190，广播 .191 即 192.0.2.191，主机数 62。",
+                    "rubricBasis": "四项全部正确触发 s3_5（5 分）。",
+                    "scoreJustification": "全部正确，5 分。"
+                  }
+                ],
+                "confidence": 0.97,
+                "confidenceReason": "内容明确无歧义。"
+              },
+              {
+                "criterionId": "subnet4",
+                "selectedLevelId": "s4_5",
+                "score": 5,
+                "reason": "网络 192.0.2.192/26、可用 .193–.254、广播 .255、可用主机数 62 四项全部正确。",
+                "evidence": [
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（完整样例）",
+                    "startLine": 3,
+                    "endLine": 10,
+                    "quote": "|192.0.2.192/26|.193–.254|.255|"
+                  },
+                  {
+                    "kind": "analysis",
+                    "observation": "第四子网网络地址 192.0.2.192，可用区间 .193–.254 即 192.0.2.193–192.0.2.254，广播 .255 即 192.0.2.255，主机数 62。",
+                    "rubricBasis": "四项全部正确触发 s4_5（5 分）。",
+                    "scoreJustification": "全部正确，5 分。"
+                  }
+                ],
+                "confidence": 0.97,
+                "confidenceReason": "内容明确无歧义。"
+              }
+            ],
+            "strengths": [
+              "四个 /26 子网的网络地址、可用主机范围、广播地址均完全正确。",
+              "正确指出 /26 每个子网可用主机数为 62。"
+            ],
+            "improvements": [
+              "可用主机范围仅写“.1–.62”等简写形式，补全为完整 IP 地址（如 192.0.2.1–192.0.2.62）会更清晰规范。"
+            ],
+            "warnings": []
+          }
+        },
+        "updatedAt": "2026-11-24T15:36:48.386Z"
+      },
+      "status": "draft_ready",
+      "terminal": [
+        "event: tool_end",
+        "event: tool_start",
+        "event: tool_end",
+        "event: final"
+      ]
+    },
+    {
+      "number": "CN102",
+      "id": "75dbd2ff-10a7-42ef-ac18-b74765c15276",
+      "draft": {
+        "version": 1,
+        "result": {
+          "schemaVersion": "1.0",
+          "mode": "additive",
+          "submissionHash": "4af82c170cc49dd81978a5aa0f6d7c39061e752bc518e44aa7d29d9bf8bf713d",
+          "score": {
+            "earned": 19,
+            "possible": 20
+          },
+          "confidence": {
+            "overall": 0.97,
+            "minimum": 0.97,
+            "lowCount": 0
+          },
+          "review": {
+            "requiresReview": false,
+            "reasons": []
+          },
+          "decisions": {
+            "schemaVersion": "1.0",
+            "mode": "additive",
+            "criteria": [
+              {
+                "criterionId": "subnet1",
+                "selectedLevelId": "s1_4",
+                "score": 4,
+                "reason": "网络地址 192.0.2.0、可用主机区间 .1–.62、可用主机数 62 均正确；广播地址写成 .62（应为 .63），属于“仅广播地址错误”情形。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "表中第一个子网行为“192.0.2.0/26 | .1–.62 | .62”，正文说明每个 /26 可用 62 台主机。",
+                    "rubricBasis": "网络地址、可用主机区间、可用主机数三项正确、仅广播地址错误，对应 s1_4 档 4–4.99 分。",
+                    "scoreJustification": "三项正确、广播地址错误且非“其他错误情形”，取该档中位 4 分。"
+                  },
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（边界样例）",
+                    "startLine": 6,
+                    "endLine": 6,
+                    "quote": "|192.0.2.0/26|.1–.62|.62|"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.97,
+                "confidenceReason": "文本清晰，判定明确。"
+              },
+              {
+                "criterionId": "subnet2",
+                "selectedLevelId": "s2_5",
+                "score": 5,
+                "reason": "网络地址 192.0.2.64、可用主机区间 .65–.126、广播地址 .127、可用主机数 62 四项全部正确。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "第二行“192.0.2.64/26 | .65–.126 | .127”，且正文声明每个子网可用 62 台主机。",
+                    "rubricBasis": "四项全部正确对应 s2_5 档 5 分。",
+                    "scoreJustification": "四项均与标准答案一致，给予满分 5 分。"
+                  },
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（边界样例）",
+                    "startLine": 7,
+                    "endLine": 7,
+                    "quote": "|192.0.2.64/26|.65–.126|.127|"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.97,
+                "confidenceReason": "四项均可核对且正确。"
+              },
+              {
+                "criterionId": "subnet3",
+                "selectedLevelId": "s3_5",
+                "score": 5,
+                "reason": "网络地址 192.0.2.128、可用主机区间 .129–.190、广播地址 .191、可用主机数 62 四项全部正确。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "第三行“192.0.2.128/26 | .129–.190 | .191”，正文声明 62 台可用主机。",
+                    "rubricBasis": "四项全部正确对应 s3_5 档 5 分。",
+                    "scoreJustification": "全部符合标准答案，给予 5 分。"
+                  },
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（边界样例）",
+                    "startLine": 8,
+                    "endLine": 8,
+                    "quote": "|192.0.2.128/26|.129–.190|.191|"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.97,
+                "confidenceReason": "四项均可核对且正确。"
+              },
+              {
+                "criterionId": "subnet4",
+                "selectedLevelId": "s4_5",
+                "score": 5,
+                "reason": "网络地址 192.0.2.192、可用主机区间 .193–.254、广播地址 .255、可用主机数 62 四项全部正确。",
+                "evidence": [
+                  {
+                    "kind": "analysis",
+                    "observation": "第四行“192.0.2.192/26 | .193–.254 | .255”，正文声明 62 台可用主机。",
+                    "rubricBasis": "四项全部正确对应 s4_5 档 5 分。",
+                    "scoreJustification": "全部符合标准答案，给予 5 分。"
+                  },
+                  {
+                    "kind": "text",
+                    "path": "submission-v1.md",
+                    "heading": "作业一：IPv4 子网划分（边界样例）",
+                    "startLine": 9,
+                    "endLine": 9,
+                    "quote": "|192.0.2.192/26|.193–.254|.255|"
+                  }
+                ],
+                "evidenceInsufficient": false,
+                "confidence": 0.97,
+                "confidenceReason": "四项均可核对且正确。"
+              }
+            ],
+            "strengths": [
+              "正确识别 /26 的四个子网边界，第 2、3、4 个子网信息完全正确。",
+              "统一给出可用主机数 62，说明理解 /26 主机位数。"
+            ],
+            "improvements": [
+              "第一个子网的广播地址误写为最后一个可用地址 .62，正确值应为 192.0.2.63。",
+              "建议区分最后可用主机地址与广播地址，避免边界混淆。"
+            ],
+            "warnings": []
+          }
+        },
+        "updatedAt": "2026-11-24T15:36:57.753Z"
+      },
+      "status": "draft_ready",
+      "terminal": [
+        "event: tool_end",
+        "event: tool_start",
+        "event: tool_end",
+        "event: final"
+      ]
+    }
+  ]
+}

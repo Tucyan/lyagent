@@ -12,7 +12,7 @@ import { LatestRequestGate } from "../lib/async-state";
 import { ConfirmDialog, PromptDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { useUnsavedGuard } from "../lib/use-unsaved-guard";
-import { numberReleases } from "./knowledge-library-model";
+import { numberReleases, previewRepeatsTitle } from "./knowledge-library-model";
 
 type Course = { id: string; name: string };
 type TreeEntry = { path: string; title: string };
@@ -84,6 +84,8 @@ export function KnowledgeLibraryPage() {
   const currentCourse = courses.find((course) => course.id === courseId);
   const activeRelease = releases.find((release) => release.id === activeReleaseId);
   const selectedRelease = releases.find((release) => release.id === selectedReleaseId);
+  const releaseTitle = releaseTree.find((entry) => entry.path === releasePath)?.title;
+  const draftTitle = draft?.tree.find((entry) => entry.path === draftPath)?.title;
   const dirty = Boolean(draft && draftPath && draftContent !== savedDraftContent);
   useUnsavedGuard(dirty);
   const draftDirectories = useMemo(() => {
@@ -210,14 +212,20 @@ export function KnowledgeLibraryPage() {
   };
 
   const refreshWorkspace = async (targetCourseId: string, preferredReleaseId = "", preferredDraftId = "") => {
-    if (!targetCourseId) return;
+    if (!targetCourseId) return undefined;
     const lease = workspaceGate.current.begin();
-    const [nextReleases, active, nextDrafts] = await Promise.all([
+    const [releasesResult, activeResult, draftsResult] = await Promise.allSettled([
       api<Release[]>(`/api/courses/${targetCourseId}/releases`),
       api<Release | null>(`/api/courses/${targetCourseId}/active`),
       api<ImportSummary[]>(`/api/courses/${targetCourseId}/drafts`),
     ]);
-    if (!lease.isCurrent() || targetCourseId !== courseIdRef.current) return;
+    if (!lease.isCurrent() || targetCourseId !== courseIdRef.current) return undefined;
+    if (releasesResult.status === "rejected") throw releasesResult.reason;
+    if (draftsResult.status === "rejected") throw draftsResult.reason;
+    const nextReleases = releasesResult.value;
+    const active = activeResult.status === "fulfilled" ? activeResult.value : null;
+    const activeError = activeResult.status === "rejected" ? (activeResult.reason as Error).message : undefined;
+    const nextDrafts = draftsResult.value;
     const numbered = numberReleases(nextReleases);
     setReleases(numbered);
     setActiveReleaseId(active?.id ?? "");
@@ -227,7 +235,7 @@ export function KnowledgeLibraryPage() {
     const selectedDraft = nextDrafts.find((candidate) => candidate.id === preferredDraftId) ?? nextDrafts[0];
     if (selectedDraft) await loadDraft(targetCourseId, selectedDraft);
     else {
-      if (!lease.isCurrent() || targetCourseId !== courseIdRef.current) return;
+      if (!lease.isCurrent() || targetCourseId !== courseIdRef.current) return undefined;
       currentImportIdRef.current = undefined;
       draftPathRef.current = "";
       setCurrentImport(undefined);
@@ -236,6 +244,12 @@ export function KnowledgeLibraryPage() {
       setDraftContent("");
       setSavedDraftContent("");
     }
+    return {
+      hasActiveRelease: Boolean(active?.id),
+      releaseCount: numbered.length,
+      draftCount: nextDrafts.length,
+      activeError,
+    };
   };
 
   useEffect(() => {
@@ -271,8 +285,22 @@ export function KnowledgeLibraryPage() {
     setBusy(true);
     const requestCourseId = courseId;
     refreshWorkspace(requestCourseId)
-      .then(() => {
-        if (requestCourseId === courseIdRef.current) showNotice("课程资料已就绪");
+      .then((summary) => {
+        if (requestCourseId !== courseIdRef.current || !summary) return;
+        if (summary.activeError) {
+          showNotice(
+            summary.releaseCount > 0
+              ? "当前课程资料未通过校验，请在「版本记录」中切换可用的历史版本，或重新导入并发布资料。"
+              : "当前课程资料未通过校验，请重新导入 Markdown 讲义并发布。",
+            "error",
+          );
+        } else if (summary.hasActiveRelease) {
+          showNotice("课程资料已就绪");
+        } else if (summary.draftCount > 0) {
+          showNotice("已有修订草稿，确认内容后即可发布为正式资料");
+        } else {
+          showNotice("尚未发布课程资料，请先导入 Markdown 讲义");
+        }
       })
       .catch((error: Error) => {
         if (requestCourseId === courseIdRef.current) showNotice(error.message, "error");
@@ -564,7 +592,7 @@ export function KnowledgeLibraryPage() {
         </div>
         <div className="knowledge-browser">
           <aside className="document-tree"><label>查找资料<input type="search" value={treeQuery} onChange={(event) => setTreeQuery(event.target.value)} placeholder="搜索标题或路径" /></label><p>{filteredReleaseTree.length} / {releaseTree.length} 篇</p><nav>{filteredReleaseTree.map((entry) => <button key={entry.path} type="button" className={entry.path === releasePath ? "selected" : ""} onClick={() => void readReleaseFile(courseId, selectedRelease.id, entry.path).catch((error: Error) => { if (entry.path === releasePathRef.current) showNotice(error.message, "error"); })}><strong>{entry.title}</strong><small>{entry.path}</small></button>)}</nav></aside>
-          <article className="document-preview"><div className="document-heading"><div><span>只读预览</span><h2>{releaseTree.find((entry) => entry.path === releasePath)?.title ?? "选择一篇资料"}</h2></div><code title={releasePath}>{releasePath}</code></div>{releaseContent ? <Markdown remarkPlugins={[remarkGfm]}>{releaseContent}</Markdown> : <div className="knowledge-empty"><h3>选择左侧资料开始预览</h3><p>发布版本为不可变快照。如需修改，请先创建修订草稿。</p></div>}</article>
+          <article className="document-preview"><div className="document-heading"><div><span>只读预览</span>{!previewRepeatsTitle(releaseContent, releaseTitle) && <h2>{releaseTitle ?? "选择一篇资料"}</h2>}</div><code title={releasePath}>{releasePath}</code></div>{releaseContent ? <Markdown remarkPlugins={[remarkGfm]}>{releaseContent}</Markdown> : <div className="knowledge-empty"><h3>选择左侧资料开始预览</h3><p>发布版本为不可变快照。如需修改，请先创建修订草稿。</p></div>}</article>
         </div>
       </> : !courseId ? <div className="knowledge-empty prominent"><h2>还没有课程</h2><p>请先在课程总览创建课程，再回到这里导入 Markdown 资料并发布。</p><a className="primary-button" href="/">前往课程总览创建课程</a></div> : <div className="knowledge-empty prominent"><h2>还没有正式课程资料</h2><p>选择一个或多个 Markdown（.md）讲义文件导入草稿，确认内容后发布为首个知识版本。</p><button className="primary-button" type="button" onClick={() => directoryInput.current?.click()} disabled={!courseId || busy}>导入 Markdown 资料</button></div>}
     </section>}
@@ -582,7 +610,7 @@ export function KnowledgeLibraryPage() {
               setConfirmState({ title: "放弃未保存的修改并切换文件？", description: `当前文件“${draftPath}”有尚未保存的修改，切换后这些修改将丢失。`, confirmLabel: "放弃并切换", tone: "danger", onConfirm: openEntry });
             } else openEntry();
           }}><strong>{entry.title}</strong><small>{entry.path}</small></button><details><summary aria-label={`管理 ${entry.title}`}>···</summary><div><button type="button" onClick={() => setPromptState({ title: "重命名文件", label: "新文件名", description: "文件名必须以 .md 结尾。", value: entry.path.split("/").at(-1) ?? "", placeholder: "例如：lecture-01.md", onConfirm: (name) => editTree({ type: "rename", path: entry.path, name: name.trim() }) })}>重命名</button><button type="button" onClick={() => setPromptState({ title: "移动文件到其他目录", label: "目标目录", description: "可从已有目录中选择，或输入新的相对目录路径。", value: entry.path.split("/").slice(0, -1).join("/"), placeholder: "例如：chapters/week1", suggestions: draftDirectories, onConfirm: (directory) => editTree({ type: "move", path: entry.path, directory: directory.trim() }) })}>移动</button></div></details></div>)}</nav></aside>
-          <div className="document-workspace"><div className="draft-file-toolbar"><div><span>编辑 Markdown</span><strong>{draftPath || "选择一篇资料"}</strong></div><div><span className={dirty ? "save-state dirty" : "save-state"}>{dirty ? "有未保存修改" : "已保存"}</span><button type="button" onClick={() => void saveDraft()} disabled={!dirty || busy}>保存修改</button></div></div>{draftPath ? <div className="draft-editor-grid"><label>Markdown 源文<textarea value={draftContent} onChange={(event) => setDraftContent(event.target.value)} spellCheck={false} aria-label="Markdown 源文" /></label><article className="document-preview"><div className="document-heading"><div><span>实时预览</span><h2>{draft.tree.find((entry) => entry.path === draftPath)?.title}</h2></div></div><Markdown remarkPlugins={[remarkGfm]}>{draftContent}</Markdown></article></div> : <div className="knowledge-empty"><h3>选择左侧草稿开始编辑</h3></div>}</div>
+          <div className="document-workspace"><div className="draft-file-toolbar"><div><span>编辑 Markdown</span><strong>{draftPath || "选择一篇资料"}</strong></div><div><span className={dirty ? "save-state dirty" : "save-state"}>{dirty ? "有未保存修改" : "已保存"}</span><button type="button" onClick={() => void saveDraft()} disabled={!dirty || busy}>保存修改</button></div></div>{draftPath ? <div className="draft-editor-grid"><label>Markdown 源文<textarea value={draftContent} onChange={(event) => setDraftContent(event.target.value)} spellCheck={false} aria-label="Markdown 源文" /></label><article className="document-preview"><div className="document-heading"><div><span>实时预览</span>{!previewRepeatsTitle(draftContent, draftTitle) && <h2>{draftTitle}</h2>}</div></div><Markdown remarkPlugins={[remarkGfm]}>{draftContent}</Markdown></article></div> : <div className="knowledge-empty"><h3>选择左侧草稿开始编辑</h3></div>}</div>
         </div>
       </> : <div className="knowledge-empty prominent"><h2>当前没有修订草稿</h2><p>可以导入一套新资料，也可以从当前正式版本创建独立修订；正式版本在发布新草稿前不会改变。</p><div><button type="button" onClick={() => directoryInput.current?.click()} disabled={!courseId || busy}>导入新资料</button><button className="primary-button" type="button" onClick={() => void createRevision(activeReleaseId)} disabled={!activeReleaseId || busy}>基于当前版本创建修订</button></div></div>}
     </section>}

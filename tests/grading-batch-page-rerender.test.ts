@@ -33,8 +33,29 @@ describe("batch grading page draft restore rerenders", () => {
     if (root) await act(async () => root!.unmount());
     container?.remove();
     vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
     root = undefined;
     container = undefined;
+  });
+
+  it("returns from review to the requested batch even when another batch is newer", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined });
+    window.history.replaceState(null, "", "/grading/batches?batch=batch-old&rubric=assignment-one%3A1&course=course-one");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/grading/rubrics?courseId=course-one") return jsonResponse([{ assignmentId: "assignment-one", title: "评分标准一", version: 1 }]);
+      if (url.startsWith("/api/grading/batches?")) return jsonResponse([batch("batch-new", "新批次"), batch("batch-old", "刚复核的批次")]);
+      if (url === "/api/grading/batches/batch-new") return jsonResponse(batch("batch-new", "新批次"));
+      if (url === "/api/grading/batches/batch-old") return jsonResponse(batch("batch-old", "刚复核的批次"));
+      throw new Error(`Unexpected API request: ${url}`);
+    }));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(createElement(GradingBatchPage)));
+
+    expect(container.querySelector(".batch-detail h2")?.textContent).toBe("刚复核的批次");
   });
 
   it("keeps a pending restored draft when rubric, list, and detail fetches rerender the mounted page", async () => {

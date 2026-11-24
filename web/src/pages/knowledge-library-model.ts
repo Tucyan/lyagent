@@ -9,3 +9,9 @@ export function numberReleases<T extends VersionableRelease>(releases: readonly 
     return { ...release, versionNumber, versionLabel: `v${versionNumber}` };
   });
 }
+
+export function previewRepeatsTitle(markdown: string, title: string | undefined): boolean {
+  if (!title) return false;
+  const heading = /^\uFEFF?(?:[ \t]*\r?\n)* {0,3}#{1,6}[ \t]+([^\r\n]+)/.exec(markdown)?.[1];
+  return heading?.replace(/[ \t]+#+[ \t]*$/, "").trim() === title.trim();
+}

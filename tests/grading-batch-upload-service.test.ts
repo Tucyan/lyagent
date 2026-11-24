@@ -222,7 +222,10 @@ describe("GradingBatchUploadService", () => {
     service.close();
   });
 
-  it("preserves a ready item when a replacement is missing a referenced attachment", async () => {
+  it.each([
+    ["20260001_张晓明_新报告.md", "![缺失](assets/missing.png)\n", "SUBMISSION_ASSET_MISSING"],
+    ["20260001_张晓明_损坏报告.pdf", "incomplete PDF export", "SUBMISSION_CONTENT_MISMATCH"],
+  ])("preserves a ready item when replacement %s is invalid", async (filename, content, code) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "batch-upload-invalid-replacement-"));
     roots.push(root);
     const deps = dependencies();
@@ -245,16 +248,16 @@ describe("GradingBatchUploadService", () => {
     const reportPath = path.join(root, "batch-uploads", draft.id, original.id, "report.md");
 
     const replacementPromise = service.storeItemFile(draft.id, original.id, {
-      filename: "20260001_张晓明_新报告.md",
-      bytes: new TextEncoder().encode("![缺失](assets/missing.png)\n"),
+      filename,
+      bytes: new TextEncoder().encode(content),
       assets: [],
     });
     const rejection = await replacementPromise.then(() => undefined, (error: unknown) => error);
     const afterRejectedReplacement = (await service.getUpload(draft.id)).items[0]!;
     const sessionPreserved = deps.sessions.has(ready.sessionId!);
-    const storedReport = await readFile(reportPath, "utf8");
+    const storedReport = await readFile(reportPath, "utf8").catch(() => undefined);
     service.close();
-    expect(rejection).toMatchObject({ code: "SUBMISSION_ASSET_MISSING" });
+    expect(rejection).toMatchObject({ code });
     expect(afterRejectedReplacement).toMatchObject({ status: "ready", sessionId: ready.sessionId, filename: original.filename });
     expect(sessionPreserved).toBe(true);
     expect(storedReport).toBe("# 原报告\n");
