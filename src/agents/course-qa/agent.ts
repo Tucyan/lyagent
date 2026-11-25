@@ -15,13 +15,24 @@ export interface PiCourseQaAgentOptions {
   getApiKey?: () => string | undefined;
 }
 
+export interface CourseQaTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface PiCourseQaAgent {
-  answer(question: string, onEvent?: (event: CourseQaEvent) => void, signal?: AbortSignal): Promise<CourseAnswer>;
+  answer(
+    question: string,
+    onEvent?: (event: CourseQaEvent) => void,
+    signal?: AbortSignal,
+    onUsage?: (usage: CourseQaTokenUsage) => void,
+  ): Promise<CourseAnswer>;
 }
 
 export function createPiCourseQaAgent(options: PiCourseQaAgentOptions): PiCourseQaAgent {
   return {
-    async answer(question, onEvent, signal) {
+    async answer(question, onEvent, signal, onUsage) {
       const budget = new AgentExecutionBudget(options.executionLimits, signal);
       const qaTools = createCourseQaTools(options.knowledge, options.web);
       const agent = new Agent({
@@ -46,8 +57,15 @@ export function createPiCourseQaAgent(options: PiCourseQaAgentOptions): PiCourse
       });
       const abort = () => agent.abort();
       signal?.addEventListener("abort", abort, { once: true });
+      const totalUsage: CourseQaTokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       agent.subscribe((event) => {
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") onEvent?.({ type: "answer_delta", delta: event.assistantMessageEvent.delta });
+        if (event.type === "message_end" && "usage" in event.message && event.message.usage && typeof event.message.usage === "object") {
+          const u = event.message.usage as { input?: number; output?: number; totalTokens?: number };
+          totalUsage.promptTokens += typeof u.input === "number" ? u.input : 0;
+          totalUsage.completionTokens += typeof u.output === "number" ? u.output : 0;
+          totalUsage.totalTokens += typeof u.totalTokens === "number" ? u.totalTokens : 0;
+        }
         if (event.type === "tool_execution_start" && isQaToolName(event.toolName)) {
           const activity = toolActivity(event.toolName, event.args as Record<string, unknown>);
           onEvent?.({ type: "tool_start", id: event.toolCallId, name: event.toolName, ...activity });
@@ -65,6 +83,7 @@ export function createPiCourseQaAgent(options: PiCourseQaAgentOptions): PiCourse
       }
       const answer = qaTools.submittedAnswer();
       if (!answer) throw new Error("Model did not submit an answer");
+      onUsage?.(totalUsage);
       return answer;
     },
   };

@@ -179,3 +179,11 @@ channels/api → core/agents/tools → services → db/filesystem/provider inter
 `GradingBatchService` 负责 30–120 份成员校验、全局会话预留、1–8 并发调度、暂停/恢复、教师问题、有限重试和租约恢复。队列任务开始时才在 SQLite 事务中领取 job；暂停只阻止新领取，正在运行的 job 会自然结束并释放并发槽。教师回答通过程序控制的 `waiting_for_teacher → queued` 转换，以“继续完成评分”的 grade 轮次恢复，而不是普通咨询 chat。租约 owner 与尝试次数共同构成 fencing 条件，过期执行不能发布或终结后来领取的 job；每次尝试写入独立结果路径，旧执行也不能覆盖新尝试文件。`GradingSummaryService` 为每个成功 job 原子写入带尝试版本的 JSON 事实快照及 Markdown 预览，并以串行写者从当前尝试快照重建班级 CSV。API 和页面只发出确定性命令、读取状态，不自行计算分数。
 
 启动恢复按“有效结果快照、已持久化草稿、前一进程租约”顺序协调状态；已有有效结果时禁止再次调用模型，缺失的 Markdown 会从有效 JSON 补建。教师在 M4 修改或确认后，启动恢复和 CSV 导出都会刷新对应快照、job 状态与汇总。批次完成表示本轮没有可自动继续的 job，不等同于教师确认正式成绩。
+
+## 独立学生端服务
+
+学生端以独立进程 `src/student-main.ts` 与独立前端产物 `dist/web-student/` 运行，支持跨平台部署在 Linux 或 Windows 服务器上，与本地教师工作台彻底隔离（不挂载批改、评分表、资料导入、Docling 或本地模型设置写入接口）。
+
+- **功能范围**：学生端仅提供课程选择、课程资料阅读（含受控搜索与图片资源读取）与课程答疑，并按 `userId + courseId` 隔离保存学生个人的答疑会话历史。
+- **资料共用**：支持同机共享 `workspace/knowledge/`，或由本地教师工作台在资料库页面将已验证的不可变 `active release` 打包并通过 `POST /api/sync/courses/:courseId/releases`（Bearer Sync Token + 整包及逐文件 SHA-256 校验）一键同步至学生端服务器。
+- **账号与额度**：`student-portal.sqlite` 独立管理教师管理员账号、学生账号、课程访问许可、课程邀请码与答疑额度账本；答疑调用前在 SQLite `IMMEDIATE` 事务中原子预占额度，模型失败、超限或客户端取消时自动退还，成功时记录 Token 消耗。

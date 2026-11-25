@@ -22,7 +22,9 @@ npm rebuild better-sqlite3
 npm install
 python -m pip install -r requirements.txt
 npm run dev
+npm run dev:student
 npm run start
+npm run start:student
 npm run typecheck
 npm test -- --run
 npm run check
@@ -32,7 +34,9 @@ npm run build
 - `dev`：监听模式启动入口；
 - `start`：运行当前入口；
 - `check`：类型检查后运行一次全部测试；
-- `build`：生成`dist/`。
+- `dev:student`：监听模式启动独立学生端服务端与`web-student`前端；
+- `start:student`：运行独立学生端入口；
+- `build`：生成`dist/`（含服务端、`dist/web`与`dist/web-student`）。
 
 资料规划、课程答疑、评分表设计、批改、作业命名和身份识别统一使用`workspace/config/app.json`中的`models.primary`；默认模型为`deepseek-v4-flash`，地址为`https://api.deepseek.com`。可选`models.vision`允许复用主Provider或指定独立Provider、模型和地址。`qwen-openai`使用Chat Completions；`openai`默认把Base URL视为Responses API根地址，若地址显式以`/chat/completions`结尾则改用Chat Completions并在运行时去掉该后缀后交给客户端。模型密钥按Provider ID保存在Workspace外的Windows当前用户凭据存储；旧`deepseekApiKey`仅作读取兼容，并在系统模型设置成功保存时迁移后从JSON移除。未配置主模型时资料规划使用确定性本地规划，课程答疑 API 返回`MODEL_NOT_CONFIGURED`。M2网络搜索默认使用本机 Python 的`ddgs`包，不需要搜索密钥；`webSearch.enabled`可关闭，`pythonCommand`可指定 Python 路径。
 

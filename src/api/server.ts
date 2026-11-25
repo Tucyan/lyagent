@@ -33,6 +33,7 @@ import { GradingBatchUploadError } from "../services/grading-batch-upload-servic
 import { ModelConfigService, ModelConfigurationError } from "../services/model-config-service.js";
 import { modelBaseUrlSchema } from "../config/model-base-url.js";
 import { modelProviderIdSchema } from "../config/app-config.js";
+import { pushActiveCourseRelease, StudentSyncClientError } from "../services/student-sync-client.js";
 
 export type MaterialPlanner = (sections: SourceSection[]) => Promise<KnowledgePlan>;
 export type CourseQaAgentFactory = (knowledge: Awaited<ReturnType<KnowledgeService["forCourse"]>>, web?: WebEvidenceService) => PiCourseQaAgent;
@@ -79,6 +80,10 @@ const modelEndpointInputSchema = z.object({
   apiKey: z.string().trim().min(1).max(20_000).optional(),
 }).strict();
 const modelSettingsInputSchema = z.object({ primary: modelEndpointInputSchema, vision: modelEndpointInputSchema.optional() }).strict();
+const studentSyncInputSchema = z.object({
+  serverUrl: modelBaseUrlSchema,
+  syncToken: z.string().trim().min(1).max(1_000).optional(),
+}).strict();
 
 const createCourseSchema = z.object({ name: z.string().trim().min(1).max(100) });
 const importSchema = z.object({
@@ -197,6 +202,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     }
     if (error instanceof GradingResultValidationError) return reply.code(422).send({ code: "GRADING_RESULT_INVALID", message: error.message });
     if (error instanceof ModelConfigurationError) return reply.code(422).send({ code: "MODEL_CONFIGURATION_FAILED", reason: error.reason, message: "The model configuration could not be verified" });
+    if (error instanceof StudentSyncClientError) return reply.code(error.statusCode).send({ code: error.code, message: error.message });
     if (error instanceof GradingReviewRequiredError || error instanceof GradingResultServiceError || error instanceof GradingSessionError) return reply.code(422).send({ code: "GRADING_ERROR", message: error.message });
     const requestError = error as NodeJS.ErrnoException & { statusCode?: unknown };
     const multipartErrors: Record<string, { code: string; message: string; path: string }> = {
@@ -287,6 +293,34 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (!options.modelConfigService) return modelStatus;
     const status = (await options.modelConfigService.status()).primary;
     return { provider: status.providerId, model: status.modelId, configured: status.configured };
+  });
+  app.get("/api/system/student-sync", async (_request, reply) => {
+    if (options.modelApiSecurity) {
+      reply.header("cache-control", "no-store");
+      reply.header("x-csrf-token", options.modelApiSecurity.csrfToken);
+    }
+    return options.modelConfigService ? options.modelConfigService.getStudentSyncStatus() : { configured: false };
+  });
+  app.put("/api/system/student-sync", async (request, reply) => {
+    if (!authorizeModelWrite(request, options.modelApiSecurity)) return reply.code(403).send({ code: "FORBIDDEN", message: "Student sync settings writes are allowed only from the local application" });
+    if (!options.modelConfigService) return reply.code(503).send({ code: "MODEL_SETTINGS_UNAVAILABLE", message: "Settings storage is unavailable" });
+    const parsed = studentSyncInputSchema.parse(request.body);
+    return options.modelConfigService.saveStudentSync({
+      serverUrl: parsed.serverUrl,
+      ...(parsed.syncToken ? { syncToken: parsed.syncToken } : {}),
+    });
+  });
+  app.post<{ Params: { courseId: string } }>("/api/courses/:courseId/sync-to-student", async (request) => {
+    if (!options.modelConfigService) throw new StudentSyncClientError("SYNC_NOT_CONFIGURED", "请先配置学生端服务器地址与同步令牌", 400);
+    const creds = await options.modelConfigService.resolveStudentSyncCredentials();
+    if (!creds) throw new StudentSyncClientError("SYNC_NOT_CONFIGURED", "请先配置学生端服务器地址与同步令牌", 400);
+    const courseId = z.string().uuid().parse(request.params.courseId);
+    return pushActiveCourseRelease({
+      workspaceRoot: options.workspaceRoot,
+      courseId,
+      serverUrl: creds.serverUrl,
+      syncToken: creds.syncToken,
+    });
   });
   app.get("/api/dashboard", async () => dashboard.snapshot());
   app.get("/api/rubrics/assignments", async (request) => {

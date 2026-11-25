@@ -64,6 +64,11 @@ export function KnowledgeLibraryPage() {
   const [busy, setBusy] = useState(false);
   const [confirmState, setConfirmState] = useState<{ title: string; description: string; confirmLabel?: string; tone?: "default" | "danger"; onConfirm: () => Promise<void> | void }>();
   const [promptState, setPromptState] = useState<{ title: string; label: string; description?: string; value: string; placeholder?: string; suggestions?: string[]; onConfirm: (value: string) => Promise<void> | void }>();
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [syncConfigured, setSyncConfigured] = useState(false);
+  const [syncServerUrl, setSyncServerUrl] = useState("");
+  const [syncTokenInput, setSyncTokenInput] = useState("");
+  const [syncCsrfToken, setSyncCsrfToken] = useState("");
   const directoryInput = useRef<HTMLInputElement>(null);
   const workspaceGate = useRef(new LatestRequestGate());
   const releaseGate = useRef(new LatestRequestGate());
@@ -551,6 +556,71 @@ export function KnowledgeLibraryPage() {
     }
   };
 
+  const refreshStudentSync = async () => {
+    try {
+      const res = await apiFetch("/api/system/student-sync", { cache: "no-store" });
+      const csrf = res.headers.get("x-csrf-token") ?? "";
+      if (csrf) setSyncCsrfToken(csrf);
+      if (res.ok) {
+        const data = (await res.json()) as { configured: boolean; serverUrl?: string };
+        setSyncConfigured(data.configured);
+        if (data.serverUrl) setSyncServerUrl(data.serverUrl);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    void refreshStudentSync();
+  }, []);
+
+  const saveStudentSyncSettings = async () => {
+    try {
+      setBusy(true);
+      let csrf = syncCsrfToken;
+      if (!csrf) {
+        const res = await apiFetch("/api/system/student-sync", { cache: "no-store" });
+        csrf = res.headers.get("x-csrf-token") ?? "";
+      }
+      await api("/api/system/student-sync", {
+        method: "PUT",
+        headers: csrf ? { "x-csrf-token": csrf } : {},
+        body: JSON.stringify({
+          serverUrl: syncServerUrl.trim(),
+          ...(syncTokenInput.trim() ? { syncToken: syncTokenInput.trim() } : {}),
+        }),
+      });
+      setSyncTokenInput("");
+      setSyncConfigured(true);
+      setSyncDialogOpen(false);
+      showNotice("学生端同步配置已保存");
+    } catch (error) {
+      showNotice((error as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pushToStudentServer = async () => {
+    if (!courseId || !activeReleaseId) return;
+    if (!syncConfigured) {
+      setSyncDialogOpen(true);
+      return;
+    }
+    try {
+      setBusy(true);
+      const res = await api<{ deduplicated: boolean }>(`/api/courses/${encodeURIComponent(courseId)}/sync-to-student`, {
+        method: "POST",
+      });
+      showNotice(res.deduplicated ? "学生端已是当前最新资料版本" : "已成功同步当前课程资料到学生端服务器");
+    } catch (error) {
+      showNotice((error as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return <div className="knowledge-page">
     <header className="workspace-header knowledge-header">
       <div>
@@ -561,6 +631,14 @@ export function KnowledgeLibraryPage() {
       <div className="knowledge-header-actions">
         <button type="button" onClick={() => directoryInput.current?.click()} disabled={!courseId || busy}>导入资料</button>
         <button className="primary-button" type="button" onClick={() => void createRevision(activeReleaseId)} disabled={!activeReleaseId || busy}>创建修订</button>
+        <button type="button" onClick={() => void pushToStudentServer()} disabled={!activeReleaseId || busy}>
+          {syncConfigured ? "同步到学生端" : "配置学生端同步"}
+        </button>
+        {syncConfigured && (
+          <button type="button" onClick={() => { void refreshStudentSync(); setSyncDialogOpen(true); }} disabled={busy}>
+            同步设置
+          </button>
+        )}
       </div>
     </header>
 
@@ -651,5 +729,40 @@ export function KnowledgeLibraryPage() {
       }}
       onCancel={() => setPromptState(undefined)}
     />
+    {syncDialogOpen && (
+      <div className="confirm-backdrop" role="dialog" aria-modal="true">
+        <div className="confirm-dialog" style={{ maxWidth: 460 }}>
+          <h3>学生端服务器同步设置</h3>
+          <p className="muted">配置学生端服务器地址与后台生成的同步令牌，保存后即可一键推送当前课程的已发布资料。</p>
+          <div style={{ display: "grid", gap: 10, margin: "12px 0" }}>
+            <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+              <span>学生端服务器地址</span>
+              <input
+                value={syncServerUrl}
+                onChange={(e) => setSyncServerUrl(e.target.value)}
+                placeholder="https://qa.example.edu.cn 或 http://127.0.0.1:3010"
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #cfd6e1" }}
+              />
+            </label>
+            <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+              <span>同步令牌（{syncConfigured ? "留空则保留现有令牌" : "必填"}）</span>
+              <input
+                type="password"
+                value={syncTokenInput}
+                onChange={(e) => setSyncTokenInput(e.target.value)}
+                placeholder="stsync_..."
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #cfd6e1" }}
+              />
+            </label>
+          </div>
+          <div className="confirm-actions">
+            <button type="button" onClick={() => setSyncDialogOpen(false)} disabled={busy}>取消</button>
+            <button type="button" className="primary-button" onClick={() => void saveStudentSyncSettings()} disabled={busy || !syncServerUrl.trim()}>
+              保存配置
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
   </div>;
 }

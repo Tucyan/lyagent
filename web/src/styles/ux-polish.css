@@ -2940,3 +2940,1035 @@ fieldset.rubric-guided-field.is-ready {
   }
 }
 
+
+/* ==========================================================================
+   Unified Course QA Scroll & Layout Polish (Teacher Workbench + Student Portal)
+   ========================================================================== */
+
+.admin-main:has(.qa-shell) {
+  padding: 0;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.admin-main .qa-shell {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-columns: 224px minmax(0, 1fr);
+  background: var(--bg-canvas);
+}
+
+.admin-main .chat-sidebar {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px 10px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.admin-main .chat-sidebar nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.admin-main .qa-main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-canvas);
+}
+
+.admin-main .qa-header {
+  flex-shrink: 0;
+  min-height: 60px;
+  padding: 8px 24px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: none;
+  gap: 12px;
+}
+
+.admin-main .qa-header > span {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.admin-main .message-list {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 20px 24px 28px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  background: transparent;
+}
+
+.admin-main .message-list > .qa-welcome,
+.admin-main .message-list > .chat-message {
+  width: min(880px, 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.admin-main .qa-welcome {
+  min-height: 100%;
+  padding: 36px 20px;
+  gap: 10px;
+}
+
+.admin-main .qa-welcome h1 {
+  font-size: 22px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.admin-main .qa-welcome p {
+  margin: 4px 0 12px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.admin-main .qa-welcome > button {
+  max-width: 520px;
+  width: 100%;
+  padding: 10px 14px;
+  margin: 3px 0;
+  text-align: left;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13.5px;
+  transition: border-color var(--ease-standard), background var(--ease-standard), box-shadow var(--ease-standard);
+}
+
+.admin-main .qa-welcome > button:hover {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.admin-main .chat-message {
+  margin-bottom: 18px;
+}
+
+.admin-main .chat-message.user > p {
+  max-width: 78%;
+  padding: 11px 16px;
+  border-radius: 16px 16px 4px 16px;
+  background: #e8eef6;
+  color: var(--text-primary);
+  border: 1px solid #d7e3f1;
+}
+
+.admin-main .chat-message.assistant {
+  padding: 16px 20px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-main .chat-message.assistant .citation {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  transition: background var(--ease-standard), border-color var(--ease-standard);
+}
+
+.admin-main .chat-message.assistant .citation:hover {
+  background: #e1ecfc;
+  border-color: var(--color-primary-border);
+}
+
+.admin-main .chat-composer {
+  position: static;
+  flex-shrink: 0;
+  width: min(928px, 100%);
+  margin: 0 auto;
+  padding: 12px 24px 16px;
+  background: transparent;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.admin-main .chat-composer textarea {
+  min-height: 46px;
+  max-height: 180px;
+  padding: 11px 15px;
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-y: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--ease-standard), box-shadow var(--ease-standard);
+}
+
+.admin-main .chat-composer textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-soft);
+}
+
+.admin-main .chat-composer .web-search-toggle {
+  min-height: 44px;
+  padding: 0 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-main .chat-composer button[type="submit"] {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 10px;
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.admin-main .chat-composer button[type="submit"]:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.admin-main .chat-composer button[type="submit"]:disabled {
+  background: var(--bg-subtle);
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+}
+
+.admin-main .message-list::-webkit-scrollbar,
+.admin-main .chat-sidebar nav::-webkit-scrollbar,
+.admin-main .chat-composer textarea::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.admin-main .message-list::-webkit-scrollbar-thumb,
+.admin-main .chat-sidebar nav::-webkit-scrollbar-thumb,
+.admin-main .chat-composer textarea::-webkit-scrollbar-thumb {
+  background: rgba(118, 131, 148, 0.35);
+  border-radius: 999px;
+}
+
+.admin-main .message-list::-webkit-scrollbar-thumb:hover,
+.admin-main .chat-sidebar nav::-webkit-scrollbar-thumb:hover,
+.admin-main .chat-composer textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(118, 131, 148, 0.6);
+}
+
+@media (max-width: 1280px) {
+  .admin-main .qa-shell {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .admin-main .qa-header {
+    padding: 8px 18px;
+  }
+  .admin-main .message-list {
+    padding: 16px 18px 24px;
+  }
+  .admin-main .chat-composer {
+    padding: 10px 18px 14px;
+  }
+}
+
+@media (max-width: 900px) {
+  .admin-main .qa-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ==========================================================================
+   Unified Button Polish (Teacher Workbench + Student Portal)
+   ========================================================================== */
+
+.admin-main .chat-sidebar .new-chat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: calc(100% - 8px);
+  margin: 6px 4px 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--ease-standard), border-color var(--ease-standard), transform var(--ease-standard), box-shadow var(--ease-standard);
+}
+
+.admin-main .chat-sidebar .new-chat:hover:not(:disabled) {
+  background: #e1ecfc;
+  border-color: #a9c5eb;
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-main .chat-sidebar .new-chat:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.admin-main .chat-sidebar .new-chat:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.admin-main .chat-sidebar .session-action {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--ease-standard), color var(--ease-standard);
+}
+
+.admin-main .chat-sidebar .session-action:hover {
+  background: #e5e9f0;
+  color: var(--text-primary);
+}
+
+.admin-main .chat-sidebar .session-action.delete:hover {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.admin-main .chat-composer button[type="submit"],
+.admin-main .chat-composer .stop-button {
+  height: 46px;
+  min-height: 46px;
+  padding: 0 20px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--ease-standard), border-color var(--ease-standard), transform var(--ease-standard), box-shadow var(--ease-standard);
+}
+
+.admin-main .chat-composer button[type="submit"]:not(:disabled) {
+  box-shadow: 0 2px 6px rgba(39, 88, 150, 0.2);
+}
+
+.admin-main .chat-composer button[type="submit"]:active:not(:disabled),
+.admin-main .chat-composer .stop-button:active {
+  transform: translateY(0.5px);
+}
+
+.admin-main .chat-composer .stop-button {
+  border: 1px solid var(--color-danger-border);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.admin-main .chat-composer .stop-button:hover {
+  background: #fae2e2;
+  border-color: #e6a8a8;
+}
+
+.admin-main .source-drawer > button {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--ease-standard), color var(--ease-standard);
+}
+
+.admin-main .source-drawer > button:hover {
+  background: #e5e9f0;
+  color: var(--text-primary);
+}
+
+.admin-main .qa-shell.chat-sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.admin-main .qa-shell.chat-sidebar-collapsed .qa-main {
+  grid-column: 1;
+}
+
+/* ==========================================================================
+   Smooth Sidebar Collapse Transitions
+   ========================================================================== */
+
+.admin-shell {
+  transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.admin-nav {
+  transition: width 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.admin-main .qa-shell {
+  transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.admin-main .chat-sidebar {
+  min-width: 0;
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 180ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease, padding 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.admin-main .qa-shell.chat-sidebar-collapsed {
+  grid-template-columns: 0px minmax(0, 1fr);
+}
+
+.admin-main .qa-shell.chat-sidebar-collapsed .chat-sidebar {
+  opacity: 0;
+  transform: translateX(-10px);
+  padding-left: 0;
+  padding-right: 0;
+  border-right-color: transparent;
+  pointer-events: none;
+}
+
+.admin-main .qa-shell.chat-sidebar-collapsed .qa-main {
+  grid-column: 2;
+}
+
+/* ==========================================================================
+   Floating Border Collapse Toggle for Primary Navigation Rail
+   ========================================================================== */
+
+@media (min-width: 901px) {
+  .admin-nav {
+    overflow: visible;
+  }
+
+  .admin-brand {
+    justify-content: flex-start;
+    height: 46px;
+    padding: 0 6px 12px;
+    box-sizing: border-box;
+  }
+
+  .admin-shell.nav-compact .admin-brand {
+    justify-content: center;
+    height: 46px;
+    padding: 0 0 12px;
+  }
+
+  .admin-nav .admin-compact-toggle {
+    position: absolute;
+    top: 47px;
+    right: -13.5px;
+    z-index: 30;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    margin: 0;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    box-shadow: 0 2px 8px rgba(24, 34, 48, 0.1);
+    display: inline-grid;
+    place-items: center;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--ease-standard), color var(--ease-standard), border-color var(--ease-standard), box-shadow var(--ease-standard), transform var(--ease-standard);
+  }
+
+  .admin-nav .admin-compact-toggle:hover {
+    background: var(--color-primary-soft);
+    border-color: var(--color-primary-border);
+    color: var(--color-primary);
+    box-shadow: 0 3px 10px rgba(39, 88, 150, 0.16);
+  }
+
+  .admin-nav .admin-compact-toggle:active {
+    transform: scale(0.94);
+  }
+}
+
+/* ==========================================================================
+   Rubric Criterion Collapsible Summary (keep preview focused on title + levels)
+   ========================================================================== */
+
+.rubric-scorecard > article > small {
+  display: block;
+  margin-top: 4px;
+}
+
+.rubric-card-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.rubric-description-toggle,
+.rubric-levels-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-subtle);
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--ease-standard), color var(--ease-standard), border-color var(--ease-standard);
+}
+
+.rubric-description-toggle {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.rubric-levels-toggle {
+  background: var(--bg-surface);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.rubric-description-toggle::before,
+.rubric-levels-toggle::before {
+  content: "▸";
+  font-size: 10px;
+  line-height: 1;
+  transition: transform var(--ease-standard);
+}
+
+.rubric-description-toggle.is-open::before,
+.rubric-levels-toggle.is-open::before {
+  transform: rotate(90deg);
+}
+
+.rubric-description-toggle:hover,
+.rubric-description-toggle.is-open {
+  background: #e6ecf5;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.rubric-levels-toggle:hover,
+.rubric-levels-toggle.is-open {
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary-border);
+}
+
+.rubric-description-body {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.rubric-description-body[hidden],
+.rubric-scorecard > article > .rubric-preview-levels[hidden] {
+  display: none !important;
+}
+
+/* ==========================================================================
+   Rubric Fullscreen Preview & Editor Layout Polish
+   ========================================================================== */
+
+.rubric-preview-panel.fullscreen .rubric-preview-toolbar {
+  padding: 12px 32px;
+}
+
+.rubric-preview-panel.fullscreen .rubric-preview-body {
+  padding: 24px 32px 36px;
+}
+
+.rubric-preview-panel.fullscreen .rubric-document,
+.rubric-preview-panel.fullscreen .rubric-structured-editor {
+  width: min(1240px, 100%);
+  margin: 0 auto;
+}
+
+.rubric-preview-panel.fullscreen .rubric-document {
+  padding: 28px 34px !important;
+}
+
+.rubric-preview-panel.fullscreen .rubric-preview-actions {
+  padding: 12px 32px;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.rubric-preview-panel.fullscreen .rubric-preview-actions.frozen-footer {
+  justify-content: space-between;
+}
+
+.rubric-preview-panel.fullscreen .rubric-preview-actions small {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+@container rubric-preview (min-width: 900px) {
+  .rubric-preview-panel.fullscreen .rubric-scorecard {
+    gap: 14px;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-scorecard > article {
+    padding: 18px 20px;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-scorecard > article > .rubric-preview-levels {
+    grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)) !important;
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-scorecard > article > .rubric-preview-levels > .rubric-level-card {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    align-content: start;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 13px;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-scorecard > article > .rubric-preview-levels > .rubric-level-card > .rubric-level-score {
+    justify-self: end;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-scorecard > article > .rubric-preview-levels > .rubric-level-card > p {
+    align-self: start;
+    margin-top: 2px;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-levels {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 10px;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-levels > strong {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ==========================================================================
+   Compact Rubric Editor Redesign & Fullscreen Split Edit-Preview
+   ========================================================================== */
+
+.rubric-unsaved-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rubric-editor-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+
+.rubric-summary-toggle {
+  margin: 0 0 6px !important;
+  white-space: nowrap;
+}
+
+.rubric-section-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rubric-ghost-btn {
+  padding: 4px 9px !important;
+  font-size: 12px !important;
+  background: transparent !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-secondary) !important;
+}
+
+.rubric-ghost-btn:hover {
+  background: var(--bg-subtle) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+.rubric-editor-card {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.rubric-editor-card-heading {
+  padding: 10px 12px;
+  margin: 0 !important;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rubric-editor-card.is-collapsed .rubric-editor-card-heading {
+  border-bottom: none;
+  background: var(--bg-surface);
+}
+
+.rubric-collapse-trigger {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 2px 0;
+  margin: 0;
+  border: none !important;
+  background: transparent !important;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rubric-collapse-trigger strong {
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.rubric-collapse-caret {
+  color: var(--text-muted);
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+}
+
+.rubric-card-meta-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.rubric-inline-issue-pill {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.rubric-card-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.rubric-mini-btn {
+  padding: 3px 7px !important;
+  min-width: 26px;
+  font-size: 12px !important;
+  border-radius: 6px !important;
+}
+
+.rubric-mini-btn.danger:hover:not(:disabled) {
+  background: var(--color-danger-bg) !important;
+  border-color: var(--color-danger-border) !important;
+  color: var(--color-danger-text) !important;
+}
+
+.rubric-editor-card-body {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.rubric-advanced-stack {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rubric-inline-warning {
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.rubric-levels-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.rubric-level-editor-card.compact {
+  padding: 9px 11px;
+  gap: 7px;
+}
+
+.rubric-level-compact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rubric-level-score-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.rubric-level-score-inline input {
+  width: 64px !important;
+  padding: 4px 6px !important;
+  text-align: center;
+  font-size: 13px !important;
+  border-radius: 6px;
+}
+
+.rubric-level-condition-input {
+  width: 100%;
+  min-height: 50px !important;
+  padding: 7px 9px !important;
+  font-size: 13px !important;
+  line-height: 1.45 !important;
+  border-radius: 6px;
+}
+
+.rubric-level-tech {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.rubric-level-tech summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.rubric-level-tech input {
+  margin-top: 5px;
+  padding: 4px 8px !important;
+  font-size: 12px !important;
+}
+
+/* Fullscreen Side-by-Side Edit + Live Preview */
+.rubric-fullscreen-edit-split {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.05fr) minmax(380px, 0.95fr);
+  gap: 20px;
+  align-items: start;
+  width: min(1440px, 100%);
+  margin: 0 auto;
+}
+
+.rubric-fullscreen-edit-pane,
+.rubric-fullscreen-preview-pane {
+  min-width: 0;
+}
+
+.rubric-fullscreen-preview-pane {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+}
+
+.rubric-fullscreen-preview-pane .rubric-document {
+  width: 100%;
+  padding: 20px 22px !important;
+}
+
+@media (max-width: 1024px) {
+  .rubric-fullscreen-edit-split {
+    grid-template-columns: 1fr;
+  }
+  .rubric-fullscreen-preview-pane {
+    position: static;
+    max-height: none;
+  }
+}
+
+/* ==========================================================================
+   Collapsible Preview Levels, Anchor Stability & Split-Edit Sync Jump
+   ========================================================================== */
+
+.rubric-document-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.rubric-document-bar .rubric-document-policy {
+  margin: 0;
+}
+
+.rubric-preview-toolbar > div:last-child {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.rubric-expand-all-btn {
+  padding: 5px 11px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--color-primary-border) !important;
+  background: var(--color-primary-soft) !important;
+  color: var(--color-primary) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--ease-standard), border-color var(--ease-standard);
+}
+
+.rubric-preview-toolbar .rubric-expand-all-btn {
+  padding: 6px 10px !important;
+}
+
+.rubric-expand-all-btn:hover {
+  background: #e1ecfc !important;
+  border-color: #a9c5eb !important;
+}
+
+.rubric-scorecard-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rubric-scorecard-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rubric-jump-edit-btn {
+  padding: 2px 8px !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--border-subtle) !important;
+  background: var(--bg-surface) !important;
+  color: var(--color-primary) !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  cursor: pointer;
+  transition: background var(--ease-standard), border-color var(--ease-standard);
+}
+
+.rubric-jump-edit-btn:hover {
+  background: var(--color-primary-soft) !important;
+  border-color: var(--color-primary-border) !important;
+}
+
+.rubric-scorecard > article.is-selected-target {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+/* Independent Scrollable Split Panes in Fullscreen Edit Mode */
+.rubric-preview-panel.fullscreen:has(.rubric-fullscreen-edit-split) .rubric-preview-body {
+  overflow: hidden;
+  padding: 16px 28px;
+}
+
+.rubric-preview-panel.fullscreen .rubric-fullscreen-edit-split {
+  height: 100%;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.rubric-preview-panel.fullscreen .rubric-fullscreen-edit-pane,
+.rubric-preview-panel.fullscreen .rubric-fullscreen-preview-pane {
+  position: static;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.rubric-fullscreen-preview-tip {
+  margin-bottom: 10px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-primary-border);
+  color: var(--color-primary);
+  font-size: 12.5px;
+}
+
+@keyframes rubricJumpPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(39, 88, 150, 0.45);
+    border-color: var(--color-primary);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(39, 88, 150, 0);
+    border-color: var(--color-primary);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(39, 88, 150, 0);
+  }
+}
+
+.rubric-editor-card.is-jump-focused,
+.rubric-overlap-row.is-jump-focused {
+  border-color: var(--color-primary) !important;
+  animation: rubricJumpPulse 1.4s ease-out 1;
+}

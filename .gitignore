@@ -13,6 +13,7 @@ findings.md
 progress.md
 workspace/state/*.db
 workspace/state/*.db-*
+workspace/state/*.sqlite*
 workspace/grading.sqlite*
 workspace/logs/*.log
 workspace/config/app.json

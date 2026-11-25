@@ -93,4 +93,50 @@ describe("rubric schema", () => {
 
     expect(calculateRubricScore(rubric, { criteria: { content: 98 }, bonuses: { insight: 8 }, deductions: { citation: 3 } })).toBe(100);
   });
+
+  it("enforces duplicate level IDs, integer range maxDeduction, and warns on continuous level gaps or disabled partial credit", () => {
+    const dupLevelRubric: Rubric = {
+      ...additive,
+      criteria: [{
+        ...additiveCriterion,
+        levels: [
+          { id: "dup", minScore: 50, maxScore: 100, condition: "好" },
+          { id: "dup", minScore: 0, maxScore: 49.99, condition: "差" },
+        ],
+      }],
+    };
+    expect(validateRubric(dupLevelRubric).errors).toContainEqual(expect.objectContaining({ code: "DUPLICATE_LEVEL_ID" }));
+
+    const continuousGap: Rubric = {
+      schemaVersion: "1.0",
+      mode: "additive",
+      totalScore: 10,
+      partialCreditAllowed: false,
+      criteria: [{
+        id: "fmt",
+        name: "格式",
+        description: "格式说明",
+        maxScore: 10,
+        scorePolicy: "continuous",
+        evidenceRequired: true,
+        levels: [
+          { id: "excellent", minScore: 8, maxScore: 10, condition: "优" },
+          { id: "fail", minScore: 0, maxScore: 1, condition: "差" },
+        ],
+      }],
+    };
+    const res = validateRubric(continuousGap);
+    expect(res.errors).toEqual([]);
+    expect(res.warnings).toContainEqual(expect.objectContaining({ code: "CONTINUOUS_LEVELS_GAP_OR_OVERLAP" }));
+    expect(res.warnings).toContainEqual(expect.objectContaining({ code: "PARTIAL_CREDIT_DISABLED_WITH_RANGE" }));
+
+    const fractionalRangeDeduction: Rubric = {
+      schemaVersion: "1.0",
+      mode: "deductive",
+      totalScore: 100,
+      rules: [{ id: "r1", name: "R1", condition: "Weak", amountPolicy: "range", maxDeduction: 0.5, occurrence: "once", evidenceRequired: true }],
+      overlapGroups: [],
+    };
+    expect(validateRubric(fractionalRangeDeduction).errors).toContainEqual(expect.objectContaining({ code: "RANGE_DEDUCTION_MUST_BE_INTEGER" }));
+  });
 });

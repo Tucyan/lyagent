@@ -122,3 +122,7 @@ M4启动时还会恢复`queued`、`running`以及未耗尽自动尝试次数的`
 |企业微信重复回复|消息ID、去重保留期和异步重试记录|
 
 故障处理不得直接修改SQLite状态或正式JSON。需要人工修复时先备份、记录原因，并通过受控维护命令执行。
+
+## 独立学生端安全边界
+
+独立部署的学生端服务（`src/student-main.ts`）通过环境变量配置监听地址、模型密钥与 `STUDENT_PUBLIC_ORIGIN`（不依赖 Windows DPAPI），使用 `HttpOnly; SameSite=Lax` Cookie 会话与 `Origin` 校验；置于 Nginx/Caddy HTTPS 反向代理后需开启 `STUDENT_TRUST_PROXY=true`。本地教师端保存的远程同步令牌仍通过 Windows DPAPI 存储在 `%LOCALAPPDATA%\CourseAgent\secrets\<workspace-sha256>` 中，不进入 `app.json` 或普通日志。

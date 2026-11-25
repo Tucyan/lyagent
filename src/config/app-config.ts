@@ -34,6 +34,9 @@ const appConfigSchema = z.object({
     maxResults: z.number().int().min(1).max(10).default(5),
     pythonCommand: z.string().trim().min(1).optional(),
   }).optional(),
+  studentSync: z.object({
+    serverUrl: modelBaseUrlSchema,
+  }).optional(),
 }).passthrough();
 
 export interface AppConfig {
@@ -42,6 +45,7 @@ export interface AppConfig {
   models: ModelSettings;
   converter: { baseUrl: string; pollIntervalMs: number; taskTimeoutSeconds: number; maxAttempts: number };
   webSearch: { enabled: boolean; provider: "ddgs"; maxResults: number; pythonCommand?: string };
+  studentSync?: { serverUrl: string };
 }
 
 export interface ModelEndpointConfig {
@@ -90,6 +94,7 @@ export function parseAppConfigValue(value: unknown): AppConfig {
       maxResults: parsed.webSearch.maxResults,
       ...(parsed.webSearch.pythonCommand ? { pythonCommand: parsed.webSearch.pythonCommand } : {}),
     } : { enabled: true, provider: "ddgs", maxResults: 5 },
+    ...(parsed.studentSync ? { studentSync: { serverUrl: parsed.studentSync.serverUrl.replace(/\/+$/u, "") } } : {}),
   };
 }
 
@@ -103,6 +108,7 @@ export async function saveAppConfig(workspaceRoot: string, config: AppConfig): P
     models: validated.models,
     converter: validated.converter,
     webSearch: validated.webSearch,
+    ...(validated.studentSync ? { studentSync: validated.studentSync } : {}),
   };
   await writeFile(temporary, `${JSON.stringify(safe, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   await rename(temporary, filename);

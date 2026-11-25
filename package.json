@@ -6,13 +6,16 @@
   "description": "课程辅助智能体 MVP",
   "scripts": {
     "dev": "concurrently -k --restart-tries -1 --restart-after 250 \"tsx src/dev.ts\" \"vite --config web/vite.config.ts\"",
-    "build": "npm run build:server && npm run build:web",
+    "dev:student": "concurrently -k --restart-tries -1 --restart-after 250 \"tsx src/student-main.ts\" \"vite --config web-student/vite.config.ts\"",
+    "build": "npm run build:server && npm run build:web && npm run build:web-student",
     "build:server": "tsc -p tsconfig.json",
     "build:web": "vite build --config web/vite.config.ts",
+    "build:web-student": "vite build --config web-student/vite.config.ts",
     "start": "node dist/src/main.js",
+    "start:student": "node dist/src/student-main.js",
     "test": "vitest",
     "test:watch": "vitest --watch",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json && tsc --noEmit -p web-student/tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
     "check": "npm run typecheck && npm test -- --run",
     "release:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1"
   },

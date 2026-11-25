@@ -6,7 +6,9 @@ export function ChatComposer({ value, onChange, onSend, onStop, allowWebSearch, 
     const element = input.current;
     if (!element) return;
     element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
+    const maxHeight = 180;
+    element.style.height = `${Math.min(element.scrollHeight, maxHeight)}px`;
+    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [value]);
   return <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); onSend(); }}>
     <textarea
@@ -17,6 +19,7 @@ export function ChatComposer({ value, onChange, onSend, onStop, allowWebSearch, 
       placeholder={placeholder}
       aria-label="课程问题"
       rows={1}
+      style={{ overflowY: "hidden" }}
       onKeyDown={(event) => {
         if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
         event.preventDefault();

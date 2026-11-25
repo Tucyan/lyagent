@@ -86,5 +86,106 @@ describe("rubric teacher preview", () => {
     expect(html).toContain("tier-mid");
     expect(html).toContain("tier-low");
     expect(html).toContain("tier-fail");
+    expect(html).toContain('<div class="rubric-card-toggle-row">');
+    expect(html).toContain('aria-expanded="false">查看评分说明摘要</button>');
+    expect(html).toContain('<p class="rubric-description-body" hidden="">格式与表达</p>');
+  });
+
+  it("keeps description expanded when a criterion has no level breakdown", () => {
+    const html = renderToStaticMarkup(<RubricDocument rubric={{
+      schemaVersion: "1.0",
+      mode: "additive",
+      totalScore: 20,
+      partialCreditAllowed: true,
+      criteria: [{
+        id: "clarity",
+        name: "论证清晰",
+        description: "按结构完整度与逻辑自洽程度连续打分",
+        maxScore: 20,
+        scorePolicy: "continuous",
+        evidenceRequired: true,
+      }],
+    }} />);
+
+    expect(html).toContain("按结构完整度与逻辑自洽程度连续打分");
+    expect(html).not.toContain("rubric-description-toggle");
+  });
+
+  it("renders compact level editor with inline range check, single score for exact-level, and template action", () => {
+    const html = renderToStaticMarkup(<RubricEditor onChange={() => undefined} rubric={{
+      schemaVersion: "1.0",
+      mode: "additive",
+      totalScore: 20,
+      partialCreditAllowed: true,
+      criteria: [{
+        id: "bg",
+        name: "问题背景",
+        description: "背景清晰度",
+        maxScore: 20,
+        scorePolicy: "continuous",
+        evidenceRequired: true,
+        levels: [
+          { id: "bg_excellent", minScore: 16, maxScore: 20, condition: "好" },
+          { id: "bg_fail", minScore: 0, maxScore: 5, condition: "差" },
+        ],
+      }],
+    }} />);
+
+    expect(html).toContain("自动衔接区间");
+    expect(html).toContain("套用 5 档模板");
+    expect(html).toContain("＋ 添加等级");
+    expect(html).toContain("区间存在空档或重叠");
+  });
+
+  it("collapses preview level details by default, renders expand-all toggle, and shows edit-jump action in split mode", () => {
+    const html = renderToStaticMarkup(<RubricDocument
+      onSelectTarget={() => undefined}
+      activeTargetKey="criterion:0"
+      rubric={{
+        schemaVersion: "1.0",
+        mode: "additive",
+        totalScore: 20,
+        partialCreditAllowed: true,
+        criteria: [{
+          id: "bg",
+          name: "问题背景",
+          description: "背景清晰度",
+          maxScore: 20,
+          scorePolicy: "range",
+          evidenceRequired: true,
+          levels: [
+            { id: "bg_excellent", minScore: 10, maxScore: 20, condition: "好" },
+            { id: "bg_fail", minScore: 0, maxScore: 9.99, condition: "差" },
+          ],
+        }],
+      }}
+    />);
+
+    expect(html).toContain("展开全部细则 (1)");
+    expect(html).toContain('<div class="rubric-card-toggle-row">');
+    expect(html).toContain('aria-expanded="false">展开评分细则（2 档）</button>');
+    expect(html).toContain('<div class="rubric-preview-levels" hidden="">');
+    expect(html).toContain("✎ 编辑");
+    expect(html).toContain("is-selected-target");
+
+    const delegatedHtml = renderToStaticMarkup(<RubricDocument
+      onLevelToggleStateChange={() => undefined}
+      rubric={{
+        schemaVersion: "1.0",
+        mode: "additive",
+        totalScore: 20,
+        partialCreditAllowed: true,
+        criteria: [{
+          id: "bg",
+          name: "问题背景",
+          description: "背景清晰度",
+          maxScore: 20,
+          scorePolicy: "range",
+          evidenceRequired: true,
+          levels: [{ id: "bg_excellent", minScore: 10, maxScore: 20, condition: "好" }],
+        }],
+      }}
+    />);
+    expect(delegatedHtml).not.toContain("rubric-expand-all-btn");
   });
 });

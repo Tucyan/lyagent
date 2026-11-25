@@ -51,7 +51,7 @@ export type RubricLevelTone = "tier-high" | "tier-good" | "tier-mid" | "tier-low
 
 export interface RubricPreviewSection {
   title: string;
-  rows: Array<{ title: string; score: string; description: string; detail: string; levels?: Array<{ id: string; label: string; tone: RubricLevelTone; score: string; condition: string }> }>;
+  rows: Array<{ targetKey?: string; title: string; score: string; description: string; detail: string; levels?: Array<{ id: string; label: string; tone: RubricLevelTone; score: string; condition: string }> }>;
 }
 
 type PreviewRubric = {
@@ -71,7 +71,8 @@ export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSecti
   if (rubric.mode === "additive" || rubric.mode === "hybrid") {
     sections.push({
       title: "评分项目",
-      rows: (rubric.criteria ?? []).map((criterion) => ({
+      rows: (rubric.criteria ?? []).map((criterion, index) => ({
+        targetKey: `criterion:${index}`,
         title: criterion.name,
         score: `${criterion.maxScore} 分`,
         description: criterion.description,
@@ -81,14 +82,23 @@ export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSecti
     });
   }
   if (rubric.mode === "hybrid" && (rubric.bonusRules?.length ?? 0) > 0) {
-    sections.push({ title: "加分规则", rows: rubric.bonusRules!.map((rule) => rulePreview(rule, "bonus")) });
+    sections.push({
+      title: "加分规则",
+      rows: rubric.bonusRules!.map((rule, index) => ({ targetKey: `bonus:${index}`, ...rulePreview(rule, "bonus") })),
+    });
   }
   const deductionRules = rubric.mode === "deductive" ? rubric.rules ?? [] : rubric.mode === "hybrid" ? rubric.deductionRules ?? [] : [];
-  if (deductionRules.length > 0) sections.push({ title: "扣分规则", rows: deductionRules.map((rule) => rulePreview(rule, "deduction")) });
+  if (deductionRules.length > 0) {
+    sections.push({
+      title: "扣分规则",
+      rows: deductionRules.map((rule, index) => ({ targetKey: `deduction:${index}`, ...rulePreview(rule, "deduction") })),
+    });
+  }
   if (rubric.mode !== "additive" && (rubric.overlapGroups?.length ?? 0) > 0) {
     sections.push({
       title: "重叠规则组",
-      rows: rubric.overlapGroups!.map((group) => ({
+      rows: rubric.overlapGroups!.map((group, index) => ({
+        targetKey: `group:${index}`,
         title: group.id,
         score: group.aggregation === "highest-only" ? "仅取最高项" : "累计",
         description: group.aggregation === "highest-only" ? "同组规则同时触发时只采用扣分或加分最高的一项。" : "同组规则同时触发时按各规则累计。",

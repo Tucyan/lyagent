@@ -103,7 +103,7 @@ describe("rubric page selection", () => {
       partialCreditAllowed: true,
       criteria: [{ id: "analysis", name: "分析质量", description: "论证完整且有证据。", maxScore: 100, scorePolicy: "continuous", evidenceRequired: true }],
     })).toEqual([
-      { title: "评分项目", rows: [{ title: "分析质量", score: "100 分", description: "论证完整且有证据。", detail: "连续评分 · 需要评分分析依据" }] },
+      { title: "评分项目", rows: [{ title: "分析质量", score: "100 分", description: "论证完整且有证据。", detail: "连续评分 · 需要评分分析依据", targetKey: "criterion:0" }] },
     ]);
   });
 

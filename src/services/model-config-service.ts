@@ -34,6 +34,48 @@ export class ModelConfigService {
     this.saveConfig = options.saveConfig ?? saveAppConfig;
   }
 
+  async getStudentSyncStatus(): Promise<{ configured: boolean; serverUrl?: string }> {
+    return withModelConfigLock(this.options.workspaceRoot, async () => {
+      await this.recoverJournal();
+      const config = await loadAppConfig(this.options.workspaceRoot);
+      const token = await this.options.credentials.getApiKey("student-sync");
+      return {
+        configured: Boolean(config.studentSync?.serverUrl && token),
+        ...(config.studentSync?.serverUrl ? { serverUrl: config.studentSync.serverUrl } : {}),
+      };
+    });
+  }
+
+  async saveStudentSync(input: { serverUrl: string; syncToken?: string }): Promise<{ configured: boolean; serverUrl: string }> {
+    const normalizedUrl = input.serverUrl.trim().replace(/\/+$/u, "");
+    assertSafeModelBaseUrl(normalizedUrl);
+    return withModelConfigLock(this.options.workspaceRoot, async () => {
+      await this.recoverJournal();
+      const current = await loadAppConfig(this.options.workspaceRoot);
+      const existingToken = await this.options.credentials.getApiKey("student-sync");
+      const tokenToSave = input.syncToken?.trim() || existingToken;
+      if (!tokenToSave) throw new ModelConfigurationError("missing_api_key");
+      if (input.syncToken?.trim()) {
+        await this.options.credentials.setApiKey("student-sync", input.syncToken.trim());
+      }
+      await this.saveConfig(this.options.workspaceRoot, {
+        ...safeConfig(current),
+        studentSync: { serverUrl: normalizedUrl },
+      });
+      return { configured: true, serverUrl: normalizedUrl };
+    });
+  }
+
+  async resolveStudentSyncCredentials(): Promise<{ serverUrl: string; syncToken: string } | undefined> {
+    return withModelConfigLock(this.options.workspaceRoot, async () => {
+      await this.recoverJournal();
+      const config = await loadAppConfig(this.options.workspaceRoot);
+      const token = await this.options.credentials.getApiKey("student-sync");
+      if (!config.studentSync?.serverUrl || !token) return undefined;
+      return { serverUrl: config.studentSync.serverUrl, syncToken: token };
+    });
+  }
+
   async status(): Promise<ModelStatus> {
     return withModelConfigLock(this.options.workspaceRoot, async () => {
       await this.recoverJournal();
@@ -312,7 +354,12 @@ function parseJournal(value: unknown): TransactionJournal {
 }
 
 function safeConfig(config: AppConfig): AppConfig {
-  return { models: config.models, converter: config.converter, webSearch: config.webSearch };
+  return {
+    models: config.models,
+    converter: config.converter,
+    webSearch: config.webSearch,
+    ...(config.studentSync ? { studentSync: config.studentSync } : {}),
+  };
 }
 
 function submittedKeyMap(input: ModelSettingsInput): Map<string, string> {
