@@ -3055,6 +3055,87 @@ code {
 .decision-editor textarea {
   min-height: 66px;
 }
+.decision-editor-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(49, 95, 158, 0.08);
+  border: 1px solid rgba(49, 95, 158, 0.2);
+}
+.decision-editor-summary small.is-positive {
+  color: #166534;
+  font-weight: 600;
+}
+.decision-editor-summary small.is-negative {
+  color: #b91c1c;
+  font-weight: 600;
+}
+.decision-editor-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.decision-editor article.has-inline-error {
+  border-color: rgba(185, 28, 28, 0.45);
+}
+.decision-inline-error {
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: rgba(185, 28, 28, 0.08);
+  color: #b91c1c;
+  font-size: 0.85rem;
+}
+.decision-level-picker,
+.decision-scored-control,
+.decision-rule-control,
+.decision-occurrence-stepper {
+  display: grid;
+  gap: 6px;
+}
+.decision-level-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.decision-level-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.decision-level-chip.is-active {
+  border-color: #315f9e;
+  background: rgba(49, 95, 158, 0.12);
+  color: #1d4273;
+  font-weight: 600;
+}
+.decision-stepper-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.decision-stepper-row button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+}
+.decision-fixed-amount {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #334155;
+}
 .confirm-panel > div {
   display: flex;
   justify-content: flex-end;

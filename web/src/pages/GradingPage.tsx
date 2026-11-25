@@ -1427,7 +1427,7 @@ function ResultPreview({
       </header>
       <GradingReviewChecklist confirmed={Boolean(detail.confirmed)} reasons={result.review.reasons} notices={Array.isArray(result.decisions.warnings) ? result.decisions.warnings as string[] : []} acknowledgedReasons={acknowledgedReasons} onChange={setAcknowledgedReasons} />
       {manual && !detail.confirmed ? (
-        <DecisionEditor decisions={edited} rubric={detail.rubric} onChange={setEdited} />
+        <DecisionEditor decisions={edited} rubric={detail.rubric} baselineScore={result.score.earned} onChange={setEdited} />
       ) : (
         <DecisionCards decisions={result.decisions} rubric={detail.rubric} sessionId={detail.id} />
       )}
