@@ -1,6 +1,7 @@
 import type { GradingResultService } from "./grading-result-service.js";
 import type { GradingSession, GradingSessionService } from "./grading-session-service.js";
 import type { RubricService } from "./rubric-service.js";
+import { normalizeRubric } from "../schemas/rubric-engine.js";
 
 export interface GradingCsvColumns {
   studentName?: boolean;
@@ -32,7 +33,7 @@ interface DetailColumn {
   key: string;
   heading: string;
   confidenceHeading: string;
-  kind: "criterion" | "deduction" | "bonus";
+  kind: "criterion" | "deduction" | "bonus" | "scoreCap";
   id: string;
 }
 
@@ -119,13 +120,11 @@ function rubricDetailColumns(
     seen.add(key);
     output.push({ key, kind, id, heading: `${prefix} · ${label}：${name}`, confidenceHeading: `${prefix} · 置信度：${name}` });
   };
-  if (rubric.mode === "additive") for (const item of rubric.criteria) add("criterion", item.id, item.name, "得分点");
-  if (rubric.mode === "deductive") for (const item of rubric.rules) add("deduction", item.id, item.name, "扣分点");
-  if (rubric.mode === "hybrid") {
-    for (const item of rubric.criteria) add("criterion", item.id, item.name, "得分点");
-    for (const item of rubric.bonusRules) add("bonus", item.id, item.name, "加分点");
-    for (const item of rubric.deductionRules) add("deduction", item.id, item.name, "扣分点");
-  }
+  const normalized = normalizeRubric(rubric);
+  for (const item of normalized.criteria) add("criterion", item.id, item.name, "得分点");
+  for (const item of normalized.bonusRules) add("bonus", item.id, item.name, "加分点");
+  for (const item of normalized.deductionRules) add("deduction", item.id, item.name, "扣分点");
+  for (const item of normalized.scoreCaps) add("scoreCap", item.id, item.name, "总分封顶");
 }
 
 async function rubricScopeDetailColumns(
@@ -155,7 +154,7 @@ function detailColumns(rows: ExportRow[]): DetailColumn[] {
   return output;
 }
 
-function findDecision(row: ExportRow, column: DetailColumn): { value: number; confidence: number } | undefined {
+function findDecision(row: ExportRow, column: DetailColumn): { value: number | string; confidence: number } | undefined {
   const expectedPrefix = `${row.session.assignmentId}:${row.session.rubricVersion}:`;
   if (!column.key.startsWith(expectedPrefix)) return undefined;
   const decisions = row.confirmed.result.decisions;
@@ -170,6 +169,10 @@ function findDecision(row: ExportRow, column: DetailColumn): { value: number; co
   if (column.kind === "bonus" && decisions.mode === "hybrid") {
     const decision = decisions.bonuses.find(({ ruleId }) => ruleId === column.id);
     return decision ? { value: decision.triggered ? decision.bonus : 0, confidence: decision.confidence } : undefined;
+  }
+  if (column.kind === "scoreCap") {
+    const decision = (decisions.scoreCaps ?? []).find(({ ruleId }) => ruleId === column.id);
+    return decision ? { value: decision.triggered ? "触发封顶" : "未触发", confidence: decision.confidence } : undefined;
   }
   return undefined;
 }

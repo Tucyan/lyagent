@@ -5,6 +5,7 @@ import type { StoredGradingDraft, GradingResultService } from "../../services/gr
 import type { GradingSessionService } from "../../services/grading-session-service.js";
 import type { WebEvidenceService } from "../../services/web-evidence-service.js";
 import type { Rubric } from "../../schemas/rubric.js";
+import { normalizeRubric } from "../../schemas/rubric-engine.js";
 import { createCourseQaTools } from "../knowledge/index.js";
 
 export type GradingToolName =
@@ -278,41 +279,51 @@ function gradingDraftToolSchema(rubric?: Rubric): any {
     improvements: Type.Array(Type.String({ minLength: 1, maxLength: 1_000 }), { maxItems: 20 }),
     warnings: Type.Array(Type.String({ minLength: 1, maxLength: 1_000 }), { maxItems: 20 }),
   };
-  const criterionIds = rubric && rubric.mode !== "deductive" ? rubric.criteria.map(({ id }) => id) : [];
+  const normalized = rubric ? normalizeRubric(rubric) : undefined;
+  const criterionIds = normalized ? normalized.criteria.map(({ id }) => id) : [];
   const criterion = Type.Object({
     criterionId: identifierToolSchema(criterionIds),
     selectedLevelId: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
     score: Type.Number({ minimum: 0 }),
     ...common,
   }, { additionalProperties: false });
-  const deductionIds = rubric?.mode === "deductive"
-    ? rubric.rules.map(({ id }) => id)
-    : rubric?.mode === "hybrid"
-      ? rubric.deductionRules.map(({ id }) => id)
-      : [];
+  const deductionIds = normalized ? normalized.deductionRules.map(({ id }) => id) : [];
   const deduction = Type.Object({
     ruleId: identifierToolSchema(deductionIds),
     triggered: Type.Boolean(),
     deduction: Type.Number({ minimum: 0 }),
+    occurrences: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
     ...common,
   }, { additionalProperties: false });
-  const bonusIds = rubric?.mode === "hybrid" ? rubric.bonusRules.map(({ id }) => id) : [];
+  const bonusIds = normalized ? normalized.bonusRules.map(({ id }) => id) : [];
   const bonus = Type.Object({
     ruleId: identifierToolSchema(bonusIds),
     triggered: Type.Boolean(),
     bonus: Type.Number({ minimum: 0 }),
+    occurrences: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
     ...common,
   }, { additionalProperties: false });
+  const scoreCapIds = normalized ? normalized.scoreCaps.map(({ id }) => id) : [];
+  const scoreCap = Type.Object({
+    ruleId: identifierToolSchema(scoreCapIds),
+    triggered: Type.Boolean(),
+    ...common,
+  }, { additionalProperties: false });
+  const scoreCapsField = scoreCapIds.length > 0
+    ? { scoreCaps: Type.Array(scoreCap, { minItems: scoreCapIds.length, maxItems: scoreCapIds.length }) }
+    : { scoreCaps: Type.Optional(Type.Array(scoreCap, { maxItems: 20 })) };
   const additive = Type.Object({
     schemaVersion: Type.Literal("1.0"),
     mode: Type.Literal("additive"),
     criteria: Type.Array(criterion, { maxItems: 40 }),
+    ...scoreCapsField,
     ...narrative,
   }, { additionalProperties: false });
   const deductive = Type.Object({
     schemaVersion: Type.Literal("1.0"),
     mode: Type.Literal("deductive"),
     deductions: Type.Array(deduction, { maxItems: 80 }),
+    ...scoreCapsField,
     ...narrative,
   }, { additionalProperties: false });
   const hybrid = Type.Object({
@@ -321,6 +332,7 @@ function gradingDraftToolSchema(rubric?: Rubric): any {
     criteria: Type.Array(criterion, { maxItems: 40 }),
     bonuses: Type.Array(bonus, { maxItems: 40 }),
     deductions: Type.Array(deduction, { maxItems: 80 }),
+    ...scoreCapsField,
     ...narrative,
   }, { additionalProperties: false });
   if (rubric?.mode === "additive") return additive;

@@ -48,9 +48,9 @@ describe("rubric teacher preview", () => {
     }} />);
 
     expect(html).toContain("固定一次扣分");
-    expect(html).toContain("按次扣分");
+    expect(html).toContain("按次累计扣分");
     expect(html).toContain("自由区间扣分");
-    expect(html).toContain("按严重程度在整数区间内扣分");
+    expect(html).toContain("步长");
   });
 
   it("localizes technical level ids and assigns graduated green-to-red tone tiers", () => {
@@ -131,10 +131,10 @@ describe("rubric teacher preview", () => {
       }],
     }} />);
 
-    expect(html).toContain("自动衔接区间");
+    expect(html).toContain("分值步长");
     expect(html).toContain("套用 5 档模板");
-    expect(html).toContain("＋ 添加等级");
-    expect(html).toContain("区间存在空档或重叠");
+    expect(html).toContain("＋ 添加档位");
+    expect(html).toContain("条件总分封顶");
   });
 
   it("collapses preview level details by default, renders expand-all toggle, and shows edit-jump action in split mode", () => {

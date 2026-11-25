@@ -363,7 +363,15 @@ describe("rubric HTTP API", () => {
     expect((await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/mode/stream`, payload: { mode: "additive" } })).statusCode).toBe(422);
     expect((await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/messages/stream`, payload: { message: "Revise this rubric." } })).statusCode).toBe(422);
     expect((await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/versions/1/revisions` })).statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` })).json()).toMatchObject({ baseRubricVersion: 1, rubric });
+    expect((await app.inject({ method: "GET", url: `/api/rubrics/assignments/${assignment.id}/draft` })).json()).toMatchObject({
+      baseRubricVersion: 1,
+      rubric: {
+        schemaVersion: "2.0",
+        mode: "additive",
+        totalScore: 100,
+        criteria: [expect.objectContaining({ id: "argument", scoringType: "scored", maxScore: 100 })],
+      },
+    });
     await app.close();
   });
 

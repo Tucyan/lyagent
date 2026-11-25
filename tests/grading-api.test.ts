@@ -845,8 +845,8 @@ describe("grading API", () => {
           criteria: [
             {
               criterionId: "C1",
-              score: 8,
-              reason: "缺少等级",
+              score: 25,
+              reason: "超出最高分",
               evidence: [
                 {
                   kind: "text",

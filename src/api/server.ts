@@ -637,23 +637,25 @@ function staticRubricRecommendation() {
 }
 
 function manualRubric(mode: Rubric["mode"], totalScore: number): Rubric {
+  const step = Math.round(totalScore * 100) % 50 === 0 ? (0.5 as const) : (0.01 as const);
   const criterion = {
     id: "overall_quality",
     name: "整体完成质量",
     description: "请将本项拆分为适合当前作业的可观察评分维度。",
     maxScore: totalScore,
-    scorePolicy: "continuous" as const,
+    scoringType: "scored" as const,
+    step,
     evidenceRequired: true,
   };
-  if (mode === "additive") return { schemaVersion: "1.0", mode, totalScore, partialCreditAllowed: true, criteria: [criterion] };
+  if (mode === "additive") return { schemaVersion: "2.0", mode, totalScore, criteria: [criterion] };
   if (mode === "deductive") return {
-    schemaVersion: "1.0",
+    schemaVersion: "2.0",
     mode,
     totalScore,
-    rules: [{ id: "general_issue", name: "通用问题", condition: "请填写明确、可观察的扣分触发条件。", deduction: Math.min(1, totalScore), maxDeduction: totalScore, occurrence: "once", evidenceRequired: true }],
+    rules: [{ id: "general_issue", name: "通用问题", condition: "请填写明确、可观察的扣分触发条件。", policy: "fixed", amount: Math.min(1, totalScore), evidenceRequired: true }],
     overlapGroups: [],
   };
-  return { schemaVersion: "1.0", mode, totalScore, partialCreditAllowed: true, criteria: [criterion], bonusRules: [], deductionRules: [], overlapGroups: [] };
+  return { schemaVersion: "2.0", mode, totalScore, criteria: [criterion], bonusRules: [], deductionRules: [], overlapGroups: [] };
 }
 
 async function streamRubricDesign(

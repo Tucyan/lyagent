@@ -137,7 +137,7 @@ describe("grading result schemas and deterministic calculation", () => {
     expect(hybridResult.score.earned).toBe(9);
   });
 
-  it("enforces frozen level policies and rule occurrence increments", () => {
+  it("auto-derives range selectedLevelId while enforcing exact-level and rule occurrence increments", () => {
     const additive: Rubric = {
       schemaVersion: "1.0", mode: "additive", totalScore: 10, partialCreditAllowed: true,
       criteria: [{ id: "quality", name: "质量", description: "成果质量", maxScore: 10, scorePolicy: "range", evidenceRequired: false, levels: [
@@ -147,14 +147,29 @@ describe("grading result schemas and deterministic calculation", () => {
     };
     const submission = { path: "submission-v1.md", lineCount: 5, lines: Array(5).fill("合成报告中的短证据"), hash: "1".repeat(64) };
     const base = { schemaVersion: "1.0" as const, mode: "additive" as const, strengths: [], improvements: [], warnings: [] };
-    expect(() => finalizeGradingDraft({ rubric: additive, submission, draft: { ...base, criteria: [{ criterionId: "quality", selectedLevelId: "low", score: 8, reason: "不匹配", evidence: [], confidence: 1 }] } })).toThrow(/selected level/i);
-    expect(() => finalizeGradingDraft({ rubric: additive, submission, draft: { ...base, criteria: [{ criterionId: "quality", score: 8, reason: "缺少等级", evidence: [], confidence: 1 }] } })).toThrow(/level.*required/i);
+    // Auto-derives selectedLevelId even if omitted or stale after cross-band score edit
+    const resynced = finalizeGradingDraft({ rubric: additive, submission, draft: { ...base, criteria: [{ criterionId: "quality", selectedLevelId: "low", score: 8, reason: "跨档改分", evidence: [], confidence: 1 }] } });
+    expect(resynced.score.earned).toBe(8);
+    expect(resynced.decisions.mode === "additive" && resynced.decisions.criteria[0]?.selectedLevelId).toBe("high");
+    const omitted = finalizeGradingDraft({ rubric: additive, submission, draft: { ...base, criteria: [{ criterionId: "quality", score: 3, reason: "自动归档", evidence: [], confidence: 1 }] } });
+    expect(omitted.decisions.mode === "additive" && omitted.decisions.criteria[0]?.selectedLevelId).toBe("low");
     expect(() => finalizeGradingDraft({ rubric: additive, submission, draft: { ...base, criteria: [{ criterionId: "quality", selectedLevelId: "low", score: 0.009, reason: "精度过高", evidence: [], confidence: 1 }] } })).toThrow(/two decimal/i);
+
+    const exactRubric: Rubric = {
+      schemaVersion: "1.0", mode: "additive", totalScore: 10, partialCreditAllowed: true,
+      criteria: [{ id: "quality", name: "质量", description: "成果质量", maxScore: 10, scorePolicy: "exact-level", evidenceRequired: false, levels: [
+        { id: "low", minScore: 0, maxScore: 0, condition: "未达标" },
+        { id: "high", minScore: 10, maxScore: 10, condition: "达标" },
+      ] }],
+    };
+    expect(() => finalizeGradingDraft({ rubric: exactRubric, submission, draft: { ...base, criteria: [{ criterionId: "quality", selectedLevelId: "low", score: 10, reason: "等级与分值冲突", evidence: [], confidence: 1 }] } })).toThrow(/exact level/i);
+    expect(() => finalizeGradingDraft({ rubric: exactRubric, submission, draft: { ...base, criteria: [{ criterionId: "quality", score: 5, reason: "非法中间分", evidence: [], confidence: 1 }] } })).toThrow(/valid level/i);
 
     const perOccurrence: Rubric = { schemaVersion: "1.0", mode: "deductive", totalScore: 20, overlapGroups: [], rules: [
       { id: "error", name: "错误", condition: "每处错误", deduction: 3, maxDeduction: 9, occurrence: "per-occurrence", evidenceRequired: false },
     ] };
     expect(() => finalizeGradingDraft({ rubric: perOccurrence, submission, draft: { schemaVersion: "1.0", mode: "deductive", deductions: [{ ruleId: "error", triggered: true, deduction: 4, reason: "任意扣分", evidence: [], confidence: 1 }], strengths: [], improvements: [], warnings: [] } })).toThrow(/increment/i);
+    expect(finalizeGradingDraft({ rubric: perOccurrence, submission, draft: { schemaVersion: "1.0", mode: "deductive", deductions: [{ ruleId: "error", triggered: true, deduction: 6, occurrences: 2, reason: "两处错误", evidence: [], confidence: 1 }], strengths: [], improvements: [], warnings: [] } }).score.earned).toBe(14);
   });
 
   it("allows integer range deductions while preserving legacy fixed deductions", () => {
@@ -213,5 +228,65 @@ describe("grading result schemas and deterministic calculation", () => {
     };
 
     expect(finalizeGradingDraft({ rubric: deductiveRubric, submission: { path: "submission-v1.md", lineCount: 80, lines: Array(80).fill("合成报告中的短证据"), hash: "a".repeat(64) }, draft }).score).toEqual({ earned: 90, possible: 100 });
+  });
+
+  it("enforces v2.0 step-aligned range deductions, bonuses, and scoreCaps in program code", () => {
+    const v2Rubric: Rubric = {
+      schemaVersion: "2.0",
+      mode: "hybrid",
+      totalScore: 100,
+      criteria: [
+        { id: "c1", name: "内容", description: "核心内容", maxScore: 100, scoringType: "scored", step: 0.5, evidenceRequired: false, levels: [
+          { id: "low", minScore: 0, maxScore: 59.5, condition: "较弱" },
+          { id: "high", minScore: 60, maxScore: 100, condition: "达标" },
+        ] },
+      ],
+      bonusRules: [
+        { id: "b1", name: "亮点", condition: "有深度亮点", policy: "range", maxAmount: 5, step: 0.5, evidenceRequired: false },
+      ],
+      deductionRules: [
+        { id: "d1", name: "表达", condition: "表达瑕疵", policy: "range", maxAmount: 2.5, step: 0.5, evidenceRequired: false },
+      ],
+      scoreCaps: [
+        { id: "short", name: "字数不足封顶", condition: "不足300字", maxTotalScore: 30, evidenceRequired: false },
+      ],
+      overlapGroups: [],
+    };
+    const submission = { path: "submission-v1.md", lineCount: 5, lines: Array(5).fill("正文"), hash: "4".repeat(64) };
+
+    const capped = finalizeGradingDraft({
+      rubric: v2Rubric,
+      submission,
+      draft: {
+        schemaVersion: "1.0",
+        mode: "hybrid",
+        criteria: [{ criterionId: "c1", score: 85.5, reason: "分析较好", evidence: [], confidence: 0.9 }],
+        bonuses: [{ ruleId: "b1", triggered: true, bonus: 1.5, reason: "有一定亮点", evidence: [], confidence: 0.9 }],
+        deductions: [{ ruleId: "d1", triggered: true, deduction: 1.5, reason: "轻微格式问题", evidence: [], confidence: 0.9 }],
+        scoreCaps: [{ ruleId: "short", triggered: true, reason: "篇幅不足300字", evidence: [], confidence: 0.95 }],
+        strengths: [],
+        improvements: [],
+        warnings: [],
+      },
+    });
+    expect(capped.score).toEqual({ earned: 30, possible: 100 });
+    expect(capped.decisions.mode === "hybrid" && capped.decisions.criteria[0]?.selectedLevelId).toBe("high");
+
+    // Step mismatch rejected (0.3 is not aligned to step 0.5)
+    expect(() => finalizeGradingDraft({
+      rubric: v2Rubric,
+      submission,
+      draft: {
+        schemaVersion: "1.0",
+        mode: "hybrid",
+        criteria: [{ criterionId: "c1", score: 85.3, reason: "步长不对齐", evidence: [], confidence: 0.9 }],
+        bonuses: [{ ruleId: "b1", triggered: false, bonus: 0, reason: "无", evidence: [], confidence: 0.9 }],
+        deductions: [{ ruleId: "d1", triggered: false, deduction: 0, reason: "无", evidence: [], confidence: 0.9 }],
+        scoreCaps: [{ ruleId: "short", triggered: false, reason: "字数达标", evidence: [], confidence: 0.95 }],
+        strengths: [],
+        improvements: [],
+        warnings: [],
+      },
+    })).toThrow(/step 0.5/i);
   });
 });

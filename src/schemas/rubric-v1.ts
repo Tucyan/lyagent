@@ -1,0 +1,228 @@
+import { z } from "zod";
+import { toUnits } from "./rubric-engine.js";
+
+const scoreSchema = z.number().finite().nonnegative().refine(
+  (value) => Math.abs(Math.round(value * 100) - value * 100) < 1e-8,
+  "Scores support at most two decimal places",
+);
+const idSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+
+const levelV1Schema = z.object({
+  id: idSchema,
+  minScore: scoreSchema,
+  maxScore: scoreSchema,
+  condition: z.string().trim().min(1).max(2_000),
+});
+
+const criterionV1Schema = z.object({
+  id: idSchema,
+  name: z.string().trim().min(1).max(160),
+  description: z.string().trim().min(1).max(4_000),
+  maxScore: scoreSchema.positive(),
+  scorePolicy: z.enum(["exact-level", "range", "continuous"]),
+  evidenceRequired: z.boolean(),
+  levels: z.array(levelV1Schema).max(20).optional(),
+});
+
+const deductionRuleV1Base = {
+  id: idSchema,
+  name: z.string().trim().min(1).max(160),
+  condition: z.string().trim().min(1).max(2_000),
+  maxDeduction: scoreSchema.positive(),
+  evidenceRequired: z.boolean(),
+  overlapGroup: idSchema.optional(),
+};
+
+const deductionRuleV1Schema = z.union([
+  z.object({ ...deductionRuleV1Base, amountPolicy: z.undefined().optional(), deduction: scoreSchema.positive(), occurrence: z.enum(["once", "per-occurrence"]) }),
+  z.object({ ...deductionRuleV1Base, amountPolicy: z.literal("fixed"), deduction: scoreSchema.positive(), occurrence: z.literal("once") }),
+  z.object({ ...deductionRuleV1Base, amountPolicy: z.literal("per-occurrence"), deduction: scoreSchema.positive(), occurrence: z.literal("per-occurrence") }),
+  z.object({ ...deductionRuleV1Base, amountPolicy: z.literal("range"), deduction: z.undefined().optional(), occurrence: z.enum(["once", "per-occurrence"]) }),
+]);
+
+const bonusRuleV1Schema = z.object({
+  id: idSchema,
+  name: z.string().trim().min(1).max(160),
+  condition: z.string().trim().min(1).max(2_000),
+  bonus: scoreSchema.positive(),
+  maxBonus: scoreSchema.positive(),
+  occurrence: z.enum(["once", "per-occurrence"]),
+  evidenceRequired: z.boolean(),
+  overlapGroup: idSchema.optional(),
+});
+
+const overlapGroupV1Schema = z.object({ id: idSchema, aggregation: z.enum(["highest-only", "sum"]) });
+
+export const additiveRubricV1Schema = z.object({
+  schemaVersion: z.literal("1.0"),
+  mode: z.literal("additive"),
+  totalScore: scoreSchema.positive(),
+  partialCreditAllowed: z.boolean(),
+  criteria: z.array(criterionV1Schema).min(1).max(40),
+});
+
+export const deductiveRubricV1Schema = z.object({
+  schemaVersion: z.literal("1.0"),
+  mode: z.literal("deductive"),
+  totalScore: scoreSchema.positive(),
+  rules: z.array(deductionRuleV1Schema).min(1).max(80),
+  overlapGroups: z.array(overlapGroupV1Schema).max(40),
+});
+
+export const hybridRubricV1Schema = z.object({
+  schemaVersion: z.literal("1.0"),
+  mode: z.literal("hybrid"),
+  totalScore: scoreSchema.positive(),
+  partialCreditAllowed: z.boolean(),
+  criteria: z.array(criterionV1Schema).min(1).max(40),
+  bonusRules: z.array(bonusRuleV1Schema).max(40),
+  deductionRules: z.array(deductionRuleV1Schema).max(80),
+  overlapGroups: z.array(overlapGroupV1Schema).max(40),
+});
+
+export const rubricV1Schema = z.discriminatedUnion("mode", [
+  additiveRubricV1Schema,
+  deductiveRubricV1Schema,
+  hybridRubricV1Schema,
+]);
+
+export type AdditiveRubricV1 = z.infer<typeof additiveRubricV1Schema>;
+export type DeductiveRubricV1 = z.infer<typeof deductiveRubricV1Schema>;
+export type HybridRubricV1 = z.infer<typeof hybridRubricV1Schema>;
+export type RubricV1 = AdditiveRubricV1 | DeductiveRubricV1 | HybridRubricV1;
+export type DeductionRuleV1 = DeductiveRubricV1["rules"][number];
+
+export interface RubricProblemV1 {
+  code: string;
+  message: string;
+  path?: string;
+}
+
+export function validateRubricV1(value: unknown): { errors: RubricProblemV1[]; warnings: RubricProblemV1[] } {
+  const parsed = rubricV1Schema.safeParse(value);
+  if (!parsed.success) {
+    return {
+      errors: parsed.error.issues.map((issue) => ({ code: "SCHEMA_INVALID", message: issue.message, path: issue.path.join(".") })),
+      warnings: [],
+    };
+  }
+
+  const rubric = parsed.data;
+  const errors: RubricProblemV1[] = [];
+  const warnings: RubricProblemV1[] = [];
+  const groupIds = new Set<string>();
+  for (const group of "overlapGroups" in rubric ? rubric.overlapGroups : []) {
+    if (groupIds.has(group.id)) errors.push(problem("DUPLICATE_OVERLAP_GROUP", `Overlap group ${group.id} is duplicated`, "overlapGroups"));
+    groupIds.add(group.id);
+  }
+
+  if (rubric.mode === "additive" || rubric.mode === "hybrid") {
+    validateCriteriaV1(rubric.criteria, rubric.totalScore, rubric.partialCreditAllowed, errors, warnings);
+  }
+  if (rubric.mode === "deductive") {
+    validateDeductionRulesV1(rubric.rules, groupIds, errors);
+    findDuplicateIds(rubric.rules.map((rule) => rule.id), errors);
+  }
+  if (rubric.mode === "hybrid") {
+    validateBonusRulesV1(rubric.bonusRules, groupIds, errors);
+    validateDeductionRulesV1(rubric.deductionRules, groupIds, errors);
+    const ids = [...rubric.criteria.map((criterion) => criterion.id), ...rubric.bonusRules.map((rule) => rule.id), ...rubric.deductionRules.map((rule) => rule.id)];
+    findDuplicateIds(ids, errors);
+    const bonusGroups = new Set(rubric.bonusRules.map((rule) => rule.overlapGroup).filter((g): g is string => Boolean(g)));
+    for (const rule of rubric.deductionRules) {
+      if (rule.overlapGroup && bonusGroups.has(rule.overlapGroup)) {
+        errors.push(problem("MIXED_OVERLAP_GROUP", `Overlap group ${rule.overlapGroup} cannot mix bonus and deduction rules`, "overlapGroups"));
+      }
+    }
+    if (rubric.bonusRules.length === 0 && rubric.deductionRules.length === 0) {
+      warnings.push(problem("HYBRID_WITHOUT_EXTRA_RULES", "Hybrid rubric has no bonus or deduction rules", "mode"));
+    }
+  }
+  return { errors, warnings };
+}
+
+function validateCriteriaV1(
+  criteria: AdditiveRubricV1["criteria"],
+  totalScore: number,
+  partialCreditAllowed: boolean,
+  errors: RubricProblemV1[],
+  warnings: RubricProblemV1[],
+): void {
+  findDuplicateIds(criteria.map((criterion) => criterion.id), errors);
+  if (criteria.reduce((total, criterion) => total + toUnits(criterion.maxScore), 0) !== toUnits(totalScore)) {
+    errors.push(problem("CRITERIA_TOTAL_MISMATCH", "Criterion maxima must equal the rubric total score", "criteria"));
+  }
+  for (const criterion of criteria) {
+    if (!partialCreditAllowed && criterion.scorePolicy !== "exact-level") {
+      warnings.push(problem("PARTIAL_CREDIT_DISABLED_WITH_RANGE", `${criterion.id} allows only 0 or full score when partial credit is disabled`, `criteria.${criterion.id}.scorePolicy`));
+    }
+    const levels = criterion.levels ?? [];
+    if ((criterion.scorePolicy === "range" || criterion.scorePolicy === "exact-level") && levels.length === 0) {
+      errors.push(problem("LEVELS_REQUIRED", `${criterion.id} requires scoring levels`, `criteria.${criterion.id}.levels`));
+      continue;
+    }
+    if (criterion.scorePolicy === "continuous" && levels.length === 0) {
+      warnings.push(problem("CONTINUOUS_WITHOUT_ANCHORS", `${criterion.id} has no score anchors`, `criteria.${criterion.id}.levels`));
+    }
+    const levelIds = new Set<string>();
+    for (const level of levels) {
+      if (levelIds.has(level.id)) errors.push(problem("DUPLICATE_LEVEL_ID", `Level ID ${level.id} is duplicated in ${criterion.id}`, `criteria.${criterion.id}.levels`));
+      levelIds.add(level.id);
+    }
+    const sorted = [...levels].sort((left, right) => left.minScore - right.minScore);
+    for (const level of sorted) {
+      if (level.minScore > level.maxScore || level.maxScore > criterion.maxScore) errors.push(problem("LEVEL_OUT_OF_RANGE", `Level ${level.id} is outside ${criterion.id}'s bounds`, `criteria.${criterion.id}.levels`));
+      if (criterion.scorePolicy === "exact-level" && level.minScore !== level.maxScore) errors.push(problem("EXACT_LEVEL_NOT_EXACT", `Level ${level.id} must have one exact score`, `criteria.${criterion.id}.levels`));
+    }
+    if ((criterion.scorePolicy === "range" || criterion.scorePolicy === "continuous") && sorted.length > 0) {
+      const first = sorted[0]!;
+      const last = sorted.at(-1)!;
+      const missingCoverage = toUnits(first.minScore) !== 0 || toUnits(last.maxScore) !== toUnits(criterion.maxScore);
+      let hasGapOrOverlap = false;
+      for (let index = 1; index < sorted.length; index += 1) {
+        const previous = sorted[index - 1]!;
+        const current = sorted[index]!;
+        if (toUnits(previous.maxScore) + 1 !== toUnits(current.minScore)) {
+          hasGapOrOverlap = true;
+          break;
+        }
+      }
+      if (criterion.scorePolicy === "range") {
+        if (missingCoverage) errors.push(problem("RANGE_NOT_COVERED", `${criterion.id} levels must cover its full score range`, `criteria.${criterion.id}.levels`));
+        if (hasGapOrOverlap) errors.push(problem("RANGE_GAP_OR_OVERLAP", `${criterion.id} levels must be contiguous`, `criteria.${criterion.id}.levels`));
+      } else if (missingCoverage || hasGapOrOverlap) {
+        warnings.push(problem("CONTINUOUS_LEVELS_GAP_OR_OVERLAP", `${criterion.id} anchor levels have gaps, overlaps, or incomplete coverage`, `criteria.${criterion.id}.levels`));
+      }
+    }
+  }
+}
+
+function validateDeductionRulesV1(rules: DeductiveRubricV1["rules"], groupIds: Set<string>, errors: RubricProblemV1[]): void {
+  for (const rule of rules) {
+    if (rule.amountPolicy === "range") {
+      if (rule.occurrence !== "once") errors.push(problem("RANGE_DEDUCTION_MUST_BE_ONCE", `${rule.id} range deduction must use once occurrence`, `rules.${rule.id}.occurrence`));
+      if (!Number.isInteger(rule.maxDeduction) || rule.maxDeduction < 1) errors.push(problem("RANGE_DEDUCTION_MUST_BE_INTEGER", `${rule.id} range deduction maxDeduction must be a positive integer`, `rules.${rule.id}.maxDeduction`));
+    }
+    if (rule.amountPolicy !== "range" && rule.deduction > rule.maxDeduction) errors.push(problem("DEDUCTION_EXCEEDS_MAXIMUM", `${rule.id} deduction exceeds its maximum`, `rules.${rule.id}`));
+    if (rule.overlapGroup && !groupIds.has(rule.overlapGroup)) errors.push(problem("UNKNOWN_OVERLAP_GROUP", `${rule.id} references an unknown overlap group`, `rules.${rule.id}.overlapGroup`));
+  }
+}
+
+function validateBonusRulesV1(rules: HybridRubricV1["bonusRules"], groupIds: Set<string>, errors: RubricProblemV1[]): void {
+  for (const rule of rules) {
+    if (rule.bonus > rule.maxBonus) errors.push(problem("BONUS_EXCEEDS_MAXIMUM", `${rule.id} bonus exceeds its maximum`, `bonusRules.${rule.id}`));
+    if (rule.overlapGroup && !groupIds.has(rule.overlapGroup)) errors.push(problem("UNKNOWN_OVERLAP_GROUP", `${rule.id} references an unknown overlap group`, `bonusRules.${rule.id}.overlapGroup`));
+  }
+}
+
+function findDuplicateIds(ids: string[], errors: RubricProblemV1[]): void {
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) errors.push(problem("DUPLICATE_ID", `ID ${id} is duplicated`));
+    seen.add(id);
+  }
+}
+
+function problem(code: string, message: string, path?: string): RubricProblemV1 {
+  return { code, message, ...(path ? { path } : {}) };
+}
