@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type FormEvent,
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
 } from "react";
@@ -137,9 +138,10 @@ export function GradingPage() {
   const [locationSearch, setLocationSearch] = useState(window.location.search);
   const query = new URLSearchParams(locationSearch);
   const selectedId = query.get("session") ?? undefined;
-  const [sessions, setSessions] = useState<GradingSession[]>([]),
+  const [sessionList, setSessionList] = useState<{ search: string; items: GradingSession[] }>({ search: "", items: [] }),
     [detail, setDetail] = useState<SessionDetail>(),
     [rubrics, setRubrics] = useState<FrozenRubric[]>([]);
+  const sessions = sessionList.items;
   const [activeCourseId, setActiveCourseId] = useState(() => readCourseFromUrl());
   const [creating, setCreating] = useState(!selectedId),
     [selectedRubricKey, setSelectedRubricKey] = useState(
@@ -157,7 +159,7 @@ export function GradingPage() {
     [message, setMessage] = useState(""),
     [live, setLive] = useState<LiveGradingMessage>(),
     [notice, setNotice] = useState("正在加载批改会话…"),
-    [reviewNote, setReviewNote] = useState(""),
+    [reviewNote, setReviewNote] = useState<{ sessionId: string; text: string }>(),
     [acknowledgedReasons, setAcknowledgedReasons] = useState<string[]>([]);
   const [sessionToRename, setSessionToRename] = useState<GradingSession>(),
     [renameTitle, setRenameTitle] = useState(""),
@@ -192,6 +194,7 @@ export function GradingPage() {
     const nextSessionId = search.get("session") ?? undefined;
     selectedIdRef.current = nextSessionId;
     detailGate.current.invalidate();
+    listGate.current.invalidate();
     setDetail((current) => current?.id === nextSessionId ? current : undefined);
     window.history.pushState(null, "", `/grading${suffix ? `?${suffix}` : ""}`);
     setLocationSearch(window.location.search);
@@ -212,6 +215,7 @@ export function GradingPage() {
   const refreshList = async (
     currentSession?: Pick<GradingSession, "assignmentId" | "rubricVersion">,
   ) => {
+    if (window.location.search !== locationSearch) return undefined;
     const lease = listGate.current.begin();
     const rubric = resolveGradingSessionScope(
       currentSession,
@@ -223,8 +227,8 @@ export function GradingPage() {
           `/api/grading/sessions?assignmentId=${encodeURIComponent(rubric.assignmentId)}&rubricVersion=${rubric.version}`,
         )
       : [];
-    if (!lease.isCurrent()) return undefined;
-    setSessions(next);
+    if (!lease.isCurrent() || window.location.search !== locationSearch) return undefined;
+    setSessionList({ search: locationSearch, items: next });
     return next;
   };
   const refreshDetail = async (id = selectedId) => {
@@ -252,6 +256,7 @@ export function GradingPage() {
       const nextSessionId = new URLSearchParams(window.location.search).get("session") ?? undefined;
       selectedIdRef.current = nextSessionId;
       detailGate.current.invalidate();
+      listGate.current.invalidate();
       setDetail((current) => current?.id === nextSessionId ? current : undefined);
       setLocationSearch(window.location.search);
     };
@@ -350,24 +355,29 @@ export function GradingPage() {
   useEffect(() => {
     setAcknowledgedReasons([]);
   }, [detail?.draft?.version]);
+  const preparingDetail = detail && shouldPollSessionPreparation(detail) ? detail : undefined;
+  const hasPreparingBackgroundSession = sessionList.search === locationSearch && sessions.some(
+    (session) => session.id !== selectedId && shouldPollSessionPreparation(session),
+  );
+  const shouldPollPreparation = Boolean(preparingDetail) || hasPreparingBackgroundSession;
+  const refreshPreparation = useEffectEvent(async () => {
+    if (preparingDetail) {
+      const next = await refreshDetail(preparingDetail.id);
+      if (next) await refreshList(next);
+    } else if (hasPreparingBackgroundSession) {
+      await refreshList(detail);
+    }
+  });
   useEffect(() => {
-    if (!detail || !shouldPollSessionPreparation(detail)) return;
+    if (!shouldPollPreparation) return;
     return startSerialPolling(
-      async () => {
-        const next = await refreshDetail(detail.id);
-        if (next) await refreshList(next);
-      },
+      () => refreshPreparation(),
       {
         intervalMs: 1_000,
         onError: (error) => setNotice((error as Error).message),
       },
     );
-  }, [
-    detail?.id,
-    detail?.conversionStatus,
-    detail?.conversionError?.nextRetryAt,
-    detail?.submissionTitleStatus,
-  ]);
+  }, [locationSearch, shouldPollPreparation]);
   useEffect(() => {
     if (!dragging) return;
     const move = (event: PointerEvent) => {
@@ -486,9 +496,12 @@ export function GradingPage() {
     setDetail((current) => current?.id === sessionId
       ? { ...current, submissionTitleStatus: "resolving", submissionTitleError: undefined }
       : current);
-    setSessions((current) => current.map((session) => session.id === sessionId
-      ? { ...session, submissionTitleStatus: "resolving", submissionTitleError: undefined }
-      : session));
+    setSessionList((current) => ({
+      ...current,
+      items: current.items.map((session) => session.id === sessionId
+        ? { ...session, submissionTitleStatus: "resolving", submissionTitleError: undefined }
+        : session),
+    }));
     try {
       const next = await api<GradingSession>(
         `/api/grading/sessions/${sessionId}/title/retry`,
@@ -545,7 +558,7 @@ export function GradingPage() {
         method: "POST",
         body: JSON.stringify({
           expectedVersion,
-          reviewNote,
+          reviewNote: reviewNote?.sessionId === sessionId ? reviewNote.text : "",
           acknowledgedReasons,
         }),
       });
@@ -690,6 +703,7 @@ export function GradingPage() {
   useEffect(() => {
     runGate.current.invalidate();
     setDetail((current) => current?.id === selectedId ? current : undefined);
+    setReviewNote((current) => current?.sessionId === selectedId ? current : undefined);
     editingRef.current = false;
     setEditing(false);
     setLive(undefined);
@@ -854,8 +868,13 @@ export function GradingPage() {
           )}
           <nav>
             {(() => {
+              const displayedSessions = detail
+                ? sessions.map((session) => session.id === detail.id
+                  ? { ...session, conversionStatus: detail.conversionStatus }
+                  : session)
+                : sessions;
               const filteredSessions = filterGradingSessions(
-                sessions,
+                displayedSessions,
                 sessionStatusFilter,
                 sessionSearch,
               );
@@ -930,26 +949,27 @@ export function GradingPage() {
             })()}
           </nav>
         </aside>
+        {exportModalOpen ? (
+          <ExportPreviewDialog
+            open={exportModalOpen}
+            options={exportOptions}
+            setOption={updateExportOption}
+            applyPreset={(preset) => setExportOptions(exportPresetOptions(preset))}
+            canExportStudent={Boolean(detail)}
+            canExportRubric={Boolean(selectedRubric)}
+            studentLabel={detail ? `${detail.studentName}（${detail.studentNumber}）` : undefined}
+            rubricLabel={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}
+            fetchCsv={fetchExportCsv}
+            onClose={() => setExportModalOpen(false)}
+          />
+        ) : (
         <section
-          className={`grading-split ${creating || exportModalOpen ? "is-creating" : ""}`}
+          className={`grading-split ${creating ? "is-creating" : ""}`}
           ref={splitRef}
           style={{ "--grading-preview": `${previewPercent}%` } as CSSProperties}
         >
           <main className="grading-conversation">
-            {exportModalOpen ? (
-              <ExportPreviewDialog
-                open={exportModalOpen}
-                options={exportOptions}
-                setOption={updateExportOption}
-                applyPreset={(preset) => setExportOptions(exportPresetOptions(preset))}
-                canExportStudent={Boolean(detail)}
-                canExportRubric={Boolean(selectedRubric)}
-                studentLabel={detail ? `${detail.studentName}（${detail.studentNumber}）` : undefined}
-                rubricLabel={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}
-                fetchCsv={fetchExportCsv}
-                onClose={() => setExportModalOpen(false)}
-              />
-            ) : creating ? (
+            {creating ? (
               <NewSessionPanel
                 rubric={selectedRubric}
                 close={() => setCreating(false)}
@@ -1111,42 +1131,51 @@ export function GradingPage() {
                 <div className="grading-empty"><h3>正在新建会话</h3><p>请完成左侧表单。创建成功后，这里会显示新报告；当前尚无新会话的成绩。</p></div>
               ) : !detail ? (
                 <p>选择会话后在此预览。</p>
-              ) : previewMode === "submission" ? (
-                <SubmissionPreview
-                  detail={detail}
-                  editing={editing}
-                  markdown={markdown}
-                  setMarkdown={setMarkdown}
-                  setEditing={setEditing}
-                  save={saveSubmission}
-                  retry={retryConversion}
-                  reupload={() => setCreating(true)}
-                  createRevision={createRevision}
-                  operationBusy={{
-                    conversion: isSessionOperationBusy("conversion"),
-                    revision: isSessionOperationBusy("revision"),
-                    save: isSessionOperationBusy("save"),
-                  }}
-                />
               ) : (
-                <ResultPreview
-                  detail={detail}
-                  reviewNote={reviewNote}
-                  setReviewNote={setReviewNote}
-                  acknowledgedReasons={acknowledgedReasons}
-                  setAcknowledgedReasons={setAcknowledgedReasons}
-                  confirm={confirm}
-                  createRevision={createRevision}
-                  refresh={() => refreshDetail(detail.id).then(() => undefined)}
-                  operationBusy={{
-                    confirm: isSessionOperationBusy("confirm"),
-                    revision: isSessionOperationBusy("revision"),
-                  }}
-                />
+                <>
+                  {previewMode === "submission" && (
+                    <SubmissionPreview
+                      detail={detail}
+                      editing={editing}
+                      markdown={markdown}
+                      setMarkdown={setMarkdown}
+                      setEditing={setEditing}
+                      save={saveSubmission}
+                      retry={retryConversion}
+                      reupload={() => setCreating(true)}
+                      createRevision={createRevision}
+                      operationBusy={{
+                        conversion: isSessionOperationBusy("conversion"),
+                        revision: isSessionOperationBusy("revision"),
+                        save: isSessionOperationBusy("save"),
+                      }}
+                    />
+                  )}
+                  <div hidden={previewMode !== "result"}>
+                    <ResultPreview
+                      key={`${detail.id}:${detail.confirmed ? "confirmed" : "draft"}:${(detail.confirmed ?? detail.draft)?.version ?? ""}`}
+                      detail={detail}
+                      reviewNote={reviewNote?.sessionId === detail.id ? reviewNote.text : ""}
+                      setReviewNote={(text) => setReviewNote({ sessionId: detail.id, text })}
+                      acknowledgedReasons={acknowledgedReasons}
+                      setAcknowledgedReasons={setAcknowledgedReasons}
+                      confirm={confirm}
+                      createRevision={createRevision}
+                      refresh={async () => {
+                        if (selectedIdRef.current === detail.id) await refreshDetail(detail.id);
+                      }}
+                      operationBusy={{
+                        confirm: isSessionOperationBusy("confirm"),
+                        revision: isSessionOperationBusy("revision"),
+                      }}
+                    />
+                  </div>
+                </>
               )}
             </div>
           </aside>
         </section>
+        )}
       </div>
       <PromptDialog
         open={Boolean(sessionToRename)}
@@ -1378,9 +1407,6 @@ function ResultPreview({
   useUnsavedGuard(manual);
   const [edited, setEdited] = useState<Record<string, unknown>>({});
   const [editNote, setEditNote] = useState("");
-  useEffect(() => {
-    if (draft) setEdited(structuredClone(draft.result.decisions));
-  }, [draft?.version]);
   if (!draft)
     return (
       <div className="grading-empty">
@@ -1389,6 +1415,11 @@ function ResultPreview({
       </div>
     );
   const result = draft.result;
+  const closeManual = () => {
+    setManual(false);
+    setEdited({});
+    setEditNote("");
+  };
   const saveManual = async () => {
     if (!detail.draft || !editNote.trim() || savingManual) return;
     setSavingManual(true);
@@ -1402,8 +1433,7 @@ function ResultPreview({
         }),
       });
       await refresh();
-      setManual(false);
-      setEditNote("");
+      closeManual();
       toast.success("人工修订已保存并重新计算总分。");
     } catch (error) {
       toast.fromError(error);
@@ -1462,7 +1492,7 @@ function ResultPreview({
                 />
               </label>
               <div>
-                <button onClick={() => setManual(false)}>取消修订</button>
+                <button onClick={closeManual}>取消修订</button>
                 <button
                   type="button"
                   className="primary-button"
@@ -1475,7 +1505,10 @@ function ResultPreview({
             </>
           ) : (
             <>
-              <button onClick={() => setManual(true)}>人工修订评分项</button>
+              <button onClick={() => {
+                setEdited(structuredClone(result.decisions));
+                setManual(true);
+              }}>人工修订评分项</button>
               <label>
                 复核备注
                 <textarea
@@ -1520,23 +1553,24 @@ function NewSessionPanel({
   close(): void;
   created(id: string): void;
 }) {
-  const [error, setError] = useState(""),
+  const [error, setError] = useState<{ message: string; fields: string[]; missingReport?: true }>(),
     [submitting, setSubmitting] = useState(false),
-    [errorFields, setErrorFields] = useState<string[]>([]),
     [assetFiles, setAssetFiles] = useState<File[]>([]);
+  const errorFields = error?.fields ?? [];
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setSubmitting(true);
-    setError("");
-    setErrorFields([]);
+    setError(undefined);
+    let reportFilename = "";
     try {
       const form = new FormData(event.currentTarget);
       if (!rubric) throw new Error("请选择冻结评分表");
       const file = form.get("file");
       if (!(file instanceof File) || file.size === 0) {
-        setErrorFields(["file"]);
-        throw new Error("请先选择学生报告文件");
+        setError({ message: "请先选择学生报告文件", fields: ["file"], missingReport: true });
+        return;
       }
+      reportFilename = file.name;
+      setSubmitting(true);
       form.set("assignmentId", rubric.assignmentId);
       form.set("rubricVersion", String(rubric.version));
       form.delete("assetDirectory");
@@ -1553,8 +1587,24 @@ function NewSessionPanel({
       const body = await response.json();
       created(String(body.id));
     } catch (cause) {
-      if (cause instanceof ApiError) setErrorFields(cause.issuePaths);
-      setError((cause as Error).message);
+      const apiError = cause instanceof ApiError ? cause : undefined;
+      let message = (cause as Error).message;
+      let fields = apiError?.issuePaths ?? [];
+      switch (apiError?.code) {
+        case "CONVERTER_NOT_CONFIGURED":
+          message = "转换服务尚未就绪。请使用发布包启动器启动并等待就绪，再点击“创建会话”。也可改用 Markdown 报告。";
+          break;
+        case "SUBMISSION_ASSET_MISSING":
+          if (reportFilename.toLowerCase().endsWith(".txt")) {
+            message = "TXT 报告不支持图片附件。请将报告另存为 .md 并附带 assets 目录，或移除图片引用后重新上传 TXT。";
+            fields = ["file"];
+          } else {
+            message = "Markdown 引用的图片未包含在附件中。请确认引用以 assets/ 开头，在“Markdown 图片目录（可选）”补选包含图片的 assets 目录，再点击“创建会话”。";
+            fields = ["assetManifest"];
+          }
+          break;
+      }
+      setError({ message, fields });
       setSubmitting(false);
     }
   };
@@ -1605,6 +1655,12 @@ function NewSessionPanel({
               required
               accept=".md,.txt,.pdf,.docx,.pptx,.png,.jpg,.jpeg"
               aria-invalid={errorFields.includes("file") || undefined}
+              onChange={(event) => {
+                const report = event.currentTarget.files?.[0];
+                if (report && report.size > 0) {
+                  setError((current) => current?.missingReport ? undefined : current);
+                }
+              }}
             />
             <small>支持 Markdown、TXT、DOCX、PDF、PPTX 与图片</small>
           </label>
@@ -1639,7 +1695,7 @@ function NewSessionPanel({
           />
           转换完成后自动开始批改
         </label>
-        {error && <p className="modal-error">{error}</p>}
+        {error?.message && <p className="modal-error">{error.message}</p>}
         <div className="modal-actions">
           <button type="button" onClick={close}>
             取消

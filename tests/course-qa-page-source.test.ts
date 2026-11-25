@@ -11,7 +11,7 @@ describe("course QA page state synchronization", () => {
     expect(source).toContain("sessionGate");
     expect(source).toContain("sourceGate");
     expect(source).toContain("streamGate");
-    expect(source).toContain("controller.current?.abort()");
+    expect(source).toContain("currentRequest.current?.controller.abort()");
     expect(source).toContain("lease.isCurrent()");
     expect(source).toContain("答疑连接已中断，请重试");
   });

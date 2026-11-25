@@ -33,7 +33,7 @@ async function setup() {
   return { root, rubrics, sessions, results, session };
 }
 
-function draft(confidence = 0.6, deduction = 20): GradingDraft {
+function draft(confidence = 0.6, deduction = 20): Extract<GradingDraft, { mode: "deductive" }> {
   const evidence = [
     { kind: "analysis" as const, observation: "报告缺少关键背景说明。", rubricBasis: "评分规则要求完整说明背景。", scoreJustification: "缺失直接影响任务完整性，因此扣20分。" },
     { kind: "text" as const, path: "submission-v1.md", heading: "报告", startLine: 1, endLine: 3, quote: "背景内容" },
@@ -110,6 +110,24 @@ describe("GradingResultService", () => {
     expect(markdown).not.toContain("置信度");
     await expect(results.submitDraft(session.id, saved.version, draft(0.9, 0), { type: "teacher", id: "teacher-local" })).rejects.toThrow(/confirmed/i);
     sessions.close();
+  });
+
+  it("marks draft analysis in published feedback separately from the current teacher reason", async () => {
+    const { sessions, results, session } = await setup();
+    try {
+      const original = await results.submitDraft(session.id, 0, draft(), { type: "agent", id: "run-1" });
+      const teacherDraft = draft(0.9, 0);
+      teacherDraft.deductions[0]!.reason = "教师核对原文后确认内容完整";
+      const revised = await results.submitDraft(session.id, original.version, teacherDraft, { type: "teacher", id: "teacher-local", note: "已核对原文" });
+      const confirmed = await results.confirm(session.id, { expectedVersion: revised.version, reviewNote: "", acknowledgedReasons: [] });
+
+      expect(confirmed.result.decisions).toEqual(revised.result.decisions);
+      const markdown = await results.readConfirmedMarkdown(session.id);
+      expect(markdown).toContain("100/100");
+      expect(markdown).toContain("未扣分。当前评分理由：教师核对原文后确认内容完整");
+      expect(markdown).toContain("评分草稿分析");
+      expect(markdown).toContain("**草稿分值理由：** 缺失直接影响任务完整性，因此扣20分。");
+    } finally { sessions.close(); }
   });
 
   it("rejects a confirmed score changed without updating its content hash", async () => {

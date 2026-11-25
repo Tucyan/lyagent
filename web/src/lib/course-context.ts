@@ -62,6 +62,10 @@ export function selectActiveCourse(courseId: string, targetPath?: string): void 
   if (typeof window === "undefined") return;
   const basePath = targetPath ?? `${window.location.pathname}${window.location.search}`;
   const url = new URL(basePath, window.location.origin);
+  const previousCourseId = url.searchParams.get("course");
+  if (targetPath === undefined && url.pathname === "/qa" && previousCourseId && previousCourseId !== courseId) {
+    url.searchParams.delete("session");
+  }
   if (courseId) url.searchParams.set("course", courseId);
   else url.searchParams.delete("course");
   navigateWithinApp(`${url.pathname}${url.search}${url.hash}`);

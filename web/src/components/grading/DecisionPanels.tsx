@@ -44,14 +44,14 @@ export function DecisionCards({
                       : ""}
               </span>
             </div>
-            <p>{String(item.reason ?? "")}</p>
+            <p><b>当前评分理由：</b>{String(item.reason ?? "")}</p>
             <small>
               置信度 {Math.round(Number(item.confidence ?? 0) * 100)}% ·
               分析依据 {evidence.length} 条
             </small>
             {evidence.length > 0 && (
               <details open={expandEvidence}>
-                <summary>查看评分分析依据</summary>
+                <summary>{evidence.some((entry) => entry.kind === "analysis") ? "查看评分草稿分析及依据" : "查看评分依据"}</summary>
                 {evidence.map((entry, evidenceIndex) => (
                   <div
                     className="grading-evidence"
@@ -59,7 +59,7 @@ export function DecisionCards({
                   >
                     {entry.kind === "analysis" ? (
                       <>
-                        <strong>模型分析论据</strong>
+                        <strong>评分草稿分析（供参考）</strong>
                         <p>
                           <b>作业表现：</b>
                           {String(entry.observation ?? "")}
@@ -69,7 +69,7 @@ export function DecisionCards({
                           {String(entry.rubricBasis ?? "")}
                         </p>
                         <p>
-                          <b>分值理由：</b>
+                          <b>草稿分值理由：</b>
                           {String(entry.scoreJustification ?? "")}
                         </p>
                       </>

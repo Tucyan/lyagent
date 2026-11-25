@@ -24,7 +24,7 @@ import { StudentIdentityError, type StudentIdentityClient } from "../services/st
 import type { DocumentConversionClient } from "../services/document-conversion-client.js";
 import type { SubmissionConversionOptions } from "../services/submission-conversion-service.js";
 import type { GradingAgentBuilder } from "./grading-routes.js";
-import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, SubmissionAssetError, SubmissionContentMismatchError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
+import { GradingConflictError, GradingSessionError, GradingSessionNotFoundError, SubmissionAssetError, SubmissionContentMismatchError, SubmissionConverterNotConfiguredError, UnsupportedSubmissionTypeError } from "../services/grading-session-service.js";
 import { GradingDraftConflictError, GradingResultServiceError, GradingReviewRequiredError } from "../services/grading-result-service.js";
 import { GradingResultValidationError } from "../schemas/grading.js";
 import { GradingBatchConflictError, GradingBatchError } from "../services/grading-batch-service.js";
@@ -145,6 +145,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   });
   const planner = options.materialPlanner ?? defaultPlanner;
   const activeAgentRuns = new Map<string, AbortController>();
+  const activeQaTurns = new Map<string, Set<string>>();
   app.addHook("onRequest", async (request, reply) => {
     if (request.url.startsWith("/api/")) {
       const origin = request.headers.origin;
@@ -173,6 +174,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     }
     if (error instanceof UnsupportedSubmissionTypeError) return reply.code(415).send({ code: error.code, message: error.message });
     if (error instanceof SubmissionContentMismatchError) return reply.code(422).send({ code: error.code });
+    if (error instanceof SubmissionConverterNotConfiguredError) return reply.code(503).send({ code: error.code, message: error.message });
     if (error instanceof StudentIdentityError) return reply.code(422).send({
       code: error.code,
       message: error.message,
@@ -518,9 +520,13 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     const courseKnowledge = await knowledge.forCourse(courseId);
     return { releaseId: courseKnowledge.release.id, documents: courseKnowledge.documents };
   });
-  app.get("/api/courses/:courseId/qa/sessions/:sessionId", async (request) => {
+  app.get("/api/courses/:courseId/qa/sessions/:sessionId", async (request, reply) => {
     const { courseId, sessionId } = z.object({ courseId: z.string().uuid(), sessionId: z.string().uuid() }).parse(request.params);
-    return sessions.get(courseId, sessionId);
+    const scope = `${courseId}:${sessionId}`;
+    const answerWasInProgress = activeQaTurns.has(scope);
+    const session = await sessions.get(courseId, sessionId);
+    reply.header("cache-control", "no-store");
+    return { ...session, answerInProgress: answerWasInProgress || activeQaTurns.has(scope) };
   });
   app.patch("/api/courses/:courseId/qa/sessions/:sessionId", async (request) => {
     const { courseId, sessionId } = z.object({ courseId: z.string().uuid(), sessionId: z.string().uuid() }).parse(request.params);
@@ -539,39 +545,52 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.post("/api/courses/:courseId/qa/sessions/:sessionId/messages/stream", async (request, reply) => {
     const { courseId, sessionId } = z.object({ courseId: z.string().uuid(), sessionId: z.string().uuid() }).parse(request.params);
     const { question, allowWebSearch } = questionSchema.parse(request.body);
-    const session = await sessions.get(courseId, sessionId);
-    const courseKnowledge = await knowledge.forCourse(courseId);
-    if (session.releaseId !== courseKnowledge.release.id) return reply.code(409).send({ code: "SESSION_RELEASE_CHANGED", message: "Create a new session for the current knowledge release" });
-    if (!options.courseQaAgentFactory) return reply.code(503).send({ code: "MODEL_NOT_CONFIGURED", message: "The course QA model is not configured" });
-
-    reply.hijack();
-    const controller = new AbortController();
     const runId = randomUUID();
-    activeAgentRuns.set(runId, controller);
-    reply.raw.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "x-agent-run-id": runId,
-    });
-    reply.raw.write(sseComment("course-qa"));
-    const keepAlive = setInterval(() => { if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseComment("keep-alive")); }, 15_000);
-    const emit = (event: CourseQaEvent) => { if (!controller.signal.aborted && !reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseFrame(event.type, event)); };
+    const scope = `${courseId}:${sessionId}`;
+    const pending = activeQaTurns.get(scope) ?? new Set<string>();
+    pending.add(runId);
+    activeQaTurns.set(scope, pending);
     try {
-      const web = allowWebSearch ? options.webEvidenceFactory?.() : undefined;
-      const answer = await options.courseQaAgentFactory(courseKnowledge, web).answer(question, emit, controller.signal);
-      if (!controller.signal.aborted) {
-        await sessions.appendCompletedTurn(courseId, sessionId, { role: "user", content: question }, { role: "assistant", content: answer.answer, citations: answer.citations, ...(answer.insufficient ? { insufficient: true } : {}) });
-        emit({ type: "final", ...answer, releaseId: courseKnowledge.release.id, sessionId });
+      const session = await sessions.get(courseId, sessionId);
+      const courseKnowledge = await knowledge.forCourse(courseId);
+      if (session.releaseId !== courseKnowledge.release.id) return reply.code(409).send({ code: "SESSION_RELEASE_CHANGED", message: "Create a new session for the current knowledge release" });
+      if (!options.courseQaAgentFactory) return reply.code(503).send({ code: "MODEL_NOT_CONFIGURED", message: "The course QA model is not configured" });
+
+      reply.hijack();
+      const controller = new AbortController();
+      activeAgentRuns.set(runId, controller);
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-agent-run-id": runId,
+      });
+      reply.raw.write(sseComment("course-qa"));
+      const keepAlive = setInterval(() => { if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseComment("keep-alive")); }, 15_000);
+      const emit = (event: CourseQaEvent) => { if (!controller.signal.aborted && !reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseFrame(event.type, event)); };
+      try {
+        const web = allowWebSearch ? options.webEvidenceFactory?.() : undefined;
+        const answer = await options.courseQaAgentFactory(courseKnowledge, web).answer(question, emit, controller.signal);
+        if (!controller.signal.aborted) {
+          activeAgentRuns.delete(runId);
+          await sessions.appendCompletedTurn(courseId, sessionId, { role: "user", content: question }, { role: "assistant", content: answer.answer, citations: answer.citations, ...(answer.insufficient ? { insufficient: true } : {}) });
+          emit({ type: "final", ...answer, releaseId: courseKnowledge.release.id, sessionId });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) emit({ type: "error", code: error instanceof AgentExecutionLimitError ? error.code : "QA_FAILED", message: error instanceof AgentExecutionLimitError ? error.message : "The course answer could not be completed" });
+      } finally {
+        clearInterval(keepAlive);
+        if (!reply.raw.writableEnded && !reply.raw.destroyed) {
+          if (controller.signal.aborted) reply.raw.write(sseFrame("cancelled", { type: "cancelled" }));
+          reply.raw.end();
+        }
       }
-    } catch (error) {
-      if (!controller.signal.aborted) emit({ type: "error", code: error instanceof AgentExecutionLimitError ? error.code : "QA_FAILED", message: error instanceof AgentExecutionLimitError ? error.message : "The course answer could not be completed" });
+      return reply;
     } finally {
-      clearInterval(keepAlive);
       activeAgentRuns.delete(runId);
-      if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.end();
+      pending.delete(runId);
+      if (pending.size === 0) activeQaTurns.delete(scope);
     }
-    return reply;
   });
 
   app.addHook("onClose", async () => gradingApi.close());

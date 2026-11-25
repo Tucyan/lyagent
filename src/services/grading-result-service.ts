@@ -259,15 +259,15 @@ function renderStudentFeedback(confirmed: ConfirmedGradingResult, rubric: Awaite
   const lines = ["# 作业评分反馈", "", `## 总分：${result.score.earned}/${result.score.possible}`, ""];
   if (result.decisions.mode === "additive" && rubric.mode === "additive") {
     lines.push("## 逐项评分", "");
-    for (const decision of result.decisions.criteria) lines.push(`- **${rubric.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。${decision.reason}`);
+    for (const decision of result.decisions.criteria) lines.push(`- **${rubric.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。当前评分理由：${decision.reason}`);
   } else if (result.decisions.mode === "deductive" && rubric.mode === "deductive") {
     lines.push("## 扣分判断", "");
-    for (const decision of result.decisions.deductions) lines.push(`- **${rubric.rules.find(({ id }) => id === decision.ruleId)?.name ?? decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。${decision.reason}`);
+    for (const decision of result.decisions.deductions) lines.push(`- **${rubric.rules.find(({ id }) => id === decision.ruleId)?.name ?? decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。当前评分理由：${decision.reason}`);
   } else if (result.decisions.mode === "hybrid" && rubric.mode === "hybrid") {
     lines.push("## 综合评分", "");
-    for (const decision of result.decisions.criteria) lines.push(`- **${rubric.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。${decision.reason}`);
-    for (const decision of result.decisions.bonuses) lines.push(`- **${decision.ruleId}**：${decision.triggered ? `加 ${decision.bonus} 分` : "未加分"}。${decision.reason}`);
-    for (const decision of result.decisions.deductions) lines.push(`- **${decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。${decision.reason}`);
+    for (const decision of result.decisions.criteria) lines.push(`- **${rubric.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。当前评分理由：${decision.reason}`);
+    for (const decision of result.decisions.bonuses) lines.push(`- **${decision.ruleId}**：${decision.triggered ? `加 ${decision.bonus} 分` : "未加分"}。当前评分理由：${decision.reason}`);
+    for (const decision of result.decisions.deductions) lines.push(`- **${decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。当前评分理由：${decision.reason}`);
   }
   const decisions = result.decisions.mode === "additive"
     ? result.decisions.criteria
@@ -278,9 +278,9 @@ function renderStudentFeedback(confirmed: ConfirmedGradingResult, rubric: Awaite
     .filter((item): item is Extract<typeof item, { kind: "analysis" }> => item.kind === "analysis")
     .map((item) => ({ id: "criterionId" in decision ? decision.criterionId : decision.ruleId, item })));
   if (analyses.length > 0) {
-    lines.push("", "## 评分分析依据", "");
+    lines.push("", "## 评分分析依据", "", "以下评分草稿分析供参考，当前分值和理由见上方逐项结果。", "");
     for (const { id, item } of analyses) {
-      lines.push(`### ${id}`, "", `- **作业表现：** ${item.observation}`, `- **标准对应：** ${item.rubricBasis}`, `- **分值理由：** ${item.scoreJustification}`, "");
+      lines.push(`### ${id}`, "", `- **作业表现：** ${item.observation}`, `- **标准对应：** ${item.rubricBasis}`, `- **草稿分值理由：** ${item.scoreJustification}`, "");
     }
   }
   lines.push("", "## 主要优点", "", ...result.decisions.strengths.map((item) => `- ${item}`), "", "## 改进建议", "", ...result.decisions.improvements.map((item) => `- ${item}`), "");

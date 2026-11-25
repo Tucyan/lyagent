@@ -181,6 +181,14 @@ export class SubmissionContentMismatchError extends GradingSessionError {
   }
 }
 
+export class SubmissionConverterNotConfiguredError extends GradingSessionError {
+  readonly code = "CONVERTER_NOT_CONFIGURED";
+  constructor() {
+    super("A document converter is required for this file type");
+    this.name = "SubmissionConverterNotConfiguredError";
+  }
+}
+
 export class GradingConflictError extends GradingSessionError {
   constructor(message = "Grading session version has changed") {
     super(message);
@@ -274,6 +282,7 @@ export class GradingSessionService {
     originalPath: string;
     originalFilename: string;
     autoStartAfterConversion: boolean;
+    converterAvailable?: boolean;
     revisionAssets?: Array<{ path: string; bytes: Uint8Array }>;
   }): Promise<GradingSession> {
     const studentName = input.studentName.trim();
@@ -324,6 +333,8 @@ export class GradingSessionService {
     const originalBytes = await readFile(input.originalPath);
     validateFileSignature(extension, originalBytes);
     const isPlainTextSubmission = extension === ".md" || extension === ".txt";
+    if (!isPlainTextSubmission && input.converterAvailable === false)
+      throw new SubmissionConverterNotConfiguredError();
     const markdown = isPlainTextSubmission ? originalBytes.toString("utf8") : undefined;
     const revisionAssets = extension === ".md" ? input.revisionAssets ?? [] : [];
     if (markdown !== undefined) {

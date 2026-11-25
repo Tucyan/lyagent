@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -623,24 +623,32 @@ describe("grading API", () => {
     await app.close();
   });
 
-  it("reports a provider-neutral error when a convertible upload has no converter", async () => {
-    const { app, assignmentId } = await setup();
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/grading/sessions",
-      headers: { "content-type": "multipart/form-data; boundary=x" },
-      payload: multipart("x", {
-        assignmentId,
-        rubricVersion: "1",
-        studentName: "Student",
-        studentNumber: "20260003",
-        submissionTitle: "Report",
-      }, "report.pdf", "%PDF-1.7 synthetic"),
-    });
-    expect(response.statusCode, response.body).toBe(503);
-    expect(response.json()).toMatchObject({ code: "CONVERTER_NOT_CONFIGURED" });
-    expect(response.body).not.toMatch(/mineru/i);
-    await app.close();
+  it.each(["pdf", "docx"])("rejects a %s upload without persisting a session when no converter is configured", async (extension) => {
+    const { app, assignmentId, root } = await setup();
+    try {
+      const bytes = extension === "pdf" ? Buffer.from("%PDF-1.7 synthetic") : await readFile(new URL(
+        "./fixtures/single-grading/ai-life-report/20260001_张晓明_生成式AI生活助手报告.docx", import.meta.url,
+      ));
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=x" },
+        payload: multipartWithAssets("x", {
+          assignmentId,
+          rubricVersion: "1",
+          studentName: "Student",
+          studentNumber: "20260003",
+          submissionTitle: "Report",
+        }, { filename: `report.${extension}`, bytes }, []),
+      });
+      expect(response.statusCode, response.body).toBe(503);
+      expect(response.json()).toMatchObject({ code: "CONVERTER_NOT_CONFIGURED" });
+      expect(response.body).not.toMatch(/mineru/i);
+
+      const listed = await app.inject({ method: "GET", url: `/api/grading/sessions?assignmentId=${assignmentId}&rubricVersion=1` });
+      expect(listed.json()).toEqual([]);
+      await expect(stat(path.join(root, "assignments", assignmentId, "submissions"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await app.close(); }
   });
 
   it("returns 422 for incomplete student identity instead of an internal error", async () => {

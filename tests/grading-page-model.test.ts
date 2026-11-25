@@ -55,6 +55,10 @@ describe("grading workbench presentation", () => {
     expect(gradingStatusLabel("needs_review")).toBe("待复核");
     expect(gradingStatusLabel("confirmed")).toBe("成绩已确认");
   });
+  it.each(["running", "converting"])("labels %s as active conversion in both session card statuses", (conversionStatus) => {
+    expect.soft(gradingSessionWorkflowSummary({ conversionStatus, gradingStatus: "not_started" })).toBe("正在转换 · 未开始批改");
+    expect(gradingSessionStatusLabel({ conversionStatus, submissionTitleStatus: "pending" })).toBe("正在转换");
+  });
   it("offers manual retry after automatic conversion retries are exhausted without polling", () => {
     const input = { conversionStatus: "conversion_failed", conversionError: { code: "CONVERTER_UNAVAILABLE", message: "Automatic retries exhausted", retryable: true } };
     expect(conversionPresentation(input)).toMatchObject({ title: "转换已停止", canRetry: true, canReupload: true });
@@ -267,7 +271,6 @@ describe("grading workbench presentation", () => {
       submissionTitleStatus: "failed",
     })).toBe(false);
     expect(gradingSessionStatusLabel({ conversionStatus: "queued", submissionTitleStatus: "pending" })).toBe("等待转换");
-    expect(gradingSessionStatusLabel({ conversionStatus: "running", submissionTitleStatus: "pending" })).toBe("等待转换");
     expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "resolving" })).toBe("正在识别");
     expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "failed" })).toBe("识别失败");
     expect(gradingSessionStatusLabel({ conversionStatus: "ready", submissionTitleStatus: "resolved" })).toBe("已就绪");

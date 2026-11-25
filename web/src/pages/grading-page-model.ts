@@ -168,6 +168,7 @@ export function gradingSessionWorkflowSummary(input: {
   const convMap: Record<string, string> = {
     ready: "转换完成",
     queued: "排队转换",
+    running: "正在转换",
     converting: "正在转换",
     waiting_for_converter: "等待转换",
     conversion_failed: "转换失败",
@@ -232,7 +233,8 @@ export function shouldPollSessionPreparation(
 export function gradingSessionStatusLabel(input: {
   conversionStatus: string;
   submissionTitleStatus: string;
-}): "等待转换" | "正在识别" | "识别失败" | "已就绪" {
+}): "等待转换" | "正在转换" | "正在识别" | "识别失败" | "已就绪" {
+  if (input.conversionStatus === "running" || input.conversionStatus === "converting") return "正在转换";
   if (input.conversionStatus !== "ready") return "等待转换";
   if (input.submissionTitleStatus === "failed") return "识别失败";
   if (["pending", "resolving"].includes(input.submissionTitleStatus))

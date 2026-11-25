@@ -2428,12 +2428,12 @@ code {
   border-radius: 9px;
   background: #fbfcfd;
 }
-.rubric-scorecard > article > div {
+.rubric-scorecard > article > div:first-child {
   display: flex;
   justify-content: space-between;
   gap: 12px;
 }
-.rubric-scorecard > article > div span {
+.rubric-scorecard > article > div:first-child span {
   color: #244f89;
   font-weight: 750;
   white-space: nowrap;
@@ -2533,11 +2533,11 @@ code {
     font-size: 20px;
     white-space: nowrap;
   }
-  .rubric-scorecard > article > div {
+  .rubric-scorecard > article > div:first-child {
     display: grid;
     gap: 5px;
   }
-  .rubric-scorecard > article > div strong {
+  .rubric-scorecard > article > div:first-child strong {
     line-height: 1.45;
   }
 }

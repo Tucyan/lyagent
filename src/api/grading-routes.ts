@@ -545,21 +545,14 @@ export function registerGradingApi(
           originalPath: tempPath,
           originalFilename: upload.filename,
           autoStartAfterConversion: values.autoStartAfterConversion === "true",
+          converterAvailable: Boolean(conversions),
           revisionAssets: assetUploads.map((asset, index) => ({
             path: assetManifest[index]!,
             bytes: asset.bytes,
           })),
         });
         if (session.conversionStatus !== "ready") {
-          if (!conversions)
-            return reply
-              .code(503)
-              .send({
-                code: "CONVERTER_NOT_CONFIGURED",
-                message: "A document converter is required for this file type",
-              });
-          void conversions
-            .process(session.id)
+          void conversions?.process(session.id)
             .then(() => finishReadySession(session.id))
             .catch(() => undefined);
         } else await finishReadySession(session.id);

@@ -27,6 +27,7 @@ const errors: Record<string, string> = {
   STUDENT_IDENTITY_REQUIRED: "请同时填写学生姓名与学号，或同时留空让系统识别文件名，再创建会话。",
   STUDENT_IDENTITY_NOT_FOUND: "未能识别学生身份。请补填姓名和学号。",
   SUBMISSION_CONTENT_MISMATCH: "报告文件损坏或内容与扩展名不匹配。请重新导出后上传或替换报告文件。",
+  SUBMISSION_ASSET_MISSING: "报告引用的图片未包含在附件中。请使用带对应附件的 Markdown 报告，或移除图片引用。",
   UNSUPPORTED_SUBMISSION_TYPE: "文件格式不支持。请将旧版 Word 文件另存为 DOCX 或 PDF 后上传，也可上传 Markdown、PPTX 或受支持图片。",
   CONVERTER_NOT_CONFIGURED: "转换服务尚未就绪。请使用发布包启动器启动并等待就绪，之后点击“重试转换”；也可先上传 Markdown 报告。",
   AGENT_TIMEOUT: "模型处理超时。请重新打开会话检查是否已有结果；若没有，请缩短本次请求后重试。",
