@@ -1,3 +1,9 @@
+import {
+  normalizeRubric,
+  type AnyRubricLike,
+  type NormalizedAdjustmentRule,
+} from "../../../src/schemas/rubric-engine.js";
+
 export function assignmentIdFromSearch(search: string): string | undefined {
   const assignmentId = new URLSearchParams(search).get("assignment")?.trim();
   return assignmentId || undefined;
@@ -51,53 +57,76 @@ export type RubricLevelTone = "tier-high" | "tier-good" | "tier-mid" | "tier-low
 
 export interface RubricPreviewSection {
   title: string;
-  rows: Array<{ targetKey?: string; title: string; score: string; description: string; detail: string; levels?: Array<{ id: string; label: string; tone: RubricLevelTone; score: string; condition: string }> }>;
+  rows: Array<{
+    targetKey?: string;
+    title: string;
+    score: string;
+    description: string;
+    detail: string;
+    levels?: Array<{ id: string; label: string; tone: RubricLevelTone; score: string; condition: string }>;
+  }>;
 }
 
-type PreviewRubric = {
-  schemaVersion?: "1.0";
-  mode: "additive" | "deductive" | "hybrid";
-  totalScore?: number;
-  partialCreditAllowed?: boolean;
-  overlapGroups?: Array<{ id: string; aggregation: "highest-only" | "sum" }>;
-  criteria?: Array<{ id?: string; name: string; description: string; maxScore: number; scorePolicy: "exact-level" | "range" | "continuous"; evidenceRequired: boolean; levels?: Array<{ id: string; minScore: number; maxScore: number; condition: string }> }>;
-  rules?: Array<{ name: string; condition: string; amountPolicy?: "fixed" | "per-occurrence" | "range"; deduction?: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
-  bonusRules?: Array<{ name: string; condition: string; bonus: number; maxBonus: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
-  deductionRules?: Array<{ name: string; condition: string; amountPolicy?: "fixed" | "per-occurrence" | "range"; deduction?: number; maxDeduction: number; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string }>;
-};
-
-export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSection[] {
+export function rubricPreviewSections(rubric: AnyRubricLike): RubricPreviewSection[] {
+  const normalized = normalizeRubric(rubric);
   const sections: RubricPreviewSection[] = [];
-  if (rubric.mode === "additive" || rubric.mode === "hybrid") {
+  if (normalized.mode === "additive" || normalized.mode === "hybrid") {
     sections.push({
       title: "评分项目",
-      rows: (rubric.criteria ?? []).map((criterion, index) => ({
+      rows: normalized.criteria.map((criterion, index) => ({
         targetKey: `criterion:${index}`,
         title: criterion.name,
         score: `${criterion.maxScore} 分`,
         description: criterion.description,
-        detail: `${scorePolicyLabel(criterion.scorePolicy)} · ${criterion.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}`,
-        ...((criterion.levels?.length ?? 0) > 0 ? { levels: criterion.levels!.map((level) => ({ id: level.id, label: rubricLevelLabel(level.id), tone: rubricLevelTone(level, criterion.maxScore), score: `${level.minScore === level.maxScore ? level.minScore : `${level.minScore}–${level.maxScore}`} 分`, condition: level.condition })) } : {}),
+        detail: `${criterion.scoringType === "levels" ? "按档定分" : `区间打分（步长 ${criterion.step}）`} · ${criterion.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}`,
+        ...(criterion.levels.length > 0
+          ? {
+              levels: criterion.levels.map((level) => ({
+                id: level.id,
+                label: level.label ?? rubricLevelLabel(level.id),
+                tone: rubricLevelTone(level, criterion.maxScore),
+                score: `${level.minScore === level.maxScore ? level.minScore : `${level.minScore}–${level.maxScore}`} 分`,
+                condition: level.condition,
+              })),
+            }
+          : {}),
       })),
     });
   }
-  if (rubric.mode === "hybrid" && (rubric.bonusRules?.length ?? 0) > 0) {
+  if (normalized.bonusRules.length > 0) {
     sections.push({
       title: "加分规则",
-      rows: rubric.bonusRules!.map((rule, index) => ({ targetKey: `bonus:${index}`, ...rulePreview(rule, "bonus") })),
+      rows: normalized.bonusRules.map((rule, index) => ({
+        targetKey: `bonus:${index}`,
+        ...rulePreview(rule, "bonus"),
+      })),
     });
   }
-  const deductionRules = rubric.mode === "deductive" ? rubric.rules ?? [] : rubric.mode === "hybrid" ? rubric.deductionRules ?? [] : [];
-  if (deductionRules.length > 0) {
+  if (normalized.deductionRules.length > 0) {
     sections.push({
       title: "扣分规则",
-      rows: deductionRules.map((rule, index) => ({ targetKey: `deduction:${index}`, ...rulePreview(rule, "deduction") })),
+      rows: normalized.deductionRules.map((rule, index) => ({
+        targetKey: `deduction:${index}`,
+        ...rulePreview(rule, "deduction"),
+      })),
     });
   }
-  if (rubric.mode !== "additive" && (rubric.overlapGroups?.length ?? 0) > 0) {
+  if (normalized.scoreCaps.length > 0) {
+    sections.push({
+      title: "条件总分封顶",
+      rows: normalized.scoreCaps.map((cap, index) => ({
+        targetKey: `scoreCap:${index}`,
+        title: cap.name,
+        score: `≤ ${cap.maxTotalScore} 分`,
+        description: cap.condition,
+        detail: `触发时总分封顶 · ${cap.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}`,
+      })),
+    });
+  }
+  if (normalized.mode !== "additive" && normalized.overlapGroups.length > 0) {
     sections.push({
       title: "重叠规则组",
-      rows: rubric.overlapGroups!.map((group, index) => ({
+      rows: normalized.overlapGroups.map((group, index) => ({
         targetKey: `group:${index}`,
         title: group.id,
         score: group.aggregation === "highest-only" ? "仅取最高项" : "累计",
@@ -107,6 +136,32 @@ export function rubricPreviewSections(rubric: PreviewRubric): RubricPreviewSecti
     });
   }
   return sections;
+}
+
+export function rubricProblemTargetKey(rubric: AnyRubricLike | undefined, problemPath?: string): string | undefined {
+  if (!rubric || !problemPath) return undefined;
+  const normalized = normalizeRubric(rubric);
+  const segments = problemPath.split(".");
+  const section = segments[0];
+  const idOrIndex = segments[1];
+  if (section === "criteria" && idOrIndex) {
+    const idx = normalized.criteria.findIndex((item) => item.id === idOrIndex);
+    if (idx >= 0) return `criterion:${idx}`;
+  }
+  if ((section === "rules" || section === "deductionRules") && idOrIndex) {
+    const idx = normalized.deductionRules.findIndex((item) => item.id === idOrIndex);
+    if (idx >= 0) return `deduction:${idx}`;
+  }
+  if (section === "bonusRules" && idOrIndex) {
+    const idx = normalized.bonusRules.findIndex((item) => item.id === idOrIndex);
+    if (idx >= 0) return `bonus:${idx}`;
+  }
+  if (section === "scoreCaps" && idOrIndex) {
+    const idx = normalized.scoreCaps.findIndex((item) => item.id === idOrIndex);
+    if (idx >= 0) return `scoreCap:${idx}`;
+  }
+  if (section === "overlapGroups") return "group:0";
+  return undefined;
 }
 
 export function rubricLevelLabel(id: string): string {
@@ -133,6 +188,8 @@ export function rubricLevelLabel(id: string): string {
     unsatisfactory: "不合格",
     none: "未达标",
     missing: "缺失",
+    full: "达标",
+    zero: "未达标",
   };
   return labels[suffix] ?? labels[normalized] ?? id;
 }
@@ -142,7 +199,7 @@ export function rubricLevelTone(
   criterionMaxScore: number,
 ): RubricLevelTone {
   const suffix = level.id.trim().toLowerCase().split(/[_\-\s]+/).at(-1) ?? "";
-  if (["fail", "failing", "unsatisfactory", "missing", "none"].includes(suffix)) return "tier-fail";
+  if (["fail", "failing", "unsatisfactory", "missing", "none", "zero"].includes(suffix)) return "tier-fail";
   if (["poor", "marginal"].includes(suffix)) return "tier-low";
   const safeMax = criterionMaxScore > 0 ? criterionMaxScore : Math.max(level.maxScore, 1);
   const midpointRatio = ((level.minScore + level.maxScore) / 2) / safeMax;
@@ -153,30 +210,25 @@ export function rubricLevelTone(
   return "tier-fail";
 }
 
-function scorePolicyLabel(policy: "exact-level" | "range" | "continuous"): string {
-  if (policy === "exact-level") return "等级定分";
-  if (policy === "range") return "区间评分";
-  return "连续评分";
-}
-
 function rulePreview(
-  rule: { name: string; condition: string; amountPolicy?: "fixed" | "per-occurrence" | "range"; occurrence: "once" | "per-occurrence"; evidenceRequired: boolean; overlapGroup?: string; bonus?: number; maxBonus?: number; deduction?: number; maxDeduction?: number },
+  rule: NormalizedAdjustmentRule,
   kind: "bonus" | "deduction",
 ): RubricPreviewSection["rows"][number] {
-  const amount = kind === "bonus" ? rule.bonus ?? 0 : rule.deduction ?? 0;
-  const maximum = kind === "bonus" ? rule.maxBonus ?? amount : rule.maxDeduction ?? amount;
-  const policy = rule.amountPolicy ?? (rule.occurrence === "per-occurrence" ? "per-occurrence" : "fixed");
-  const score = kind === "bonus"
-    ? `+${amount} 分（上限 ${maximum}）`
-    : policy === "range"
-      ? `−1–${maximum} 分（整数区间）`
-      : policy === "per-occurrence"
-        ? `−${amount} 分/次（上限 ${maximum}）`
-        : `−${amount} 分（固定一次）`;
+  const sign = kind === "bonus" ? "+" : "−";
+  const score = rule.policy === "fixed"
+    ? `${sign}${rule.amount} 分（固定一次）`
+    : rule.policy === "per-occurrence"
+      ? `${sign}${rule.unitAmount} 分/次（上限 ${rule.maxAmount}）`
+      : `${sign}${rule.minAmount}–${rule.maxAmount} 分（步长 ${rule.step}）`;
+  const policyText = rule.policy === "fixed"
+    ? "固定一次"
+    : rule.policy === "per-occurrence"
+      ? "按次累计"
+      : "区间酌情";
   return {
     title: rule.name,
     score,
     description: rule.condition,
-    detail: `${rule.occurrence === "once" ? "仅一次" : "按次计算"} · ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}${rule.overlapGroup ? ` · 重叠组：${rule.overlapGroup}` : ""}`,
+    detail: `${policyText} · ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"}${rule.overlapGroup ? ` · 重叠组：${rule.overlapGroup}` : ""}`,
   };
 }

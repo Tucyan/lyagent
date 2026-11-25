@@ -45,7 +45,7 @@ describe("assignment grader Agent", () => {
     expect(prompt).toContain('"mode":"deductive"');
     expect(prompt).toContain('"id":"missing"');
     expect(prompt).toContain("program code recalculates");
-    expect(prompt).toContain("Prefer a specific in-range integer");
+    expect(prompt).toContain("choose a justified step-aligned amount within the allowed interval");
     expect(prompt).toContain("Full credit is exceptional");
     expect(prompt).toContain("Do not turn fixed or per-occurrence rules into ranges");
     expect(prompt).toContain("structured grading argument");

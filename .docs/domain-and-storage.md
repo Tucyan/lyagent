@@ -115,17 +115,19 @@ workspace/batch-grading/{batchId}/
 - 草稿写入使用`expectedVersion`乐观并发；冻结后删除可编辑草稿并写入带哈希的不可变`rubric-vN.json`。
 - 从冻结版本创建修订会复制为新的草稿并记录`baseRubricVersion`，不会覆盖历史版本。
 - 删除评分会话必须先由前端二次确认；服务端删除整个受控Assignment目录，因此参考资料、`design-session.json`聊天记录、当前草稿和全部冻结正式版本会一并永久删除，不提供回退。
-- 冻结的JSON是评分规则事实来源；Markdown是包含评分等级、证据要求、部分得分与重叠组语义的可读导出。嵌套规则不使用CSV作为事实来源。
-- 加分制支持`exact-level`、`range`和`continuous`评分策略。
-- 每条扣分规则独立选择`fixed`（触发时固定一次）、`per-occurrence`（按固定单位累计至上限）或`range`（在1到上限之间取任意整数）；同一减分制或混合制评分表可同时包含三种策略。未声明`amountPolicy`的历史规则按原`occurrence`语义读取，冻结版本不迁移、不改写。
+- 冻结的JSON是评分规则事实来源；Markdown是包含评分等级、证据要求、加/扣分、总分封顶与重叠组语义的可读导出。嵌套规则不使用CSV作为事实来源。
+- `schemaVersion: "2.0"` 是新草稿与修订草稿的规范格式；已冻结的 `1.0` 版本保持不可变、只读兼容加载，不原地改写。基于 `1.0` 冻结版本创建修订时自动无损升级为 `2.0` 草稿。
+- `2.0` 主体评分项移除全局 `partialCreditAllowed`，采用 `levels`（按档定分，含 0/满分二档）或 `scored`（区间/连续打分，步长 `step: 1 | 0.5 | 0.1 | 0.01`，默认 `0.5`，参考分档不重叠即可并按 `step` 判定衔接）。
+- `2.0` 扣分规则与奖励规则统一使用单一 `policy`：`fixed`（固定一次 `amount`）、`per-occurrence`（按次累计 `unitAmount` 至 `maxAmount`）或 `range`（按 `step` 在 `[minAmount, maxAmount]` 内酌情取值）。历史 `1.0` 规则继续通过共享规则引擎 [rubric-engine.ts](../src/schemas/rubric-engine.ts) 兼容执行。
+- `2.0` 支持可选一等规则 `scoreCaps`（条件总分封顶）；Agent 仅判断是否触发，程序在计算最终总分时执行封顶。
 - 批改Agent默认在冻结规则允许时按证据和严重程度使用区间内具体分值，不把区间规则简化成`0/上限`二选一；满分只用于有充分证据证明完整达到最高标准的项目。固定一次与按次规则仍必须严格使用冻结金额或增量。
-- `range`结果必须保存`selectedLevelId`，得分位于等级闭区间。
-- 减分制显式记录每条规则是否触发、实际扣分、证据和置信度。
+- 区间/连续得分的 `selectedLevelId` 由程序在校验草稿时按 `score` 自动推导并同步；按档定分项严格校验分值与冻结档位一致。
+- 减分制显式记录每条规则是否触发、实际扣分（及可选次数 `occurrences`）、证据和置信度。
 - 新批改草稿的默认证据是结构化评分分析论据，包括作业表现观察、冻结标准对应关系和具体分值理由；它是面向教师的简明可审计结论，不是模型隐藏思维链。原文行号、短引文和图片只作为可选佐证；历史结果继续兼容原有文本与图片证据。
 - 同一`overlapGroup`默认只触发一条规则，除非冻结Rubric明确允许累计。
-- 总分、重复扣分和置信度聚合由程序计算。
+- 总分、重复扣分、总分封顶和置信度聚合由程序计算。
 
-评分表精确Schema以`src/schemas/rubric.ts`为事实来源；批改Schema以`src/schemas/grading.ts`为事实来源。本文件只维护不变量。
+评分表精确Schema以`src/schemas/rubric.ts`（`2.0`）、`src/schemas/rubric-v1.ts`（`1.0` 只读兼容）与`src/schemas/rubric-engine.ts`（共享规则引擎）为事实来源；批改Schema以`src/schemas/grading.ts`为事实来源。本文件只维护不变量。
 
 ## M4单份批改存储
 

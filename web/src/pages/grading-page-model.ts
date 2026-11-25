@@ -1,13 +1,14 @@
 import { userErrorMessage } from "../../../src/schemas/user-feedback.js";
 
 type NamedGradingRules = {
-  criteria?: ReadonlyArray<{ id: string; name: string }>;
-  rules?: ReadonlyArray<{ id: string; name: string }>;
-  deductionRules?: ReadonlyArray<{ id: string; name: string }>;
-  bonusRules?: ReadonlyArray<{ id: string; name: string }>;
+  criteria?: ReadonlyArray<{ id?: string | undefined; name: string }> | undefined;
+  rules?: ReadonlyArray<{ id?: string | undefined; name: string }> | undefined;
+  deductionRules?: ReadonlyArray<{ id?: string | undefined; name: string }> | undefined;
+  bonusRules?: ReadonlyArray<{ id?: string | undefined; name: string }> | undefined;
+  scoreCaps?: ReadonlyArray<{ id?: string | undefined; name: string }> | undefined;
 };
 export function gradingItemLabel(rubric: NamedGradingRules | undefined, id: string, index: number): string {
-  const items = [...(rubric?.criteria ?? []), ...(rubric?.rules ?? []), ...(rubric?.deductionRules ?? []), ...(rubric?.bonusRules ?? [])];
+  const items = [...(rubric?.criteria ?? []), ...(rubric?.rules ?? []), ...(rubric?.deductionRules ?? []), ...(rubric?.bonusRules ?? []), ...(rubric?.scoreCaps ?? [])];
   return items.find(item => item.id === id)?.name.trim() || `评分项目 ${index + 1}`;
 }
 

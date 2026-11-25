@@ -84,10 +84,16 @@ const rubricProblems: Record<string, string> = {
   RANGE_DEDUCTION_MUST_BE_ONCE: "区间扣分需要一次性规则。请将触发次数改为“仅一次”。",
   RANGE_DEDUCTION_MUST_BE_INTEGER: "区间扣分的扣分上限必须为大于等于 1 的整数。",
   DUPLICATE_LEVEL_ID: "同一评分项目内存在重复的等级标识，请修改为不同标识。",
-  CONTINUOUS_LEVELS_GAP_OR_OVERLAP: "连续评分的参考等级存在区间空档、重叠或未覆盖 0 到最高分，建议使用“自动衔接区间”。",
+  CONTINUOUS_LEVELS_GAP_OR_OVERLAP: "参考分档存在区间空档或未完整覆盖 0 到最高分，可继续确认冻结，或补齐分档。",
   PARTIAL_CREDIT_DISABLED_WITH_RANGE: "已关闭“允许部分得分”，非固定等级的评分项目在批改时仅能得 0 分或满分。",
   MIXED_OVERLAP_GROUP: "同一个重叠规则组不能同时包含加分规则和扣分规则，请拆分分组标识。",
-  HYBRID_WITHOUT_EXTRA_RULES: "当前为混合制，但尚未配置任何加分或扣分规则，等效于纯加分制。",
+  HYBRID_WITHOUT_EXTRA_RULES: "当前为混合制，但尚未配置任何加分、扣分或总分封顶规则，等效于纯加分制。",
+  SCORE_STEP_MISMATCH: "分值或分档边界与所选步长不对齐，请调整分值或切换步长。",
+  DUPLICATE_LEVEL_SCORE: "按档定分模式下不能存在相同分值的重复等级，请调整档位分值。",
+  LEVELS_MISSING_FULL_SCORE: "当前按档定分项目尚未包含满分档位，请确认是否符合预期。",
+  LEVEL_OVERLAP: "同一项目的参考分档存在区间重叠，请调整分界值避免重叠。",
+  RANGE_MIN_EXCEEDS_MAX: "区间规则的最小分值不能大于最大分值。",
+  SCORE_CAP_NOT_BELOW_TOTAL: "总分封顶规则的封顶分值必须小于评分表总分。",
 };
 export function rubricProblemMessage(problem: { code: string; path?: string }): string {
   return rubricProblems[problem.code] ?? inputIssueMessage(problem.path);

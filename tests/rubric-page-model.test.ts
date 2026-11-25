@@ -103,7 +103,7 @@ describe("rubric page selection", () => {
       partialCreditAllowed: true,
       criteria: [{ id: "analysis", name: "分析质量", description: "论证完整且有证据。", maxScore: 100, scorePolicy: "continuous", evidenceRequired: true }],
     })).toEqual([
-      { title: "评分项目", rows: [{ title: "分析质量", score: "100 分", description: "论证完整且有证据。", detail: "连续评分 · 需要评分分析依据", targetKey: "criterion:0" }] },
+      { title: "评分项目", rows: [{ title: "分析质量", score: "100 分", description: "论证完整且有证据。", detail: "区间打分（步长 0.01） · 需要评分分析依据", targetKey: "criterion:0" }] },
     ]);
   });
 
@@ -123,7 +123,7 @@ describe("rubric page selection", () => {
     expect(sections[0]!.rows.map((row) => row.score)).toEqual([
       "−20 分（固定一次）",
       "−2 分/次（上限 10）",
-      "−1–20 分（整数区间）",
+      "−1–20 分（步长 1）",
     ]);
   });
 });

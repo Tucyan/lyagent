@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
 import { finalizeGradingDraft, gradingDraftSchema, type GradingDraft, type GradingResult, type ReviewReason } from "../schemas/grading.js";
+import { normalizeRubric } from "../schemas/rubric-engine.js";
 import type { GradingSession, GradingSessionService } from "./grading-session-service.js";
 import type { RubricService } from "./rubric-service.js";
 
@@ -256,24 +257,35 @@ function isConfirmedGradingResult(value: unknown): value is ConfirmedGradingResu
 
 function renderStudentFeedback(confirmed: ConfirmedGradingResult, rubric: Awaited<ReturnType<RubricService["getVersion"]>>["rubric"]): string {
   const result = confirmed.result;
+  const normalized = normalizeRubric(rubric);
   const lines = ["# 作业评分反馈", "", `## 总分：${result.score.earned}/${result.score.possible}`, ""];
-  if (result.decisions.mode === "additive" && rubric.mode === "additive") {
+  if (result.decisions.mode === "additive") {
     lines.push("## 逐项评分", "");
-    for (const decision of result.decisions.criteria) lines.push(`- **${rubric.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。${decision.reason}`);
-  } else if (result.decisions.mode === "deductive" && rubric.mode === "deductive") {
+    for (const decision of result.decisions.criteria) lines.push(`- **${normalized.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。${decision.reason}`);
+  } else if (result.decisions.mode === "deductive") {
     lines.push("## 扣分判断", "");
-    for (const decision of result.decisions.deductions) lines.push(`- **${rubric.rules.find(({ id }) => id === decision.ruleId)?.name ?? decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。${decision.reason}`);
-  } else if (result.decisions.mode === "hybrid" && rubric.mode === "hybrid") {
+    for (const decision of result.decisions.deductions) lines.push(`- **${normalized.deductionRules.find(({ id }) => id === decision.ruleId)?.name ?? decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。${decision.reason}`);
+  } else if (result.decisions.mode === "hybrid") {
     lines.push("## 综合评分", "");
-    for (const decision of result.decisions.criteria) lines.push(`- **${rubric.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。${decision.reason}`);
-    for (const decision of result.decisions.bonuses) lines.push(`- **${decision.ruleId}**：${decision.triggered ? `加 ${decision.bonus} 分` : "未加分"}。${decision.reason}`);
-    for (const decision of result.decisions.deductions) lines.push(`- **${decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。${decision.reason}`);
+    for (const decision of result.decisions.criteria) lines.push(`- **${normalized.criteria.find(({ id }) => id === decision.criterionId)?.name ?? decision.criterionId}**：${decision.score} 分。${decision.reason}`);
+    for (const decision of result.decisions.bonuses) lines.push(`- **${normalized.bonusRules.find(({ id }) => id === decision.ruleId)?.name ?? decision.ruleId}**：${decision.triggered ? `加 ${decision.bonus} 分` : "未加分"}。${decision.reason}`);
+    for (const decision of result.decisions.deductions) lines.push(`- **${normalized.deductionRules.find(({ id }) => id === decision.ruleId)?.name ?? decision.ruleId}**：${decision.triggered ? `扣 ${decision.deduction} 分` : "未扣分"}。${decision.reason}`);
   }
-  const decisions = result.decisions.mode === "additive"
-    ? result.decisions.criteria
-    : result.decisions.mode === "deductive"
-      ? result.decisions.deductions
-      : [...result.decisions.criteria, ...result.decisions.bonuses, ...result.decisions.deductions];
+  if (result.decisions.scoreCaps && result.decisions.scoreCaps.length > 0) {
+    lines.push("", "## 条件总分封顶", "");
+    for (const decision of result.decisions.scoreCaps) {
+      const cap = normalized.scoreCaps.find(({ id }) => id === decision.ruleId);
+      lines.push(`- **${cap?.name ?? decision.ruleId}**：${decision.triggered ? `已触发（总分不超过 ${cap?.maxTotalScore ?? "?"} 分）` : "未触发"}。${decision.reason}`);
+    }
+  }
+  const decisions = [
+    ...(result.decisions.mode === "additive"
+      ? result.decisions.criteria
+      : result.decisions.mode === "deductive"
+        ? result.decisions.deductions
+        : [...result.decisions.criteria, ...result.decisions.bonuses, ...result.decisions.deductions]),
+    ...(result.decisions.scoreCaps ?? []),
+  ];
   const analyses = decisions.flatMap((decision) => decision.evidence
     .filter((item): item is Extract<typeof item, { kind: "analysis" }> => item.kind === "analysis")
     .map((item) => ({ id: "criterionId" in decision ? decision.criterionId : decision.ruleId, item })));

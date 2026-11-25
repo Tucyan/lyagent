@@ -52,7 +52,7 @@ describe("rubric draft diff summary and consecutive tool step collapsing", () =>
     expect(summary).toContain("已开启允许部分得分");
     expect(summary).toContain("新增评分项目");
     expect(summary).toContain("格式规范");
-    expect(summary).toContain("等级定分 → 区间评分");
+    expect(summary).toContain("按档定分 → 区间打分");
     expect(summary).toContain("20 → 30 分");
   });
 

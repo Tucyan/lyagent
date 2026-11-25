@@ -178,72 +178,88 @@ function rubricParameterSchema(mode: Rubric["mode"]) {
   const score = Type.Number({ minimum: 0 });
   const positiveScore = Type.Number({ exclusiveMinimum: 0 });
   const id = Type.String({ minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]*$" });
-  const level = Type.Object({
+  const scoreStep = Type.Union([Type.Literal(1), Type.Literal(0.5), Type.Literal(0.1), Type.Literal(0.01)]);
+  const discreteLevel = Type.Object({
     id,
+    label: Type.Optional(Type.String({ minLength: 1, maxLength: 60 })),
+    score,
+    condition: Type.String({ minLength: 1, maxLength: 2_000 }),
+  }, { additionalProperties: false });
+  const scoredLevel = Type.Object({
+    id,
+    label: Type.Optional(Type.String({ minLength: 1, maxLength: 60 })),
     minScore: score,
     maxScore: score,
     condition: Type.String({ minLength: 1, maxLength: 2_000 }),
   }, { additionalProperties: false });
-  const criterion = Type.Object({
-    id,
-    name: Type.String({ minLength: 1, maxLength: 160 }),
-    description: Type.String({ minLength: 1, maxLength: 4_000 }),
-    maxScore: positiveScore,
-    scorePolicy: Type.Union([Type.Literal("exact-level"), Type.Literal("range"), Type.Literal("continuous")]),
-    evidenceRequired: Type.Boolean(),
-    levels: Type.Optional(Type.Array(level, { maxItems: 20 })),
-  }, { additionalProperties: false });
+  const criterion = Type.Union([
+    Type.Object({
+      id,
+      name: Type.String({ minLength: 1, maxLength: 160 }),
+      description: Type.String({ minLength: 1, maxLength: 4_000 }),
+      maxScore: positiveScore,
+      scoringType: Type.Literal("levels"),
+      evidenceRequired: Type.Boolean(),
+      levels: Type.Array(discreteLevel, { minItems: 1, maxItems: 20 }),
+    }, { additionalProperties: false }),
+    Type.Object({
+      id,
+      name: Type.String({ minLength: 1, maxLength: 160 }),
+      description: Type.String({ minLength: 1, maxLength: 4_000 }),
+      maxScore: positiveScore,
+      scoringType: Type.Literal("scored"),
+      step: Type.Optional(scoreStep),
+      evidenceRequired: Type.Boolean(),
+      levels: Type.Optional(Type.Array(scoredLevel, { maxItems: 20 })),
+    }, { additionalProperties: false }),
+  ]);
   const overlapGroup = Type.Object({
     id,
     aggregation: Type.Union([Type.Literal("highest-only"), Type.Literal("sum")]),
   }, { additionalProperties: false });
-  const deductionRuleFields = {
+  const adjustmentRuleBase = {
     id,
     name: Type.String({ minLength: 1, maxLength: 160 }),
     condition: Type.String({ minLength: 1, maxLength: 2_000 }),
-    maxDeduction: positiveScore,
     evidenceRequired: Type.Boolean(),
     overlapGroup: Type.Optional(id),
   };
-  const deductionRule = Type.Union([
-    Type.Object({ ...deductionRuleFields, deduction: positiveScore, occurrence: Type.Union([Type.Literal("once"), Type.Literal("per-occurrence")]) }, { additionalProperties: false }),
-    Type.Object({ ...deductionRuleFields, amountPolicy: Type.Literal("fixed"), deduction: positiveScore, occurrence: Type.Literal("once") }, { additionalProperties: false }),
-    Type.Object({ ...deductionRuleFields, amountPolicy: Type.Literal("per-occurrence"), deduction: positiveScore, occurrence: Type.Literal("per-occurrence") }, { additionalProperties: false }),
-    Type.Object({ ...deductionRuleFields, amountPolicy: Type.Literal("range"), occurrence: Type.Literal("once") }, { additionalProperties: false }),
+  const adjustmentRule = Type.Union([
+    Type.Object({ ...adjustmentRuleBase, policy: Type.Literal("fixed"), amount: positiveScore }, { additionalProperties: false }),
+    Type.Object({ ...adjustmentRuleBase, policy: Type.Literal("per-occurrence"), unitAmount: positiveScore, maxAmount: positiveScore }, { additionalProperties: false }),
+    Type.Object({ ...adjustmentRuleBase, policy: Type.Literal("range"), minAmount: Type.Optional(positiveScore), maxAmount: positiveScore, step: Type.Optional(scoreStep) }, { additionalProperties: false }),
   ]);
-  const bonusRule = Type.Object({
+  const scoreCap = Type.Object({
     id,
     name: Type.String({ minLength: 1, maxLength: 160 }),
     condition: Type.String({ minLength: 1, maxLength: 2_000 }),
-    bonus: positiveScore,
-    maxBonus: positiveScore,
-    occurrence: Type.Union([Type.Literal("once"), Type.Literal("per-occurrence")]),
+    maxTotalScore: score,
     evidenceRequired: Type.Boolean(),
-    overlapGroup: Type.Optional(id),
   }, { additionalProperties: false });
 
   if (mode === "additive") return Type.Object({
-    schemaVersion: Type.Literal("1.0"),
+    schemaVersion: Type.Literal("2.0"),
     mode: Type.Literal("additive"),
     totalScore: positiveScore,
-    partialCreditAllowed: Type.Boolean(),
     criteria: Type.Array(criterion, { minItems: 1, maxItems: 40 }),
+    scoreCaps: Type.Optional(Type.Array(scoreCap, { maxItems: 20 })),
   }, { additionalProperties: false });
   if (mode === "deductive") return Type.Object({
-    schemaVersion: Type.Literal("1.0"),
+    schemaVersion: Type.Literal("2.0"),
     mode: Type.Literal("deductive"),
     totalScore: positiveScore,
-    rules: Type.Array(deductionRule, { minItems: 1, maxItems: 80 }),
+    rules: Type.Array(adjustmentRule, { minItems: 1, maxItems: 80 }),
+    scoreCaps: Type.Optional(Type.Array(scoreCap, { maxItems: 20 })),
     overlapGroups: Type.Array(overlapGroup, { maxItems: 40 }),
   }, { additionalProperties: false });
   return Type.Object({
-    schemaVersion: Type.Literal("1.0"),
+    schemaVersion: Type.Literal("2.0"),
     mode: Type.Literal("hybrid"),
     totalScore: positiveScore,
-    partialCreditAllowed: Type.Boolean(),
     criteria: Type.Array(criterion, { minItems: 1, maxItems: 40 }),
-    bonusRules: Type.Array(bonusRule, { maxItems: 40 }),
-    deductionRules: Type.Array(deductionRule, { maxItems: 80 }),
+    bonusRules: Type.Array(adjustmentRule, { maxItems: 40 }),
+    deductionRules: Type.Array(adjustmentRule, { maxItems: 80 }),
+    scoreCaps: Type.Optional(Type.Array(scoreCap, { maxItems: 20 })),
     overlapGroups: Type.Array(overlapGroup, { maxItems: 40 }),
   }, { additionalProperties: false });
 }

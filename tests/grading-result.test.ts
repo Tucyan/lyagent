@@ -229,4 +229,64 @@ describe("grading result schemas and deterministic calculation", () => {
 
     expect(finalizeGradingDraft({ rubric: deductiveRubric, submission: { path: "submission-v1.md", lineCount: 80, lines: Array(80).fill("合成报告中的短证据"), hash: "a".repeat(64) }, draft }).score).toEqual({ earned: 90, possible: 100 });
   });
+
+  it("enforces v2.0 step-aligned range deductions, bonuses, and scoreCaps in program code", () => {
+    const v2Rubric: Rubric = {
+      schemaVersion: "2.0",
+      mode: "hybrid",
+      totalScore: 100,
+      criteria: [
+        { id: "c1", name: "内容", description: "核心内容", maxScore: 100, scoringType: "scored", step: 0.5, evidenceRequired: false, levels: [
+          { id: "low", minScore: 0, maxScore: 59.5, condition: "较弱" },
+          { id: "high", minScore: 60, maxScore: 100, condition: "达标" },
+        ] },
+      ],
+      bonusRules: [
+        { id: "b1", name: "亮点", condition: "有深度亮点", policy: "range", maxAmount: 5, step: 0.5, evidenceRequired: false },
+      ],
+      deductionRules: [
+        { id: "d1", name: "表达", condition: "表达瑕疵", policy: "range", maxAmount: 2.5, step: 0.5, evidenceRequired: false },
+      ],
+      scoreCaps: [
+        { id: "short", name: "字数不足封顶", condition: "不足300字", maxTotalScore: 30, evidenceRequired: false },
+      ],
+      overlapGroups: [],
+    };
+    const submission = { path: "submission-v1.md", lineCount: 5, lines: Array(5).fill("正文"), hash: "4".repeat(64) };
+
+    const capped = finalizeGradingDraft({
+      rubric: v2Rubric,
+      submission,
+      draft: {
+        schemaVersion: "1.0",
+        mode: "hybrid",
+        criteria: [{ criterionId: "c1", score: 85.5, reason: "分析较好", evidence: [], confidence: 0.9 }],
+        bonuses: [{ ruleId: "b1", triggered: true, bonus: 1.5, reason: "有一定亮点", evidence: [], confidence: 0.9 }],
+        deductions: [{ ruleId: "d1", triggered: true, deduction: 1.5, reason: "轻微格式问题", evidence: [], confidence: 0.9 }],
+        scoreCaps: [{ ruleId: "short", triggered: true, reason: "篇幅不足300字", evidence: [], confidence: 0.95 }],
+        strengths: [],
+        improvements: [],
+        warnings: [],
+      },
+    });
+    expect(capped.score).toEqual({ earned: 30, possible: 100 });
+    expect(capped.decisions.mode === "hybrid" && capped.decisions.criteria[0]?.selectedLevelId).toBe("high");
+
+    // Step mismatch rejected (0.3 is not aligned to step 0.5)
+    expect(() => finalizeGradingDraft({
+      rubric: v2Rubric,
+      submission,
+      draft: {
+        schemaVersion: "1.0",
+        mode: "hybrid",
+        criteria: [{ criterionId: "c1", score: 85.3, reason: "步长不对齐", evidence: [], confidence: 0.9 }],
+        bonuses: [{ ruleId: "b1", triggered: false, bonus: 0, reason: "无", evidence: [], confidence: 0.9 }],
+        deductions: [{ ruleId: "d1", triggered: false, deduction: 0, reason: "无", evidence: [], confidence: 0.9 }],
+        scoreCaps: [{ ruleId: "short", triggered: false, reason: "字数达标", evidence: [], confidence: 0.95 }],
+        strengths: [],
+        improvements: [],
+        warnings: [],
+      },
+    })).toThrow(/step 0.5/i);
+  });
 });

@@ -90,10 +90,10 @@ export interface RubricScoreInput {
 export interface AnyRubricLike {
   schemaVersion?: "1.0" | "2.0" | undefined;
   mode: RubricMode;
-  totalScore: number;
+  totalScore?: number | undefined;
   partialCreditAllowed?: boolean | undefined;
   criteria?: ReadonlyArray<{
-    id: string;
+    id?: string | undefined;
     name: string;
     description: string;
     maxScore: number;
@@ -118,7 +118,7 @@ export interface AnyRubricLike {
 }
 
 export interface AnyRuleLike {
-  id: string;
+  id?: string | undefined;
   name: string;
   condition: string;
   evidenceRequired: boolean;
@@ -159,9 +159,9 @@ export function validateStepAligned(value: number, step: ScoreStep): boolean {
   return stepUnits > 0 && units % stepUnits === 0;
 }
 
-function normalizeRule(rule: AnyRuleLike): NormalizedAdjustmentRule {
+function normalizeRule(rule: AnyRuleLike, index: number): NormalizedAdjustmentRule {
   const base = {
-    id: rule.id,
+    id: rule.id ?? `rule_${index + 1}`,
     name: rule.name,
     condition: rule.condition,
     evidenceRequired: rule.evidenceRequired,
@@ -202,6 +202,7 @@ function normalizeRule(rule: AnyRuleLike): NormalizedAdjustmentRule {
 
 function normalizeCriterion(
   criterion: NonNullable<AnyRubricLike["criteria"]>[number],
+  index: number,
   schemaVersion: "1.0" | "2.0",
   partialCreditAllowed: boolean | undefined,
 ): NormalizedCriterion {
@@ -220,7 +221,7 @@ function normalizeCriterion(
   const step: ScoreStep = criterion.step ?? (schemaVersion === "2.0" ? 0.5 : 0.01);
   const binaryOnly = schemaVersion === "1.0" && partialCreditAllowed === false && !isLevels;
   return {
-    id: criterion.id,
+    id: criterion.id ?? `criterion_${index + 1}`,
     name: criterion.name,
     description: criterion.description,
     maxScore: criterion.maxScore,
@@ -234,20 +235,20 @@ function normalizeCriterion(
 
 export function normalizeRubric(rubric: AnyRubricLike): NormalizedRubric {
   const schemaVersion = rubric.schemaVersion === "2.0" ? "2.0" : "1.0";
-  const criteria = (rubric.criteria ?? []).map((criterion) =>
-    normalizeCriterion(criterion, schemaVersion, rubric.partialCreditAllowed),
+  const criteria = (rubric.criteria ?? []).map((criterion, index) =>
+    normalizeCriterion(criterion, index, schemaVersion, rubric.partialCreditAllowed),
   );
   const rawDeductions = rubric.mode === "deductive"
     ? (rubric.rules ?? rubric.deductionRules ?? [])
     : (rubric.deductionRules ?? []);
-  const deductionRules = rawDeductions.map(normalizeRule);
-  const bonusRules = (rubric.bonusRules ?? []).map(normalizeRule);
+  const deductionRules = rawDeductions.map((rule, index) => normalizeRule(rule, index));
+  const bonusRules = (rubric.bonusRules ?? []).map((rule, index) => normalizeRule(rule, index));
   const scoreCaps = (rubric.scoreCaps ?? []).map((cap) => ({ ...cap }));
   const overlapGroups = (rubric.overlapGroups ?? []).map((group) => ({ ...group }));
   return {
     schemaVersion,
     mode: rubric.mode,
-    totalScore: rubric.totalScore,
+    totalScore: rubric.totalScore ?? 0,
     ...(rubric.partialCreditAllowed !== undefined ? { partialCreditAllowed: rubric.partialCreditAllowed } : {}),
     criteria,
     bonusRules,

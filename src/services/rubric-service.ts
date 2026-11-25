@@ -2,7 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
-import { rubricSchema, validateRubric, type DeductionRule, type Rubric, type RubricValidation } from "../schemas/rubric.js";
+import {
+  rubricSchema,
+  upgradeRubricV1ToV2,
+  validateRubric,
+  type Rubric,
+  type RubricValidation,
+} from "../schemas/rubric.js";
+import { normalizeRubric, type NormalizedAdjustmentRule } from "../schemas/rubric-engine.js";
 
 export type RubricSourceRole = "rubric_draft" | "note";
 export const RUBRIC_SAFE_PROCESS_SUMMARY = "Agent 正在分析作业要求、参考资料和现有评分表，并准备结构化评分规则。";
@@ -361,7 +368,8 @@ export class RubricService {
   async createRevision(assignmentId: string, version: number): Promise<RubricDraft> {
     return this.mutateAssignment(assignmentId, async (waited) => {
       const frozen = await this.getVersion(assignmentId, version);
-      return this.createDraftUnlocked(assignmentId, frozen.rubric, frozen.version, waited);
+      const editable = frozen.rubric.schemaVersion === "1.0" ? upgradeRubricV1ToV2(frozen.rubric) : frozen.rubric;
+      return this.createDraftUnlocked(assignmentId, editable, frozen.version, waited);
     });
   }
 
@@ -477,29 +485,48 @@ export class RubricService {
 }
 
 export function renderRubricMarkdown(rubric: Rubric): string {
-  const lines = [`# 评分表`, "", `- 制度：${modeLabel(rubric.mode)}`, `- 总分：${rubric.totalScore}`, ""];
-  if (rubric.mode === "additive" || rubric.mode === "hybrid") {
-    lines.push(`- 允许部分得分：${rubric.partialCreditAllowed ? "是" : "否"}`, "", "## 评分项目", "", "| 项目 | 最高分 | 评分策略 | 分析依据要求 | 说明 |", "| --- | ---: | --- | --- | --- |");
-    for (const criterion of rubric.criteria) {
-      lines.push(`| ${markdownCell(criterion.name)} | ${criterion.maxScore} | ${scorePolicyMarkdownLabel(criterion.scorePolicy)} | ${criterion.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${markdownCell(criterion.description)} |`);
+  const normalized = normalizeRubric(rubric);
+  const lines = [`# 评分表`, "", `- 制度：${modeLabel(normalized.mode)}`, `- 总分：${normalized.totalScore}`, ""];
+  if (normalized.mode === "additive" || normalized.mode === "hybrid") {
+    if (normalized.schemaVersion === "1.0" && normalized.partialCreditAllowed !== undefined) {
+      lines.push(`- 允许部分得分：${normalized.partialCreditAllowed ? "是" : "否"}`, "");
     }
-    for (const criterion of rubric.criteria.filter((item) => (item.levels?.length ?? 0) > 0)) {
+    lines.push("## 评分项目", "", "| 项目 | 最高分 | 评分方式 | 分析依据要求 | 说明 |", "| --- | ---: | --- | --- | --- |");
+    for (const criterion of normalized.criteria) {
+      const policyText = criterion.scoringType === "levels"
+        ? "按档定分"
+        : `区间打分（步长 ${criterion.step}）`;
+      lines.push(`| ${markdownCell(criterion.name)} | ${criterion.maxScore} | ${policyText} | ${criterion.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${markdownCell(criterion.description)} |`);
+    }
+    for (const criterion of normalized.criteria.filter((item) => item.levels.length > 0)) {
       lines.push("", `### ${markdownCell(criterion.name)}：评分等级`, "", "| 等级 | 分值/区间 | 达成条件 |", "| --- | ---: | --- |");
-      for (const level of criterion.levels!) lines.push(`| ${markdownCell(level.id)} | ${scoreRange(level.minScore, level.maxScore)} | ${markdownCell(level.condition)} |`);
+      for (const level of criterion.levels) {
+        const title = level.label ? `${level.label}（${level.id}）` : level.id;
+        lines.push(`| ${markdownCell(title)} | ${scoreRange(level.minScore, level.maxScore)} | ${markdownCell(level.condition)} |`);
+      }
     }
   }
-  if (rubric.mode === "deductive" || rubric.mode === "hybrid") {
-    const rules = rubric.mode === "deductive" ? rubric.rules : rubric.deductionRules;
+  if (normalized.deductionRules.length > 0) {
     lines.push("", "## 扣分规则", "", "| 规则 | 扣分方式 | 最大扣分 | 分析依据要求 | 重叠组 | 条件 |", "| --- | --- | ---: | --- | --- | --- |");
-    for (const rule of rules) lines.push(`| ${markdownCell(rule.name)} | ${deductionRuleLabel(rule)} | ${rule.maxDeduction} | ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
+    for (const rule of normalized.deductionRules) {
+      lines.push(`| ${markdownCell(rule.name)} | ${adjustmentRuleLabel(rule)} | ${rule.maxAmount} | ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
+    }
   }
-  if (rubric.mode === "hybrid" && rubric.bonusRules.length > 0) {
-    lines.push("", "## 奖励规则", "", "| 规则 | 单次奖励 | 最大奖励 | 计算方式 | 分析依据要求 | 重叠组 | 条件 |", "| --- | ---: | ---: | --- | --- | --- | --- |");
-    for (const rule of rubric.bonusRules) lines.push(`| ${markdownCell(rule.name)} | ${rule.bonus} | ${rule.maxBonus} | ${occurrenceLabel(rule.occurrence)} | ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
+  if (normalized.bonusRules.length > 0) {
+    lines.push("", "## 奖励规则", "", "| 规则 | 加分方式 | 最大奖励 | 分析依据要求 | 重叠组 | 条件 |", "| --- | --- | ---: | --- | --- | --- |");
+    for (const rule of normalized.bonusRules) {
+      lines.push(`| ${markdownCell(rule.name)} | ${adjustmentRuleLabel(rule)} | ${rule.maxAmount} | ${rule.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${rule.overlapGroup ?? "—"} | ${markdownCell(rule.condition)} |`);
+    }
   }
-  if (rubric.mode !== "additive" && rubric.overlapGroups.length > 0) {
+  if (normalized.scoreCaps.length > 0) {
+    lines.push("", "## 条件总分封顶", "", "| 规则 | 封顶总分 | 分析依据要求 | 触发条件 |", "| --- | ---: | --- | --- |");
+    for (const cap of normalized.scoreCaps) {
+      lines.push(`| ${markdownCell(cap.name)} | ≤ ${cap.maxTotalScore} | ${cap.evidenceRequired ? "需要评分分析依据" : "不强制分析依据"} | ${markdownCell(cap.condition)} |`);
+    }
+  }
+  if (normalized.mode !== "additive" && normalized.overlapGroups.length > 0) {
     lines.push("", "## 重叠规则组", "", "| 组 ID | 聚合方式 |", "| --- | --- |");
-    for (const group of rubric.overlapGroups) lines.push(`| ${markdownCell(group.id)} | ${group.aggregation === "highest-only" ? "仅取最高项" : "累计"} |`);
+    for (const group of normalized.overlapGroups) lines.push(`| ${markdownCell(group.id)} | ${group.aggregation === "highest-only" ? "仅取最高项" : "累计"} |`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -512,19 +539,10 @@ function scoreRange(minimum: number, maximum: number): string {
   return minimum === maximum ? String(minimum) : `${minimum}–${maximum}`;
 }
 
-function scorePolicyMarkdownLabel(policy: "exact-level" | "range" | "continuous"): string {
-  return policy === "exact-level" ? "等级定分" : policy === "range" ? "区间评分" : "连续评分";
-}
-
-function occurrenceLabel(occurrence: "once" | "per-occurrence"): string {
-  return occurrence === "once" ? "仅一次" : "按次计算";
-}
-
-function deductionRuleLabel(rule: DeductionRule): string {
-  const policy = rule.amountPolicy ?? (rule.occurrence === "per-occurrence" ? "per-occurrence" : "fixed");
-  if (policy === "range") return `1–${rule.maxDeduction} 分（整数区间）`;
-  if (policy === "per-occurrence") return `${rule.deduction} 分/次`;
-  return `${rule.deduction} 分（固定一次）`;
+function adjustmentRuleLabel(rule: NormalizedAdjustmentRule): string {
+  if (rule.policy === "range") return `${rule.minAmount}–${rule.maxAmount} 分（步长 ${rule.step}）`;
+  if (rule.policy === "per-occurrence") return `${rule.unitAmount} 分/次`;
+  return `${rule.amount} 分（固定一次）`;
 }
 
 function modeLabel(mode: Rubric["mode"]): string {
