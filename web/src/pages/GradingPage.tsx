@@ -930,26 +930,27 @@ export function GradingPage() {
             })()}
           </nav>
         </aside>
+        {exportModalOpen ? (
+          <ExportPreviewDialog
+            open={exportModalOpen}
+            options={exportOptions}
+            setOption={updateExportOption}
+            applyPreset={(preset) => setExportOptions(exportPresetOptions(preset))}
+            canExportStudent={Boolean(detail)}
+            canExportRubric={Boolean(selectedRubric)}
+            studentLabel={detail ? `${detail.studentName}（${detail.studentNumber}）` : undefined}
+            rubricLabel={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}
+            fetchCsv={fetchExportCsv}
+            onClose={() => setExportModalOpen(false)}
+          />
+        ) : (
         <section
-          className={`grading-split ${creating || exportModalOpen ? "is-creating" : ""}`}
+          className={`grading-split ${creating ? "is-creating" : ""}`}
           ref={splitRef}
           style={{ "--grading-preview": `${previewPercent}%` } as CSSProperties}
         >
           <main className="grading-conversation">
-            {exportModalOpen ? (
-              <ExportPreviewDialog
-                open={exportModalOpen}
-                options={exportOptions}
-                setOption={updateExportOption}
-                applyPreset={(preset) => setExportOptions(exportPresetOptions(preset))}
-                canExportStudent={Boolean(detail)}
-                canExportRubric={Boolean(selectedRubric)}
-                studentLabel={detail ? `${detail.studentName}（${detail.studentNumber}）` : undefined}
-                rubricLabel={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}
-                fetchCsv={fetchExportCsv}
-                onClose={() => setExportModalOpen(false)}
-              />
-            ) : creating ? (
+            {creating ? (
               <NewSessionPanel
                 rubric={selectedRubric}
                 close={() => setCreating(false)}
@@ -1147,6 +1148,7 @@ export function GradingPage() {
             </div>
           </aside>
         </section>
+        )}
       </div>
       <PromptDialog
         open={Boolean(sessionToRename)}

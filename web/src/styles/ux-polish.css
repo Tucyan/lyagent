@@ -2077,41 +2077,53 @@ fieldset.rubric-guided-field.is-ready {
 }
 
 .export-workspace {
-  grid-row: 1 / -1;
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   min-height: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px 20px;
-  background: var(--bg-canvas);
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg-surface);
 }
 
 .export-preview-modal {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 1 0 auto;
+  min-height: 100%;
   width: 100%;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border: 0;
+  border-radius: 0;
   background: var(--bg-surface);
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
+  box-shadow: none;
 }
 
 .export-preview-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 16px 20px;
+  gap: 10px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.export-preview-header > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
 .export-preview-header h2 {
-  margin: 0 0 4px;
-  font-size: 17px;
+  margin: 0;
+  font-size: 16px;
   color: var(--text-primary);
 }
 
@@ -2139,8 +2151,11 @@ fieldset.rubric-guided-field.is-ready {
 
 .export-preview-controls {
   display: grid;
-  gap: 12px;
-  padding: 14px 20px;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 0;
+  box-shadow: none;
   background: var(--bg-canvas);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -2148,13 +2163,13 @@ fieldset.rubric-guided-field.is-ready {
 .export-scope-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .export-scope-tab {
   display: grid;
-  gap: 3px;
-  padding: 10px 12px;
+  gap: 2px;
+  padding: 8px 10px;
   border: 1.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-surface);
@@ -2212,14 +2227,14 @@ fieldset.rubric-guided-field.is-ready {
 .export-column-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .export-column-chips label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
+  padding: 4px 9px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
@@ -2242,10 +2257,13 @@ fieldset.rubric-guided-field.is-ready {
 
 .export-preview-table-section {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  min-height: 220px;
-  padding: 14px 20px;
-  gap: 10px;
+  grid-template-rows: auto auto minmax(240px, 1fr);
+  min-height: 0;
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 0;
+  box-shadow: none;
+  gap: 8px;
 }
 
 .export-filter-bar {
@@ -2650,6 +2668,9 @@ fieldset.rubric-guided-field.is-ready {
 }
 
 .export-preview-table-wrap {
+  min-width: 0;
+  min-height: 240px;
+  max-height: max(280px, calc(100vh - 350px));
   overflow: auto;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -2665,7 +2686,7 @@ fieldset.rubric-guided-field.is-ready {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 8px 10px;
+  padding: 7px 10px;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-primary);
@@ -2674,7 +2695,7 @@ fieldset.rubric-guided-field.is-ready {
 }
 
 .export-preview-table td {
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   max-width: 260px;
@@ -2692,8 +2713,8 @@ fieldset.rubric-guided-field.is-ready {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 20px;
+  gap: 10px;
+  padding: 10px 16px;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-surface);
 }
@@ -2711,6 +2732,20 @@ fieldset.rubric-guided-field.is-ready {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+@media (max-width: 920px) {
+  .export-workspace {
+    grid-column: 1;
+    grid-row: auto;
+    height: auto;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .export-scope-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .dashboard-course-create {

@@ -220,4 +220,35 @@ describe("UX value-directness & friction fixes", () => {
     expect(filterGradingSessions(sampleSessions, "attention", "").map((s) => s.id)).toEqual(["s3"]);
     expect(filterGradingSessions(sampleSessions, "pending", "").map((s) => s.id)).toEqual(["s1"]);
   });
+
+  it("keeps the CSV export workspace scrollable, flush to the pane without grading-split wrapper, and guarantees a visible table area", () => {
+    const grading = readFileSync(path.resolve("web/src/pages/GradingPage.tsx"), "utf8");
+    expect(grading).not.toContain("creating || exportModalOpen");
+    expect(grading).toMatch(/\{exportModalOpen \? \(\s*<ExportPreviewDialog[\s\S]*\) : \(\s*<section\s+className=\{`grading-split/);
+
+    const polishCss = readFileSync(path.resolve("web/src/styles/ux-polish.css"), "utf8");
+
+    const workspaceBlock = polishCss.match(/\.export-workspace\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(workspaceBlock).toContain("grid-column: 2;");
+    expect(workspaceBlock).not.toContain("grid-row: 1 / -1");
+    expect(workspaceBlock).toContain("overflow-y: auto");
+    expect(workspaceBlock).toContain("margin: 0;");
+    expect(workspaceBlock).toContain("padding: 0;");
+
+    const controlsBlock = polishCss.match(/\.export-preview-controls\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(controlsBlock).toContain("margin: 0;");
+
+    const modalBlock = polishCss.match(/\.export-preview-modal\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(modalBlock).toContain("min-height: 100%");
+    expect(modalBlock).toContain("border: 0;");
+    expect(modalBlock).not.toContain("overflow: hidden");
+
+    const tableSectionBlock = polishCss.match(/\.export-preview-table-section\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(tableSectionBlock).toContain("margin: 0;");
+    expect(tableSectionBlock).toContain("minmax(240px, 1fr)");
+
+    const tableWrapBlock = polishCss.match(/\.export-preview-table-wrap\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(tableWrapBlock).toContain("min-height: 240px");
+    expect(tableWrapBlock).toContain("overflow: auto");
+  });
 });
