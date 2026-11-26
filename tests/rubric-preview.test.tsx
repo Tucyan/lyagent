@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { RubricDocument, RubricEditor } from "../web/src/components/RubricPreviewEditor.js";
+import { isRubricToggleRowStuck } from "../web/src/pages/rubric-page-model.js";
 
 describe("rubric teacher preview", () => {
   it("renders a human-readable scorecard instead of raw JSON", () => {
@@ -187,5 +190,60 @@ describe("rubric teacher preview", () => {
       }}
     />);
     expect(delegatedHtml).not.toContain("rubric-expand-all-btn");
+  });
+
+  it("pins expanded rubric toggle bars to the preview scroll top and detects stuck bounds", () => {
+    // Natural position: header bottom below container top -> not stuck
+    expect(
+      isRubricToggleRowStuck({
+        containerTop: 100,
+        anchorBottom: 140,
+        articleBottom: 500,
+        toggleHeight: 40,
+      }),
+    ).toBe(false);
+
+    // Scrolled inside tall card: header scrolled past top while card bottom still below bar -> stuck
+    expect(
+      isRubricToggleRowStuck({
+        containerTop: 100,
+        anchorBottom: 60,
+        articleBottom: 500,
+        toggleHeight: 40,
+      }),
+    ).toBe(true);
+
+    // Scrolled past bottom of card: bar rides away with card bottom -> not stuck
+    expect(
+      isRubricToggleRowStuck({
+        containerTop: 100,
+        anchorBottom: -200,
+        articleBottom: 130,
+        toggleHeight: 40,
+      }),
+    ).toBe(false);
+
+    const css = readFileSync(path.resolve("web", "src", "styles", "ux-polish.css"), "utf8");
+    expect(css).toContain(".rubric-card-toggle-row.is-sticky-open");
+    expect(css).toMatch(/\.rubric-card-toggle-row\.is-sticky-open\s*\{[^}]*position:\s*sticky/s);
+    expect(css).toContain(".rubric-card-toggle-row.is-sticky-open.is-stuck");
+    expect(css).toMatch(/\.rubric-preview-body\s*\{[^}]*padding:\s*0\s+20px\s+20px\s*!important/s);
+    expect(css).toContain("interpolate-size: allow-keywords");
+  });
+
+  it("animates expand/collapse without !important height locks or programmatic scrollTop jumps", () => {
+    const componentSource = readFileSync(path.resolve("web", "src", "components", "RubricPreviewEditor.tsx"), "utf8");
+    expect(componentSource).not.toContain("useScrollAnchorRestore");
+    expect(componentSource).not.toMatch(/\.scrollTop\s*[+]?=/);
+
+    const css = readFileSync(path.resolve("web", "src", "styles", "ux-polish.css"), "utf8");
+    const descHiddenBlock = css.match(/\.rubric-description-body\[hidden\]\s*\{[^}]*\}/s)?.[0] ?? "";
+    const levelsHiddenBlock = css.match(/\.rubric-scorecard\s*>\s*article\s*>\s*\.rubric-preview-levels\[hidden\]\s*\{[^}]*\}/s)?.[0] ?? "";
+    expect(descHiddenBlock).toContain("height: 0;");
+    expect(descHiddenBlock).not.toContain("height: 0 !important");
+    expect(levelsHiddenBlock).toContain("height: 0;");
+    expect(levelsHiddenBlock).not.toContain("height: 0 !important");
+    expect(css).toMatch(/\.rubric-description-body\s*\{[^}]*interpolate-size:\s*allow-keywords/s);
+    expect(css).toMatch(/\.rubric-scorecard\s*>\s*article\s*>\s*\.rubric-preview-levels\s*\{[^}]*interpolate-size:\s*allow-keywords/s);
   });
 });

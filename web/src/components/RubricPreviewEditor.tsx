@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   inferCriterionStep,
   normalizeRubric,
@@ -8,7 +8,7 @@ import {
   type NormalizedScoreCap,
   type ScoreStep,
 } from "../../../src/schemas/rubric-engine.js";
-import { rubricLevelLabel, rubricLevelTone, rubricPreviewSections } from "../pages/rubric-page-model";
+import { isRubricToggleRowStuck, rubricLevelLabel, rubricLevelTone, rubricPreviewSections } from "../pages/rubric-page-model";
 import { useToast } from "./ToastProvider";
 
 export type RubricMode = "additive" | "deductive" | "hybrid";
@@ -126,66 +126,17 @@ const modeLabel: Record<RubricMode, string> = { additive: "加分制", deductive
 const scoringTypeLabel: Record<ScoringType, string> = { levels: "按档定分", scored: "区间打分" };
 const STEP_OPTIONS: ScoreStep[] = [1, 0.5, 0.1, 0.01];
 
-interface ScrollAnchorSnapshot {
-  container: HTMLElement;
-  anchorKey: string;
-  offsetTop: number;
-}
-
-function findScrollContainer(origin: HTMLElement | null): HTMLElement | null {
+function findScrollContainer(origin: HTMLElement | null, allowUnoverflowed = false): HTMLElement | null {
   let node: HTMLElement | null = origin?.parentElement ?? null;
   while (node) {
     const style = window.getComputedStyle(node);
     const overflowY = style.overflowY;
-    if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight + 2) {
+    if ((overflowY === "auto" || overflowY === "scroll") && (allowUnoverflowed || node.scrollHeight > node.clientHeight + 2)) {
       return node;
     }
     node = node.parentElement;
   }
   return null;
-}
-
-function captureAnchorInContainer(rootEl: HTMLElement | null): ScrollAnchorSnapshot | null {
-  if (!rootEl || typeof window === "undefined") return null;
-  const container = findScrollContainer(rootEl);
-  if (!container) return null;
-  const containerRect = container.getBoundingClientRect();
-  const anchors = [...rootEl.querySelectorAll<HTMLElement>("[data-anchor-key]")];
-  for (const el of anchors) {
-    const rect = el.getBoundingClientRect();
-    if (rect.bottom > containerRect.top + 8) {
-      const anchorKey = el.dataset.anchorKey;
-      if (anchorKey) {
-        return { container, anchorKey, offsetTop: rect.top - containerRect.top };
-      }
-    }
-  }
-  return null;
-}
-
-function useScrollAnchorRestore(rootRef: React.RefObject<HTMLElement | null>, deps: unknown[]) {
-  const pendingAnchorRef = useRef<ScrollAnchorSnapshot | null>(null);
-
-  const captureBeforeChange = () => {
-    pendingAnchorRef.current = captureAnchorInContainer(rootRef.current);
-  };
-
-  useLayoutEffect(() => {
-    const snap = pendingAnchorRef.current;
-    if (!snap) return;
-    pendingAnchorRef.current = null;
-    const target = rootRef.current?.querySelector<HTMLElement>(`[data-anchor-key="${CSS.escape(snap.anchorKey)}"]`);
-    if (!target) return;
-    const containerRect = snap.container.getBoundingClientRect();
-    const targetRect = target.getBoundingClientRect();
-    const delta = (targetRect.top - containerRect.top) - snap.offsetTop;
-    if (Math.abs(delta) > 0.5) {
-      snap.container.scrollTop += delta;
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-
-  return captureBeforeChange;
 }
 
 export function toEditableV2(rubric: AnyRubricLike): RubricV2Value {
@@ -302,13 +253,78 @@ export function RubricDocument({
   );
   const [expandedLevels, setExpandedLevels] = useState<Record<string, boolean>>({});
   const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
-  const captureBeforeChange = useScrollAnchorRestore(rootRef, [expandedLevels]);
+  const [stuckKeys, setStuckKeys] = useState<Record<string, boolean>>({});
+
+  const hasExpandedRow =
+    Object.values(expandedLevels).some(Boolean) || Object.values(expandedDescriptions).some(Boolean);
+
+  useEffect(() => {
+    if (!hasExpandedRow) {
+      setStuckKeys((current) => (Object.keys(current).length > 0 ? {} : current));
+      return;
+    }
+    const scrollContainer = findScrollContainer(rootRef.current, true);
+    if (!scrollContainer) return;
+
+    let rafId: number | undefined;
+    const syncStuckRows = () => {
+      rafId = undefined;
+      const rootEl = rootRef.current;
+      if (!rootEl) return;
+      const containerTop = scrollContainer.getBoundingClientRect().top;
+      const next: Record<string, boolean> = {};
+      const toggleRows = rootEl.querySelectorAll<HTMLElement>(".rubric-card-toggle-row.is-sticky-open");
+      for (const toggleRow of toggleRows) {
+        const articleEl = toggleRow.parentElement;
+        const rowKey = articleEl?.dataset.anchorKey;
+        if (!rowKey || !articleEl) continue;
+        const anchorEl = toggleRow.previousElementSibling as HTMLElement | null;
+        const anchorBottom = anchorEl ? anchorEl.getBoundingClientRect().bottom : containerTop + 999;
+        if (
+          isRubricToggleRowStuck({
+            containerTop,
+            anchorBottom,
+            articleBottom: articleEl.getBoundingClientRect().bottom,
+            toggleHeight: toggleRow.offsetHeight,
+          })
+        ) {
+          next[rowKey] = true;
+        }
+      }
+      setStuckKeys((current) => {
+        const currentKeys = Object.keys(current);
+        const nextKeys = Object.keys(next);
+        if (
+          currentKeys.length === nextKeys.length &&
+          nextKeys.every((key) => current[key] === next[key])
+        ) {
+          return current;
+        }
+        return next;
+      });
+    };
+
+    const scheduleSync = () => {
+      if (rafId !== undefined) return;
+      rafId = window.requestAnimationFrame(syncStuckRows);
+    };
+
+    syncStuckRows();
+    scrollContainer.addEventListener("scroll", scheduleSync, { passive: true });
+    scrollContainer.addEventListener("transitionend", scheduleSync);
+    window.addEventListener("resize", scheduleSync);
+    return () => {
+      if (rafId !== undefined) window.cancelAnimationFrame(rafId);
+      scrollContainer.removeEventListener("scroll", scheduleSync);
+      scrollContainer.removeEventListener("transitionend", scheduleSync);
+      window.removeEventListener("resize", scheduleSync);
+    };
+  }, [hasExpandedRow, expandedLevels, expandedDescriptions, rubric]);
 
   const allLevelsExpanded =
     levelRowKeys.length > 0 && levelRowKeys.every((key) => Boolean(expandedLevels[key]));
 
   const toggleAllLevels = () => {
-    captureBeforeChange();
     const nextOpen = !allLevelsExpanded;
     const nextMap: Record<string, boolean> = {};
     for (const key of levelRowKeys) nextMap[key] = nextOpen;
@@ -351,6 +367,8 @@ export function RubricDocument({
         const rowKey = row.targetKey ?? `${sIdx}:${index}`;
         const isLevelsOpen = Boolean(expandedLevels[rowKey]);
         const isDescriptionOpen = Boolean(expandedDescriptions[rowKey]);
+        const isRowExpanded = isLevelsOpen || isDescriptionOpen;
+        const isStuck = isRowExpanded && Boolean(stuckKeys[rowKey]);
         const isSelected = Boolean(activeTargetKey && row.targetKey && activeTargetKey === row.targetKey);
         return <article
           key={`${section.title}-${index}`}
@@ -376,7 +394,7 @@ export function RubricDocument({
           <small>{row.detail}</small>
           {row.levels ? (
             <>
-              <div className="rubric-card-toggle-row">
+              <div className={`rubric-card-toggle-row${isRowExpanded ? " is-sticky-open" : ""}${isStuck ? " is-stuck" : ""}`}>
                 {row.description.trim() && (
                   <button
                     type="button"
@@ -471,7 +489,6 @@ export function RubricEditor({
     </div>}
     {(editable.mode === "additive" || editable.mode === "hybrid") && (
       <CriteriaEditor
-        editorRootRef={editorRootRef}
         criteria={editable.criteria}
         focusTarget={focusTarget}
         focusedKey={focusedKey}
@@ -544,7 +561,6 @@ export function RubricEditor({
 }
 
 function CriteriaEditor({
-  editorRootRef,
   criteria,
   focusTarget,
   focusedKey,
@@ -552,7 +568,6 @@ function CriteriaEditor({
   onRemove,
   onRemoveLevel,
 }: {
-  editorRootRef: React.RefObject<HTMLDivElement | null>;
   criteria: RubricCriterionV2[];
   focusTarget?: RubricEditFocusTarget | undefined;
   focusedKey?: string | undefined;
@@ -567,8 +582,6 @@ function CriteriaEditor({
     }
     return initial;
   });
-
-  const captureBeforeChange = useScrollAnchorRestore(editorRootRef, [collapsedMap]);
 
   useEffect(() => {
     if (!focusTarget?.key.startsWith("criterion:")) return;
@@ -596,7 +609,6 @@ function CriteriaEditor({
   };
 
   const toggleAll = () => {
-    captureBeforeChange();
     const nextState = !allCollapsed;
     const nextMap: Record<number, boolean> = {};
     for (let i = 0; i < criteria.length; i += 1) nextMap[i] = nextState;

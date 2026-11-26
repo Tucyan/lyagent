@@ -27,6 +27,19 @@ export function clampPreviewPercent(value: number): number {
   return Math.min(72, Math.max(28, Math.round(value)));
 }
 
+export function isRubricToggleRowStuck(input: {
+  containerTop: number;
+  anchorBottom: number;
+  articleBottom: number;
+  toggleHeight: number;
+}): boolean {
+  if (input.toggleHeight <= 0) return false;
+  return (
+    input.anchorBottom + 4 <= input.containerTop &&
+    input.articleBottom >= input.containerTop + input.toggleHeight + 4
+  );
+}
+
 export function resolveRubricPreviewPercent(input: {
   customPreviewPercent?: number;
   frozenWithoutDraft: boolean;

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdminShell } from "../web/src/components/AdminShell.js";
 import { ConfirmDialog } from "../web/src/components/ConfirmDialog.js";
-import { RubricEditor, type RubricValue } from "../web/src/components/RubricPreviewEditor.js";
+import { RubricDocument, RubricEditor, type RubricValue } from "../web/src/components/RubricPreviewEditor.js";
 import { ToastProvider, recoveryActionForError, useToast } from "../web/src/components/ToastProvider.js";
 import { ApiError } from "../web/src/lib/api.js";
 import { filterBatchReviewJobs } from "../web/src/pages/GradingBatchReviewPage.js";
@@ -149,5 +149,58 @@ describe("UX resilience and restrained feedback components", () => {
     expect(filterBatchReviewJobs(jobs, "confirmed", "").map((j) => j.id)).toEqual(["2"]);
     expect(filterBatchReviewJobs(jobs, "attention", "").map((j) => j.id)).toEqual(["3"]);
     expect(filterBatchReviewJobs(jobs, "all", "2026002").map((j) => j.id)).toEqual(["2"]);
+  });
+
+  it("marks RubricDocument toggle row sticky only while description or levels are expanded", async () => {
+    setupDom();
+    await act(async () => {
+      root.render(
+        createElement(RubricDocument, {
+          rubric: {
+            schemaVersion: "2.0",
+            mode: "additive",
+            totalScore: 25,
+            criteria: [
+              {
+                id: "c1",
+                name: "数据清洗与异常处理",
+                description: "说明缺失值和异常值的清洗步骤。",
+                maxScore: 25,
+                scoringType: "scored",
+                step: 0.5,
+                evidenceRequired: true,
+                levels: [
+                  { id: "c1_good", label: "优秀", minScore: 21, maxScore: 25, condition: "完整清洗" },
+                  { id: "c1_fail", label: "不及格", minScore: 0, maxScore: 9.5, condition: "未清洗" },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+    });
+
+    const toggleRow = container.querySelector<HTMLDivElement>(".rubric-card-toggle-row")!;
+    const levelsBtn = container.querySelector<HTMLButtonElement>(".rubric-levels-toggle")!;
+    const descBtn = container.querySelector<HTMLButtonElement>(".rubric-description-toggle")!;
+
+    expect(toggleRow.classList.contains("is-sticky-open")).toBe(false);
+
+    await act(async () => {
+      levelsBtn.click();
+    });
+    expect(toggleRow.classList.contains("is-sticky-open")).toBe(true);
+    expect(levelsBtn.textContent).toBe("收起评分细则");
+
+    await act(async () => {
+      descBtn.click();
+      levelsBtn.click();
+    });
+    expect(toggleRow.classList.contains("is-sticky-open")).toBe(true);
+
+    await act(async () => {
+      descBtn.click();
+    });
+    expect(toggleRow.classList.contains("is-sticky-open")).toBe(false);
   });
 });

@@ -1512,8 +1512,31 @@ textarea:focus-visible {
 }
 
 /* Fix horizontal overflow bug in RubricDocument preview levels */
+.rubric-preview-panel {
+  interpolate-size: allow-keywords;
+}
+
 .rubric-preview-body {
   overflow-x: hidden !important;
+  padding: 0 20px 20px !important;
+}
+
+.rubric-preview-body > .rubric-document,
+.rubric-preview-body > .rubric-structured-editor,
+.rubric-preview-body > .rubric-preview-empty {
+  margin-top: 20px;
+}
+
+@container rubric-preview (max-width: 520px) {
+  .rubric-preview-body {
+    padding: 0 12px 12px !important;
+  }
+
+  .rubric-preview-body > .rubric-document,
+  .rubric-preview-body > .rubric-structured-editor,
+  .rubric-preview-body > .rubric-preview-empty {
+    margin-top: 12px;
+  }
 }
 
 .rubric-document {
@@ -4356,8 +4379,29 @@ fieldset.rubric-guided-field.is-ready {
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
-  gap: 8px;
+  gap: 6px;
   margin-top: 10px;
+}
+
+.rubric-scorecard > article > div.rubric-card-toggle-row.is-sticky-open {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin: 4px -14px 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid transparent;
+  border-bottom-left-radius: 9px;
+  border-bottom-right-radius: 9px;
+  background: #fbfcfd;
+  transition:
+    border-color var(--ease-standard),
+    box-shadow var(--ease-standard);
+}
+
+.rubric-scorecard > article > div.rubric-card-toggle-row.is-sticky-open.is-stuck {
+  background: #fbfcfd;
+  border-bottom-color: var(--border-subtle);
+  box-shadow: 0 6px 14px -4px rgba(24, 34, 48, 0.12);
 }
 
 .rubric-card-toggle-row > .rubric-description-toggle,
@@ -4368,10 +4412,10 @@ fieldset.rubric-guided-field.is-ready {
   width: auto;
   white-space: nowrap;
   gap: 5px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 7px;
   border: 1px solid var(--border-subtle);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.4;
   cursor: pointer;
   user-select: none;
@@ -4417,6 +4461,10 @@ fieldset.rubric-guided-field.is-ready {
 }
 
 .rubric-description-body {
+  display: block !important;
+  interpolate-size: allow-keywords;
+  overflow: hidden;
+  height: auto;
   margin: 10px 0 0;
   padding: 10px 12px;
   border-radius: 8px;
@@ -4425,11 +4473,108 @@ fieldset.rubric-guided-field.is-ready {
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.55;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    height 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 220ms ease,
+    transform 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    margin-top 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding-top 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding-bottom 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-width 220ms ease,
+    border-color 220ms ease,
+    visibility 260ms step-start;
 }
 
-.rubric-description-body[hidden],
+.rubric-description-body[hidden] {
+  display: block !important;
+  height: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+  border-color: transparent;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    height 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms ease,
+    transform 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    margin-top 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding-top 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding-bottom 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-width 180ms ease,
+    border-color 180ms ease,
+    visibility 260ms step-end;
+}
+
+.rubric-scorecard > article > .rubric-preview-levels {
+  display: grid !important;
+  interpolate-size: allow-keywords;
+  overflow: hidden;
+  height: auto;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    height 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 220ms ease,
+    transform 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    margin-top 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding-top 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-top-width 220ms ease,
+    border-top-color 220ms ease,
+    visibility 280ms step-start;
+}
+
 .rubric-scorecard > article > .rubric-preview-levels[hidden] {
-  display: none !important;
+  display: grid !important;
+  height: 0;
+  margin-top: 0;
+  padding-top: 0;
+  border-top-width: 0;
+  border-top-color: transparent;
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    height 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms ease,
+    transform 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    margin-top 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding-top 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-top-width 180ms ease,
+    border-top-color 180ms ease,
+    visibility 280ms step-end;
+}
+
+@supports not (interpolate-size: allow-keywords) {
+  .rubric-description-body {
+    max-height: 360px;
+    transition: max-height 260ms ease, opacity 220ms ease, transform 260ms ease, margin-top 260ms ease, padding 260ms ease;
+  }
+  .rubric-description-body[hidden] {
+    max-height: 0;
+  }
+  .rubric-scorecard > article > .rubric-preview-levels {
+    max-height: 1800px;
+    transition: max-height 280ms ease, opacity 220ms ease, transform 280ms ease, margin-top 280ms ease, padding-top 280ms ease;
+  }
+  .rubric-scorecard > article > .rubric-preview-levels[hidden] {
+    max-height: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rubric-description-body,
+  .rubric-description-body[hidden],
+  .rubric-scorecard > article > .rubric-preview-levels,
+  .rubric-scorecard > article > .rubric-preview-levels[hidden] {
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ==========================================================================
@@ -4441,13 +4586,13 @@ fieldset.rubric-guided-field.is-ready {
 }
 
 .rubric-preview-panel.fullscreen .rubric-preview-body {
-  padding: 24px 32px 36px;
+  padding: 0 32px 36px !important;
 }
 
 .rubric-preview-panel.fullscreen .rubric-document,
 .rubric-preview-panel.fullscreen .rubric-structured-editor {
   width: min(1240px, 100%);
-  margin: 0 auto;
+  margin: 24px auto 0;
 }
 
 .rubric-preview-panel.fullscreen .rubric-document {
@@ -4476,6 +4621,11 @@ fieldset.rubric-guided-field.is-ready {
 
   .rubric-preview-panel.fullscreen .rubric-scorecard > article {
     padding: 18px 20px;
+  }
+
+  .rubric-preview-panel.fullscreen .rubric-scorecard > article > div.rubric-card-toggle-row.is-sticky-open {
+    margin: 6px -20px 0;
+    padding: 8px 20px;
   }
 
   .rubric-preview-panel.fullscreen .rubric-scorecard > article > .rubric-preview-levels {
