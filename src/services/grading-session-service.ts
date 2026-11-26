@@ -470,6 +470,66 @@ export class GradingSessionService {
     return rows.map(fromRow);
   }
 
+  countByRubric(courseId?: string): Map<string, { sessionCount: number; confirmedCount: number }> {
+    const clauses = ["deletion_pending = 0"];
+    const values: Array<string> = [];
+    if (courseId) {
+      clauses.push("course_id = ?");
+      values.push(courseId);
+    }
+    const rows = this.database
+      .prepare(
+        `SELECT assignment_id, rubric_version,
+                COUNT(*) AS session_count,
+                SUM(CASE WHEN grading_status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed_count
+         FROM grading_sessions
+         WHERE ${clauses.join(" AND ")}
+         GROUP BY assignment_id, rubric_version`,
+      )
+      .all(...values) as Array<{
+      assignment_id: string;
+      rubric_version: number;
+      session_count: number;
+      confirmed_count: number;
+    }>;
+    const map = new Map<string, { sessionCount: number; confirmedCount: number }>();
+    for (const row of rows) {
+      map.set(`${row.assignment_id}:${row.rubric_version}`, {
+        sessionCount: row.session_count,
+        confirmedCount: row.confirmed_count,
+      });
+    }
+    return map;
+  }
+
+  summarizeByCourse(): Record<string, { sessionCount: number; confirmedCount: number; pendingReviewCount: number }> {
+    const rows = this.database
+      .prepare(
+        `SELECT course_id,
+                COUNT(*) AS session_count,
+                SUM(CASE WHEN grading_status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed_count,
+                SUM(CASE WHEN grading_status IN ('draft_ready', 'needs_review', 'waiting_for_teacher') THEN 1 ELSE 0 END) AS pending_review_count
+         FROM grading_sessions
+         WHERE deletion_pending = 0 AND course_id IS NOT NULL
+         GROUP BY course_id`,
+      )
+      .all() as Array<{
+      course_id: string;
+      session_count: number;
+      confirmed_count: number;
+      pending_review_count: number;
+    }>;
+    const summary: Record<string, { sessionCount: number; confirmedCount: number; pendingReviewCount: number }> = {};
+    for (const row of rows) {
+      summary[row.course_id] = {
+        sessionCount: row.session_count,
+        confirmedCount: row.confirmed_count,
+        pendingReviewCount: row.pending_review_count,
+      };
+    }
+    return summary;
+  }
+
   async renameSession(
     sessionId: string,
     title: string,

@@ -75,8 +75,33 @@ describe("dashboard API", () => {
     expect(response.statusCode).toBe(200);
     const snapshot = response.json() as { totals: unknown; courses: unknown[]; recentActivity: unknown[] };
     expect(snapshot.totals).toMatchObject({ courses: 2, publishedCourses: 1, activeDocuments: 1, qaSessions: 1 });
-    expect(snapshot.courses).toContainEqual(expect.objectContaining({ id: draftOnly.id, knowledgeStatus: "unpublished", releaseCount: 0, documentCount: 0, qaSessionCount: 0 }));
-    expect(snapshot.courses).toContainEqual(expect.objectContaining({ id: course.id, knowledgeStatus: "published", activeRelease: expect.objectContaining({ id: release.id }), releaseCount: 1, documentCount: 1, qaSessionCount: 1 }));
+    expect(snapshot.courses).toContainEqual(expect.objectContaining({
+      id: draftOnly.id,
+      knowledgeStatus: "unpublished",
+      releaseCount: 0,
+      documentCount: 0,
+      qaSessionCount: 0,
+      rubricCount: 0,
+      frozenRubricCount: 0,
+      gradingSessionCount: 0,
+      confirmedGradingCount: 0,
+      pendingReviewCount: 0,
+      batchCount: 0,
+    }));
+    expect(snapshot.courses).toContainEqual(expect.objectContaining({
+      id: course.id,
+      knowledgeStatus: "published",
+      activeRelease: expect.objectContaining({ id: release.id }),
+      releaseCount: 1,
+      documentCount: 1,
+      qaSessionCount: 1,
+      rubricCount: 0,
+      frozenRubricCount: 0,
+      gradingSessionCount: 0,
+      confirmedGradingCount: 0,
+      pendingReviewCount: 0,
+      batchCount: 0,
+    }));
     expect(snapshot.recentActivity).toContainEqual(expect.objectContaining({ type: "course_created", courseId: course.id }));
     expect(snapshot.recentActivity).toContainEqual(expect.objectContaining({ type: "release_published", courseId: course.id, releaseId: release.id }));
     expect(snapshot.recentActivity).toContainEqual(expect.objectContaining({ type: "qa_session_updated", courseId: course.id, sessionId: session.id, summary: "Review release" }));

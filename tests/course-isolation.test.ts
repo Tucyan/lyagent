@@ -174,11 +174,14 @@ describe("Unified course switching & course isolation", () => {
     const grading = readFileSync(path.resolve("web/src/pages/GradingPage.tsx"), "utf8");
     const batch = readFileSync(path.resolve("web/src/pages/GradingBatchPage.tsx"), "utf8");
     const review = readFileSync(path.resolve("web/src/pages/GradingBatchReviewPage.tsx"), "utf8");
+    const exportPage = readFileSync(path.resolve("web/src/pages/GradingExportPage.tsx"), "utf8");
 
     expect(grading).toContain("gradingRubricStorageKey");
     expect(batch).toContain("batchRubricStorageKey");
     expect(batch).toContain("batchDraftStorageKey");
     expect(review).toContain("withCourseQuery");
+    expect(exportPage).toContain("exportRubricStorageKey");
+    expect(exportPage).toContain("courseId=");
 
     const rubric = readFileSync(path.resolve("web/src/pages/RubricPage.tsx"), "utf8");
     expect(rubric).toContain("clearSelectedSession");

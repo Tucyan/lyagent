@@ -108,9 +108,13 @@ tests/
 
 发布包验收使用 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1`，仅核对ZIP与外部 `release/SHA256SUMS.txt`，缺少清单或哈希不匹配时失败。脚本不解压、不扫描包内文件；后续按AGENTS的WinRAR规则解压并实际启动。构建脚本只输出外部压缩包哈希清单，不生成包内逐文件哈希清单。
 
-- `/`：教师工作台，读取 `GET /api/dashboard`；页面进入时加载，用户可手动刷新。
+- `/`：教师工作台，读取 `GET /api/dashboard`；课程卡片展示讲义、答疑、评分标准、批改份数及可点击的「待复核」待办入口，流程区串联至「3. 成绩导出」。
 - `/knowledge`：课程资料库；可用 `?course=<courseId>` 直接选中课程。
 - `/qa`：课程答疑；可用 `?course=<courseId>&session=<sessionId>` 打开上下文。
+- `/rubrics`：评分标准设计；侧栏展示已定稿版本徽章，无草稿定稿浏览态自动扩展预览分栏初始宽度（同时保持 28%–72% 自由拖拽调整）且避免重复修订按钮。
+- `/grading`：单份批改；优先默认选中已有已确认或已批改记录的冻结评分标准，提供带批改统计的可搜索评分标准选择器、带状态计数的紧凑去重会话列表与快捷跳转 `/grading/exports`，已确认卡片保留 `JSON / Markdown` 一键导出。
+- `/grading/batches`：批量批改；侧栏默认显示课程下全部标准的批次历史（支持「全部标准 / 当前标准」切换与检索）并实时同步已确认计数，控制栏保留「导出成绩」入口自动跳转至 `/grading/exports`。
+- `/grading/exports`：独立成绩导出两栏工作视图；使用可搜索批次/标准选择器，支持按批改批次、按评分标准、按学生（多标准自动汇总并可展开明细、满分不统一时切换得分率统计）预览统计并下载 CSV；仅当通过 `from=grading` 或 `from=batch` 入口进入时显示对应的快捷返回入口。
 
 主模型未配置时访问正常工作台会转到`/setup`，核心API返回`SETUP_REQUIRED`；`/settings/models`复用同一设置表单。模型配置状态仅来自 `/api/system/model` 或`/api/system/models`的安全摘要。修改前端路由时，同时更新 `src/api/web-assets.ts` 的直接访问入口和对应测试。
 

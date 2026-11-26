@@ -10,7 +10,7 @@ import {
 
 type ShellCourse = { id: string; name: string };
 
-export type ActivePage = "dashboard" | "knowledge" | "qa" | "rubrics" | "grading" | "batch-grading" | "model-settings";
+export type ActivePage = "dashboard" | "knowledge" | "qa" | "rubrics" | "grading" | "batch-grading" | "grading-exports" | "model-settings";
 
 interface NavItem {
   id: ActivePage;
@@ -45,6 +45,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
       { id: "rubrics", href: "/rubrics", label: "评分量表", icon: <NavIcon path="M4.5 5h11M4.5 10h11M4.5 15h7M14.5 13.5l1.5 1.5 2.5-3" /> },
       { id: "grading", href: "/grading", label: "单份批改", icon: <NavIcon path="M5 3.5h7l3 3v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1ZM7.5 10.5l1.8 1.8 3.4-3.6" /> },
       { id: "batch-grading", href: "/grading/batches", label: "批量批改", icon: <NavIcon path="M3.5 6.5h13v9a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-9ZM6 3.5h8M7 10.5h6M7 13.5h4" /> },
+      { id: "grading-exports", href: "/grading/exports", label: "成绩导出", icon: <NavIcon path="M4.5 13.5v2A1.5 1.5 0 0 0 6 17h8a1.5 1.5 0 0 0 1.5-1.5v-2M10 3.5v8.5M6.5 8.5 10 12l3.5-3.5" /> },
     ],
   },
 ];

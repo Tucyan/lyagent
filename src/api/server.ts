@@ -133,7 +133,6 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   const sessions = new SessionService(options.workspaceRoot);
   const rubrics = new RubricService(options.workspaceRoot);
   const modelStatus = options.modelStatus ?? { provider: "deepseek", model: "deepseek-v4-flash", configured: false };
-  const dashboard = new DashboardService(options.workspaceRoot, modelStatus);
   const gradingApi = registerGradingApi(app, {
     workspaceRoot: options.workspaceRoot,
     rubrics,
@@ -142,6 +141,10 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     ...(options.submissionConversionOptions ? { conversionOptions: options.submissionConversionOptions } : {}),
     ...(options.gradingAgentFactory ? { gradingAgentFactory: options.gradingAgentFactory } : {}),
     ...(options.submissionTitleAgentFactory ? { submissionTitleAgentFactory: options.submissionTitleAgentFactory } : {}),
+  });
+  const dashboard = new DashboardService(options.workspaceRoot, modelStatus, {
+    rubrics,
+    summarizeGradingByCourse: () => gradingApi.summarizeByCourse(),
   });
   const planner = options.materialPlanner ?? defaultPlanner;
   const activeAgentRuns = new Map<string, AbortController>();
@@ -327,7 +330,15 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.get("/api/dashboard", async () => dashboard.snapshot());
   app.get("/api/rubrics/assignments", async (request) => {
     const query = z.object({ courseId: z.string().uuid().optional() }).parse(request.query);
-    return rubrics.listAssignments(query.courseId ? { courseId: query.courseId } : {});
+    const list = await rubrics.listAssignments(query.courseId ? { courseId: query.courseId } : {});
+    return Promise.all(list.map(async (assignment) => {
+      const versions = await rubrics.listVersions(assignment.id).catch(() => []);
+      return {
+        ...assignment,
+        frozenVersionCount: versions.length,
+        latestFrozenVersion: versions[0]?.version ?? null,
+      };
+    }));
   });
   app.post("/api/rubrics/assignments", async (request, reply) => {
     const input = rubricAssignmentSchema.parse(request.body);

@@ -4,6 +4,8 @@ import {
   buildAssetManifest,
   clampGradingPreviewPercent,
   conversionPresentation,
+  countGradingSessionsByStatus,
+  formatGradingSessionDisplayTitle,
   gradingSessionStatusLabel,
   gradingSessionWorkflowSummary,
   gradingStatusLabel,
@@ -150,6 +152,55 @@ describe("grading workbench presentation", () => {
     expect(resolveGradingRubricKey(rubrics, "deleted:1")).toBe("current:2");
     expect(resolveGradingRubricKey(rubrics, "older:1")).toBe("older:1");
     expect(resolveGradingRubricKey([], "deleted:1")).toBe("");
+    expect(
+      resolveGradingRubricKey(
+        [
+          { assignmentId: "empty-v2", version: 2, sessionCount: 0, confirmedCount: 0 },
+          { assignmentId: "active-v1", version: 1, sessionCount: 40, confirmedCount: 34 },
+          { assignmentId: "other-v1", version: 1, sessionCount: 40, confirmedCount: 0 },
+        ],
+        "",
+      ),
+    ).toBe("active-v1:1");
+  });
+
+  it("counts grading sessions by status bucket and deduplicates student identity in display titles", () => {
+    expect(
+      countGradingSessionsByStatus([
+        { conversionStatus: "ready", gradingStatus: "confirmed" },
+        { conversionStatus: "ready", gradingStatus: "needs_review" },
+        { conversionStatus: "ready", gradingStatus: "draft" },
+        { conversionStatus: "conversion_failed", gradingStatus: "queued" },
+        { conversionStatus: "ready", gradingStatus: "failed" },
+      ]),
+    ).toEqual({
+      all: 5,
+      pending: 2,
+      confirmed: 1,
+      attention: 2,
+    });
+
+    expect(
+      formatGradingSessionDisplayTitle({
+        title: "20240101-张伟-实验十：模型压缩与部署",
+        studentName: "张伟",
+        studentNumber: "20240101",
+      }),
+    ).toBe("实验十：模型压缩与部署");
+    expect(
+      formatGradingSessionDisplayTitle({
+        title: "张伟 · 20240101 · 实验十报告",
+        studentName: "张伟",
+        studentNumber: "20240101",
+      }),
+    ).toBe("实验十报告");
+    expect(
+      formatGradingSessionDisplayTitle({
+        title: "张伟",
+        studentName: "张伟",
+        studentNumber: "20240101",
+      }),
+    ).toBe("张伟");
   });
 
   it("keeps the current session list scope while frozen rubrics are still loading", () => {

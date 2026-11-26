@@ -113,11 +113,14 @@ describe("dashboard teacher-friendly model", () => {
     });
   });
 
-  it("keeps DashboardPage free of developer-facing jargon", () => {
+  it("keeps DashboardPage free of developer-facing jargon and surfaces export entry and grading counts", () => {
     const source = readFileSync(new URL("../web/src/pages/DashboardPage.tsx", import.meta.url), "utf8");
     expect(source).not.toContain("active release");
     expect(source).not.toContain("不可变发布记录");
     expect(source).not.toContain("文档转换器");
     expect(source).not.toContain("activeRelease.id.slice");
+    expect(source).toContain("3. 成绩导出");
+    expect(source).toContain("pendingReviewCount");
+    expect(source).toContain("gradingSessionCount");
   });
 });

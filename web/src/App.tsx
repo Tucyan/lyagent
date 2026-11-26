@@ -8,6 +8,7 @@ import { RubricPage } from "./pages/RubricPage";
 import { GradingPage } from "./pages/GradingPage";
 import { GradingBatchPage } from "./pages/GradingBatchPage";
 import { GradingBatchReviewPage } from "./pages/GradingBatchReviewPage";
+import { GradingExportPage } from "./pages/GradingExportPage";
 import { ModelSettingsPage } from "./pages/ModelSettingsPage";
 import { resolveAppRoute } from "./pages/model-settings-page-model";
 import { navigateWithinApp } from "./lib/app-navigation";
@@ -46,8 +47,14 @@ export function App() {
       "/grading": "单份批改 · Course Agent",
       "/grading/batches": "批量批改 · Course Agent",
       "/grading/batches/review": "批次复核 · Course Agent",
+      "/grading/exports": "成绩导出 · Course Agent",
     };
     document.title = titles[path] ?? "课程总览 · Course Agent";
+    try {
+      window.scrollTo?.(0, 0);
+    } catch {
+      // Ignore unimplemented scrollTo in minimal DOM test runners.
+    }
   }, [path]);
   if (path === "/setup") return <ToastProvider><ModelSettingsPage mode="setup" /></ToastProvider>;
   return <ToastProvider><SetupGuard path={path}>{path === "/settings/models" ? <AdminShell active="model-settings"><ModelSettingsPage mode="settings" /></AdminShell> : <ApplicationPage path={path} />}</SetupGuard></ToastProvider>;
@@ -69,5 +76,6 @@ function ApplicationPage({ path }: { path: string }) {
   if (path === "/grading") return <AdminShell active="grading" compactDefault><GradingPage /></AdminShell>;
   if (path === "/grading/batches/review") return <AdminShell active="batch-grading" compactDefault><GradingBatchReviewPage /></AdminShell>;
   if (path === "/grading/batches") return <AdminShell active="batch-grading"><GradingBatchPage /></AdminShell>;
+  if (path === "/grading/exports") return <AdminShell active="grading-exports" compactDefault><GradingExportPage /></AdminShell>;
   return <AdminShell active="dashboard"><DashboardPage /></AdminShell>;
 }

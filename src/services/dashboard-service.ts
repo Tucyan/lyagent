@@ -1,8 +1,21 @@
 import { KnowledgeService } from "./knowledge-service.js";
 import { MaterialService, type Course, type KnowledgeRelease } from "./material-service.js";
+import type { RubricService } from "./rubric-service.js";
 import { SessionService, type CourseQaSessionSummary } from "./session-service.js";
 
 export type DashboardKnowledgeStatus = "published" | "unpublished" | "unavailable";
+
+export interface CourseGradingSummary {
+  sessionCount: number;
+  confirmedCount: number;
+  pendingReviewCount: number;
+  batchCount: number;
+}
+
+export interface DashboardServiceDependencies {
+  rubrics?: RubricService;
+  summarizeGradingByCourse?: () => Record<string, CourseGradingSummary>;
+}
 
 export interface DashboardSnapshot {
   generatedAt: string;
@@ -21,6 +34,12 @@ export interface DashboardCourse {
   releaseCount: number;
   documentCount: number;
   qaSessionCount: number;
+  rubricCount: number;
+  frozenRubricCount: number;
+  gradingSessionCount: number;
+  confirmedGradingCount: number;
+  pendingReviewCount: number;
+  batchCount: number;
   lastActivityAt: string;
 }
 
@@ -34,7 +53,11 @@ export class DashboardService {
   private readonly knowledge: KnowledgeService;
   private readonly sessions: SessionService;
 
-  constructor(workspaceRoot: string, private readonly model: DashboardSnapshot["model"]) {
+  constructor(
+    workspaceRoot: string,
+    private readonly model: DashboardSnapshot["model"],
+    private readonly dependencies: DashboardServiceDependencies = {},
+  ) {
     this.materials = new MaterialService(workspaceRoot);
     this.knowledge = new KnowledgeService(workspaceRoot);
     this.sessions = new SessionService(workspaceRoot);
@@ -42,7 +65,10 @@ export class DashboardService {
 
   async snapshot(): Promise<DashboardSnapshot> {
     const courses = await this.materials.listCourses();
-    const details = await Promise.all(courses.map((course) => this.courseSummary(course)));
+    const gradingByCourse = this.dependencies.summarizeGradingByCourse?.() ?? {};
+    const details = await Promise.all(
+      courses.map((course) => this.courseSummary(course, gradingByCourse[course.id])),
+    );
     const dashboardCourses = details.map((detail) => detail.course);
     const recentActivity = details
       .flatMap((detail) => detail.activity)
@@ -63,12 +89,17 @@ export class DashboardService {
     };
   }
 
-  private async courseSummary(course: Course): Promise<{ course: DashboardCourse; activity: DashboardActivity[] }> {
+  private async courseSummary(
+    course: Course,
+    gradingSummary?: CourseGradingSummary,
+  ): Promise<{ course: DashboardCourse; activity: DashboardActivity[] }> {
     let releases: KnowledgeRelease[] = [];
     let sessions: CourseQaSessionSummary[] = [];
     let activeRelease: KnowledgeRelease | undefined;
     let knowledgeStatus: DashboardKnowledgeStatus = "unpublished";
     let documentCount = 0;
+    let rubricCount = 0;
+    let frozenRubricCount = 0;
 
     try {
       releases = await this.materials.listReleases(course.id);
@@ -93,6 +124,20 @@ export class DashboardService {
       sessions = [];
     }
 
+    if (this.dependencies.rubrics) {
+      try {
+        const assignments = await this.dependencies.rubrics.listAssignments({ courseId: course.id });
+        rubricCount = assignments.length;
+        const versionLists = await Promise.all(
+          assignments.map((assignment) => this.dependencies.rubrics!.listVersions(assignment.id).catch(() => [])),
+        );
+        frozenRubricCount = versionLists.filter((versions) => versions.length > 0).length;
+      } catch {
+        rubricCount = 0;
+        frozenRubricCount = 0;
+      }
+    }
+
     const activity: DashboardActivity[] = [
       { type: "course_created", courseId: course.id, courseName: course.name, at: course.createdAt },
       ...releases.map((release) => ({ type: "release_published" as const, courseId: course.id, courseName: course.name, releaseId: release.id, at: release.createdAt })),
@@ -110,6 +155,12 @@ export class DashboardService {
         releaseCount: releases.length,
         documentCount,
         qaSessionCount: sessions.length,
+        rubricCount,
+        frozenRubricCount,
+        gradingSessionCount: gradingSummary?.sessionCount ?? 0,
+        confirmedGradingCount: gradingSummary?.confirmedCount ?? 0,
+        pendingReviewCount: gradingSummary?.pendingReviewCount ?? 0,
+        batchCount: gradingSummary?.batchCount ?? 0,
         lastActivityAt,
       },
       activity,

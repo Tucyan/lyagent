@@ -170,9 +170,14 @@ describe("UX value-directness & friction fixes", () => {
     expect(exportPresetOptions("full").itemConfidence).toBe(true);
 
     const grading = readFileSync(path.resolve("web/src/pages/GradingPage.tsx"), "utf8");
-    expect(grading).toContain("ExportPreviewDialog");
-    expect(grading).toContain("确认下载 CSV");
-    expect(grading).toContain("filterCsvPreviewRows");
+    expect(grading).toContain("buildSingleGradingExportHref");
+    expect(grading).toContain("导出成绩");
+    expect(grading).not.toContain("ExportPreviewDialog");
+
+    const exportPage = readFileSync(path.resolve("web/src/pages/GradingExportPage.tsx"), "utf8");
+    expect(exportPage).toContain("确认下载 CSV");
+    expect(exportPage).toContain("filterExportPreviewRows");
+    expect(exportPage).toContain("computeExportSummaryStats");
 
     const filteredByQuery = filterCsvPreviewRows(parsed, { query: "张三" });
     expect(filteredByQuery.rows).toHaveLength(1);
@@ -205,10 +210,14 @@ describe("UX value-directness & friction fixes", () => {
     expect(review).toContain("withCourseQuery(batchReviewHref");
 
     const grading = readFileSync(path.resolve("web/src/pages/GradingPage.tsx"), "utf8");
-    expect(grading).toContain("scoreFilterAvailable");
     expect(grading).toContain("sessionSearch");
     expect(grading).toContain("搜索评分标准");
     expect(grading).toContain("filterGradingSessions");
+
+    const exportPage = readFileSync(path.resolve("web/src/pages/GradingExportPage.tsx"), "utf8");
+    expect(exportPage).toContain("关键词筛选");
+    expect(exportPage).toContain("最低分");
+    expect(exportPage).toContain("最高分");
 
     const sampleSessions = [
       { id: "s1", studentName: "张三", studentNumber: "202401", title: "栈作业", conversionStatus: "ready", gradingStatus: "draft_ready" },
@@ -221,27 +230,25 @@ describe("UX value-directness & friction fixes", () => {
     expect(filterGradingSessions(sampleSessions, "pending", "").map((s) => s.id)).toEqual(["s1"]);
   });
 
-  it("keeps the CSV export workspace scrollable, flush to the pane without grading-split wrapper, and guarantees a visible table area", () => {
+  it("renders the independent CSV export workspace as a two-column layout with visible scrollable preview table", () => {
     const grading = readFileSync(path.resolve("web/src/pages/GradingPage.tsx"), "utf8");
-    expect(grading).not.toContain("creating || exportModalOpen");
-    expect(grading).toMatch(/\{exportModalOpen \? \(\s*<ExportPreviewDialog[\s\S]*\) : \(\s*<section\s+className=\{`grading-split/);
+    expect(grading).not.toContain("exportModalOpen");
+    expect(grading).not.toContain("ExportPreviewDialog");
+
+    const exportPage = readFileSync(path.resolve("web/src/pages/GradingExportPage.tsx"), "utf8");
+    expect(exportPage).toContain("export-layout");
+    expect(exportPage).toContain("export-config-pane");
+    expect(exportPage).toContain("export-preview-pane");
+    expect(exportPage).toContain("export-stats-bar");
 
     const polishCss = readFileSync(path.resolve("web/src/styles/ux-polish.css"), "utf8");
 
-    const workspaceBlock = polishCss.match(/\.export-workspace\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(workspaceBlock).toContain("grid-column: 2;");
-    expect(workspaceBlock).not.toContain("grid-row: 1 / -1");
-    expect(workspaceBlock).toContain("overflow-y: auto");
-    expect(workspaceBlock).toContain("margin: 0;");
-    expect(workspaceBlock).toContain("padding: 0;");
+    const pageBlock = polishCss.match(/\.export-page\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(pageBlock).toContain("display: grid");
+    expect(pageBlock).toContain("min-height: 100vh");
 
-    const controlsBlock = polishCss.match(/\.export-preview-controls\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(controlsBlock).toContain("margin: 0;");
-
-    const modalBlock = polishCss.match(/\.export-preview-modal\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(modalBlock).toContain("min-height: 100%");
-    expect(modalBlock).toContain("border: 0;");
-    expect(modalBlock).not.toContain("overflow: hidden");
+    const layoutBlock = polishCss.match(/\.export-layout\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(layoutBlock).toContain("grid-template-columns:");
 
     const tableSectionBlock = polishCss.match(/\.export-preview-table-section\s*\{[^}]*\}/)?.[0] ?? "";
     expect(tableSectionBlock).toContain("margin: 0;");

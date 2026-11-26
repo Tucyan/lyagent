@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { appendRubricProcess, appendRubricReply, assertRubricStreamSucceeded, assignmentIdFromSearch, clampPreviewPercent, loadRubricSession, rubricCompletionNotice, rubricDeleteWarning, rubricPreviewSections, shouldFollowRubricStream } from "../web/src/pages/rubric-page-model.js";
+import { appendRubricProcess, appendRubricReply, assertRubricStreamSucceeded, assignmentIdFromSearch, clampPreviewPercent, loadRubricSession, resolveRubricPreviewPercent, rubricCompletionNotice, rubricDeleteWarning, rubricPreviewSections, shouldFollowRubricStream } from "../web/src/pages/rubric-page-model.js";
 
 describe("rubric page selection", () => {
   it("binds rubric sessions to the active course and submits the selected course", async () => {
@@ -125,5 +125,17 @@ describe("rubric page selection", () => {
       "−2 分/次（上限 10）",
       "−1–20 分（步长 1）",
     ]);
+  });
+
+  it("uses wide default only before manual drag so frozen split boundary stays freely adjustable", async () => {
+    expect(resolveRubricPreviewPercent({ frozenWithoutDraft: true, messageCount: 0 })).toBe(58);
+    expect(resolveRubricPreviewPercent({ frozenWithoutDraft: false, messageCount: 0 })).toBe(38);
+    expect(resolveRubricPreviewPercent({ frozenWithoutDraft: true, messageCount: 0, customPreviewPercent: 32 })).toBe(32);
+    expect(resolveRubricPreviewPercent({ frozenWithoutDraft: true, messageCount: 0, customPreviewPercent: 68 })).toBe(68);
+    expect(resolveRubricPreviewPercent({ frozenWithoutDraft: true, messageCount: 0, customPreviewPercent: 10 })).toBe(28);
+
+    const source = await readFile(path.resolve("web", "src", "pages", "RubricPage.tsx"), "utf8");
+    expect(source).not.toContain("Math.max(previewPercent");
+    expect(source).toContain("resolveRubricPreviewPercent");
   });
 });

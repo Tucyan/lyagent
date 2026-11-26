@@ -40,25 +40,20 @@ export interface LiveGradingMessage {
   options?: string[];
 }
 
-export interface GradingExportOptions {
-  studentName: boolean;
-  studentNumber: boolean;
-  submissionTitle: boolean;
-  itemDetails: boolean;
-  itemConfidence: boolean;
-  totalScore: boolean;
-  overallConfidence: boolean;
-}
-
-export const defaultGradingExportOptions: GradingExportOptions = {
-  studentName: true,
-  studentNumber: true,
-  submissionTitle: true,
-  itemDetails: true,
-  itemConfidence: false,
-  totalScore: true,
-  overallConfidence: true,
-};
+export {
+  buildSingleGradingExportHref,
+  defaultGradingExportOptions,
+  exportPresetOptions,
+  filterCsvPreviewRows,
+  normalizeGradingExportOptions,
+  parseCsvPreview,
+  parseGradingExportOptions,
+  serializeCsvTable,
+  type CsvPreviewFilter,
+  type CsvPreviewTable,
+  type GradingExportOptions,
+  type GradingExportPreset,
+} from "./grading-export-page-model.js";
 
 export function buildAssetManifest(
   files: Array<{ name: string; webkitRelativePath?: string }>,
@@ -198,12 +193,21 @@ export function rubricSelectionKey(rubric: {
 }
 
 export function resolveGradingRubricKey(
-  rubrics: Array<{ assignmentId: string; version: number }>,
+  rubrics: Array<{
+    assignmentId: string;
+    version: number;
+    sessionCount?: number;
+    confirmedCount?: number;
+  }>,
   preferredKey: string,
 ): string {
   if (rubrics.some((rubric) => rubricSelectionKey(rubric) === preferredKey))
     return preferredKey;
-  return rubrics[0] ? rubricSelectionKey(rubrics[0]) : "";
+  const preferred =
+    rubrics.find((rubric) => (rubric.confirmedCount ?? 0) > 0) ??
+    rubrics.find((rubric) => (rubric.sessionCount ?? 0) > 0) ??
+    rubrics[0];
+  return preferred ? rubricSelectionKey(preferred) : "";
 }
 
 export function resolveGradingSessionScope(
@@ -277,32 +281,6 @@ export function submissionTitlePresentation(input: {
     retryDisabled: false,
     ...(failed && input.error ? { error: input.error } : {}),
   };
-}
-
-export function normalizeGradingExportOptions(
-  value: Partial<GradingExportOptions>,
-): GradingExportOptions {
-  const normalized = {
-    ...defaultGradingExportOptions,
-    ...Object.fromEntries(
-      Object.entries(value).map(([key, selected]) => [key, selected === true]),
-    ),
-  } as GradingExportOptions;
-  if (!normalized.itemDetails) normalized.itemConfidence = false;
-  return normalized;
-}
-
-export function parseGradingExportOptions(
-  value: string | null,
-): GradingExportOptions {
-  if (!value) return { ...defaultGradingExportOptions };
-  try {
-    return normalizeGradingExportOptions(
-      JSON.parse(value) as Partial<GradingExportOptions>,
-    );
-  } catch {
-    return { ...defaultGradingExportOptions };
-  }
 }
 
 export function clampGradingPreviewPercent(value: number): number {
@@ -380,154 +358,52 @@ export function applyGradingEvent(
 }
 
 
-export type GradingExportPreset = "summary" | "detailed" | "full";
-
-export function exportPresetOptions(preset: GradingExportPreset): GradingExportOptions {
-  if (preset === "summary") {
-    return normalizeGradingExportOptions({
-      studentName: true,
-      studentNumber: true,
-      submissionTitle: true,
-      itemDetails: false,
-      itemConfidence: false,
-      totalScore: true,
-      overallConfidence: false,
-    });
-  }
-  if (preset === "full") {
-    return normalizeGradingExportOptions({
-      studentName: true,
-      studentNumber: true,
-      submissionTitle: true,
-      itemDetails: true,
-      itemConfidence: true,
-      totalScore: true,
-      overallConfidence: true,
-    });
-  }
-  return normalizeGradingExportOptions({
-    studentName: true,
-    studentNumber: true,
-    submissionTitle: true,
-    itemDetails: true,
-    itemConfidence: false,
-    totalScore: true,
-    overallConfidence: true,
-  });
-}
-
-export interface CsvPreviewTable {
-  headers: string[];
-  rows: string[][];
-}
-
-export function parseCsvPreview(csvText: string): CsvPreviewTable {
-  const cleaned = csvText.replace(/^\uFEFF/, "");
-  if (!cleaned.trim()) return { headers: [], rows: [] };
-
-  const records: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < cleaned.length; i += 1) {
-    const char = cleaned[i]!;
-    if (inQuotes) {
-      if (char === '"') {
-        if (cleaned[i + 1] === '"') {
-          field += '"';
-          i += 1;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        field += char;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inQuotes = true;
-    } else if (char === ",") {
-      row.push(field);
-      field = "";
-    } else if (char === "\r" || char === "\n") {
-      if (char === "\r" && cleaned[i + 1] === "\n") i += 1;
-      row.push(field);
-      field = "";
-      if (row.some((cell) => cell.length > 0)) records.push(row);
-      row = [];
-    } else {
-      field += char;
-    }
-  }
-  if (field.length > 0 || row.length > 0) {
-    row.push(field);
-    if (row.some((cell) => cell.length > 0)) records.push(row);
-  }
-
-  const [headers = [], ...rows] = records;
-  return { headers, rows };
-}
-
-export interface CsvPreviewFilter {
-  query?: string;
-  minScore?: string;
-  maxScore?: string;
-}
-
-function extractNumericScore(raw: string | undefined): number | undefined {
-  if (!raw) return undefined;
-  const match = raw.trim().match(/^-?\d+(?:\.\d+)?/);
-  if (!match) return undefined;
-  const value = Number(match[0]);
-  return Number.isFinite(value) ? value : undefined;
-}
-
-export function filterCsvPreviewRows(
-  table: CsvPreviewTable,
-  filter: CsvPreviewFilter,
-): CsvPreviewTable {
-  const query = filter.query?.trim().toLowerCase() ?? "";
-  const minVal = filter.minScore?.trim() ? Number(filter.minScore.trim()) : undefined;
-  const maxVal = filter.maxScore?.trim() ? Number(filter.maxScore.trim()) : undefined;
-  const hasMin = minVal !== undefined && Number.isFinite(minVal);
-  const hasMax = maxVal !== undefined && Number.isFinite(maxVal);
-  const scoreColIndex = table.headers.findIndex((header) =>
-    /总分|score/i.test(header),
-  );
-
-  const rows = table.rows.filter((row) => {
-    if (query && !row.some((cell) => cell.toLowerCase().includes(query))) {
-      return false;
-    }
-    if ((hasMin || hasMax) && scoreColIndex >= 0) {
-      const score = extractNumericScore(row[scoreColIndex]);
-      if (score === undefined) return false;
-      if (hasMin && score < minVal!) return false;
-      if (hasMax && score > maxVal!) return false;
-    }
-    return true;
-  });
-
-  return { headers: table.headers, rows };
-}
-
-function escapeCsvCell(value: string): string {
-  if (/[",\r\n]/.test(value)) {
-    return `"${value.replaceAll('"', '""')}"`;
-  }
-  return value;
-}
-
-export function serializeCsvTable(table: CsvPreviewTable): string {
-  const lines = [table.headers, ...table.rows].map((row) =>
-    row.map((cell) => escapeCsvCell(cell)).join(","),
-  );
-  return `\uFEFF${lines.join("\r\n")}\r\n`;
-}
-
 export type GradingSessionFilterStatus = "all" | "pending" | "confirmed" | "attention";
+
+export function countGradingSessionsByStatus<
+  T extends {
+    conversionStatus: string;
+    gradingStatus: string;
+  },
+>(sessions: T[]): Record<GradingSessionFilterStatus, number> {
+  const counts: Record<GradingSessionFilterStatus, number> = {
+    all: sessions.length,
+    pending: 0,
+    confirmed: 0,
+    attention: 0,
+  };
+  for (const session of sessions) {
+    const isAttention =
+      session.conversionStatus === "conversion_failed" ||
+      session.gradingStatus === "failed";
+    if (isAttention) counts.attention += 1;
+    else if (session.gradingStatus === "confirmed") counts.confirmed += 1;
+    else counts.pending += 1;
+  }
+  return counts;
+}
+
+export function formatGradingSessionDisplayTitle(session: {
+  title: string;
+  studentName: string;
+  studentNumber: string;
+}): string {
+  const raw = (session.title ?? "").trim();
+  if (!raw) return `${session.studentName} · ${session.studentNumber}`;
+  const escapedParts = [session.studentNumber, session.studentName]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (escapedParts.length === 0) return raw;
+  const tokenPattern = new RegExp(`^(?:${escapedParts.join("|")})(?:[\\s·•/_:-]+|$)`, "u");
+  let stripped = raw;
+  for (let i = 0; i < 3; i += 1) {
+    const next = stripped.replace(tokenPattern, "").trim();
+    if (next === stripped) break;
+    stripped = next;
+  }
+  return stripped || raw;
+}
 
 export function filterGradingSessions<
   T extends {

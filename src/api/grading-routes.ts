@@ -105,16 +105,25 @@ const csvExportSchema = z.object({
       assignmentId: z.string().uuid(),
       rubricVersion: z.number().int().positive(),
     }),
+    z.object({
+      kind: z.literal("batch"),
+      batchId: z.string().uuid(),
+      includeUnconfirmed: z.boolean().default(false),
+    }),
   ]),
   columns: z.object({
     studentName: z.boolean().default(false),
     studentNumber: z.boolean().default(false),
     submissionTitle: z.boolean().default(false),
+    rubricName: z.boolean().default(false),
     itemDetails: z.boolean().default(false),
     itemConfidence: z.boolean().default(false),
     totalScore: z.boolean().default(false),
+    possibleScore: z.boolean().default(false),
+    scoreRate: z.boolean().default(false),
     overallConfidence: z.boolean().default(false),
-  }),
+    reviewStatus: z.boolean().default(false),
+  }).refine((value) => Object.values(value).some(Boolean), "请至少选择一列导出字段"),
 });
 
 export interface GradingApiOptions {
@@ -139,6 +148,7 @@ export type GradingAgentBuilder = (
 
 export interface GradingApiControl {
   cancel(runId: string): Promise<boolean | undefined>;
+  summarizeByCourse(): Record<string, { sessionCount: number; confirmedCount: number; pendingReviewCount: number; batchCount: number }>;
   close(): void;
 }
 
@@ -155,7 +165,7 @@ export function registerGradingApi(
     sessions,
     options.rubrics,
   );
-  const csv = new GradingCsvExportService(sessions, results, options.rubrics);
+
   const fallback: PiAssignmentGrader = {
     async run() {
       return { kind: "reply", reply: "批改模型尚未配置。" };
@@ -213,6 +223,7 @@ export function registerGradingApi(
       } : undefined;
     },
   });
+  const csv = new GradingCsvExportService(sessions, results, options.rubrics, batches);
   const conversions = options.conversionClient
     ? new SubmissionConversionService(
         sessions,
@@ -266,6 +277,7 @@ export function registerGradingApi(
       const assignments = (await options.rubrics.listAssignments()).filter((assignment) =>
         query.courseId ? assignment.courseId === query.courseId : true,
       );
+      const countsByRubric = sessions.countByRubric(query.courseId);
       const available = [];
       for (const assignment of assignments) {
         for (const version of await options.rubrics.listVersions(assignment.id))
@@ -276,6 +288,7 @@ export function registerGradingApi(
             version: version.version,
             hash: version.hash,
             rubric: version.rubric,
+            ...(countsByRubric.get(`${assignment.id}:${version.version}`) ?? { sessionCount: 0, confirmedCount: 0 }),
           });
       }
       return available;
@@ -571,6 +584,51 @@ export function registerGradingApi(
       });
     });
 
+    scoped.post("/api/grading/exports/preview", async (request) => {
+      const body = csvExportSchema.parse(request.body);
+      return csv.preview(body);
+    });
+    scoped.get("/api/grading/exports/students", async (request) => {
+      const query = courseFilterSchema.parse(request.query);
+      const list = await sessions.listSessions(query.courseId ? { courseId: query.courseId } : {});
+      const grouped = new Map<string, {
+        studentNumber: string;
+        studentName: string;
+        confirmedCount: number;
+        totalCount: number;
+        confirmedRubrics: Set<string>;
+      }>();
+      for (const session of list) {
+        const existing = grouped.get(session.studentNumber);
+        const confirmedDelta = session.gradingStatus === "confirmed" ? 1 : 0;
+        const rubricKey = `${session.assignmentId}:${session.rubricVersion}`;
+        if (existing) {
+          existing.totalCount += 1;
+          existing.confirmedCount += confirmedDelta;
+          if (session.gradingStatus === "confirmed") existing.confirmedRubrics.add(rubricKey);
+          if (!existing.studentName && session.studentName) existing.studentName = session.studentName;
+        } else {
+          grouped.set(session.studentNumber, {
+            studentNumber: session.studentNumber,
+            studentName: session.studentName,
+            confirmedCount: confirmedDelta,
+            totalCount: 1,
+            confirmedRubrics: new Set(session.gradingStatus === "confirmed" ? [rubricKey] : []),
+          });
+        }
+      }
+      return Array.from(grouped.values())
+        .map(({ confirmedRubrics, ...student }) => ({
+          ...student,
+          rubricCount: confirmedRubrics.size,
+        }))
+        .sort((left, right) => {
+          const leftHasConfirmed = left.confirmedCount > 0 ? 1 : 0;
+          const rightHasConfirmed = right.confirmedCount > 0 ? 1 : 0;
+          if (leftHasConfirmed !== rightHasConfirmed) return rightHasConfirmed - leftHasConfirmed;
+          return left.studentNumber.localeCompare(right.studentNumber, "zh-CN");
+        });
+    });
     scoped.post("/api/grading/exports/csv", async (request, reply) => {
       const body = csvExportSchema.parse(request.body);
       const content = await csv.export(body);
@@ -795,7 +853,7 @@ export function registerGradingApi(
     scoped.put("/api/grading/sessions/:id/draft", async (request) => {
       const { id } = sessionParams.parse(request.params);
       const payload = draftSchema.parse(request.body);
-      return results.submitDraft(
+      const saved = await results.submitDraft(
         id,
         payload.expectedVersion,
         payload.draft as GradingDraft,
@@ -805,6 +863,8 @@ export function registerGradingApi(
           ...(payload.note ? { note: payload.note } : {}),
         },
       );
+      await batches.syncSessionResult(id);
+      return saved;
     });
     scoped.post("/api/grading/sessions/:id/validate", async (request) => {
       const { id } = sessionParams.parse(request.params);
@@ -814,11 +874,13 @@ export function registerGradingApi(
     scoped.post("/api/grading/sessions/:id/confirm", async (request) => {
       const { id } = sessionParams.parse(request.params);
       const payload = confirmSchema.parse(request.body);
-      return results.confirm(id, {
+      const confirmed = await results.confirm(id, {
         expectedVersion: payload.expectedVersion,
         reviewNote: payload.reviewNote,
         acknowledgedReasons: payload.acknowledgedReasons as ReviewReason[],
       });
+      await batches.syncSessionResult(id);
+      return confirmed;
     });
     scoped.get(
       "/api/grading/sessions/:id/export.json",
@@ -913,6 +975,22 @@ export function registerGradingApi(
       } catch {
         return undefined;
       }
+    },
+    summarizeByCourse() {
+      const sessionSummary = sessions.summarizeByCourse();
+      const batchCounts = batches.countBatchesByCourse();
+      const courseIds = new Set([...Object.keys(sessionSummary), ...Object.keys(batchCounts)]);
+      const result: Record<string, { sessionCount: number; confirmedCount: number; pendingReviewCount: number; batchCount: number }> = {};
+      for (const courseId of courseIds) {
+        const s = sessionSummary[courseId];
+        result[courseId] = {
+          sessionCount: s?.sessionCount ?? 0,
+          confirmedCount: s?.confirmedCount ?? 0,
+          pendingReviewCount: s?.pendingReviewCount ?? 0,
+          batchCount: batchCounts[courseId] ?? 0,
+        };
+      }
+      return result;
     },
     close() {
       uploads.close();

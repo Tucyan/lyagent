@@ -76,6 +76,15 @@ function BatchGradingFlowIcon() {
   );
 }
 
+function ExportFlowIcon() {
+  return (
+    <svg className="dashboard-flow-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="8" y="8" width="32" height="32" rx="4" />
+      <path d="M8 18h32M18 18v22M28 24v10M24 30l4 4 4-4" />
+    </svg>
+  );
+}
+
 function FlowArrow() {
   return (
     <div className="dashboard-flow-arrow" aria-hidden="true">
@@ -260,6 +269,21 @@ export function DashboardPage() {
                         <span>{course.documentCount} 份生效讲义</span>
                         <span aria-hidden="true">·</span>
                         <span>{course.qaSessionCount} 次答疑对话</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{course.rubricCount ?? 0} 份评分标准</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{course.gradingSessionCount ?? 0} 份批改</span>
+                        {(course.pendingReviewCount ?? 0) > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <a
+                              className="dashboard-course-pending-link"
+                              href={withCourseQuery("/grading/batches", course.id)}
+                            >
+                              待复核 {course.pendingReviewCount} 份
+                            </a>
+                          </>
+                        )}
                       </p>
                       <div className="dashboard-course-actions">
                         <button
@@ -307,12 +331,12 @@ export function DashboardPage() {
             </div>
           </section>
 
-          {/* 3. 评分与批改：定标准 → 单份 / 批量批改 */}
+          {/* 3. 评分与批改：定标准 → 单份 / 批量批改 → 成绩导出 */}
           <section className="dashboard-card" aria-label="评分与批改">
             <div className="section-heading">
               <div>
                 <h2>评分与批改</h2>
-                <p>先与 AI 一起定好评分标准，再进行单份精批或整班批量批改。</p>
+                <p>先与 AI 一起定好评分标准，再进行单份精批、批量复核或导出成绩。</p>
               </div>
             </div>
             <div className="dashboard-flow-row grading-steps">
@@ -329,17 +353,25 @@ export function DashboardPage() {
                   <SingleGradingFlowIcon />
                   <div className="dashboard-flow-body">
                     <strong>2A. 单份批改</strong>
-                    <p>上传一份学生报告，逐项生成得分、评语并支持对话微调。</p>
+                    <p>逐项生成得分与评语并对话微调。</p>
                   </div>
                 </a>
                 <a className="dashboard-flow-card" href={withCourseQuery("/grading/batches", activeCourse?.id ?? "")}>
                   <BatchGradingFlowIcon />
                   <div className="dashboard-flow-body">
                     <strong>2B. 批量批改</strong>
-                    <p>一次上传全班作业，自动批改后集中复核并导出成绩表。</p>
+                    <p>整班自动批改并集中复核确认。</p>
                   </div>
                 </a>
               </div>
+              <FlowArrow />
+              <a className="dashboard-flow-card" href={withCourseQuery("/grading/exports", activeCourse?.id ?? "")}>
+                <ExportFlowIcon />
+                <div className="dashboard-flow-body">
+                  <strong>3. 成绩导出</strong>
+                  <p>按批次、评分标准或学生筛选预览并导出 CSV 成绩表。</p>
+                </div>
+              </a>
             </div>
           </section>
         </>

@@ -35,7 +35,7 @@ Windows问题回归额外覆盖：重复warning code只确认一次、自动转�
 
 视觉路由测试还必须覆盖：无视觉配置不返回图片字节；有视觉配置时仅在成功图片结果后的下一轮切换；该次运行余下轮次保持视觉模型、下一次运行重置主模型且视觉Provider错误不回退；`model_switch`经后台事件表和SSE按原序号重放并在完成后折叠。模型设置测试覆盖首次设置阻断、共享/独立视觉凭据payload、CSRF bootstrap、响应无密钥、保存回滚及关闭视觉删除不再使用的凭据。
 
-作业命名测试必须覆盖手填跳过Agent、留空强制命名轮次、正文与文件名冲突时正文优先、未调用终止工具时失败、失败重试和旧SQLite行迁移。CSV测试必须覆盖两种批量范围、只导出已确认结果、动态逐项列、可选逐项置信度、UTF-8 BOM、RFC 4180转义和公式注入防护。
+作业命名测试必须覆盖手填跳过Agent、留空强制命名轮次、正文与文件名冲突时正文优先、未调用终止工具时失败、失败重试和旧SQLite行迁移。CSV测试必须覆盖学生、评分标准与批改批次三种范围（含`includeUnconfirmed`开关与仅导出已确认结果校验）、独立`评分标准`列、精简逐项列及跨多标准重名区分、可选满分/复核状态/逐项置信度、预览统计聚合、UTF-8 BOM、RFC 4180转义和公式注入防护。
 
 设置`RUN_REAL_AI=1`和本地`DEEPSEEK_API_KEY`后，`tests/grading-real-provider.test.ts`会调用真实身份识别与批改Agent，要求提交全部16条规则并得到程序重算的85/100。普通检查不会运行该测试。
 
@@ -93,7 +93,7 @@ Windows问题回归额外覆盖：重复warning code只确认一次、自动转�
 
 ## Dashboard 回归
 
-`tests/dashboard-api.test.ts` 覆盖空工作区、已发布与未发布课程、会话聚合、最近活动上限与排序、损坏 active release 的隔离，以及响应不包含资料正文或临时路径。`tests/web-assets.test.ts` 覆盖根路由、`/knowledge` 和 `/qa` 的 SPA 直接访问。
+`tests/dashboard-api.test.ts` 与 `tests/dashboard-model.test.ts` 覆盖空工作区、已发布与未发布课程、讲义/答疑/评分标准/批改与待复核计数聚合、最近活动上限与排序、损坏 active release 的隔离、工作流「3. 成绩导出」入口、课程卡片待办链接，以及响应不包含资料正文或临时路径。`tests/web-assets.test.ts` 覆盖根路由、`/knowledge`、`/qa`、`/rubrics`、`/grading`、`/grading/batches` 和 `/grading/exports` 的 SPA 直接访问。
 
 Dashboard 测试不得依赖真实模型、网络搜索或本机已有课程资料；使用临时 Workspace 和合成 Markdown。`tests/web-assets.test.ts`除SPA入口外还必须读取至少一个嵌套`/assets/*`文件，防止构建成功但生产页面无法加载脚本或样式。
 
@@ -107,7 +107,7 @@ Windows Release 回归还覆盖持久化上传草稿、逐项失败隔离、刷�
 页面状态测试还验证恢复请求期间 rubric、列表和详情状态变更不会丢弃有效响应；若恢复到的草稿已提交，则清理草稿状态并选中对应正式批次。旧恢复请求失败时，仅当存储指针和当前请求归属仍是旧 ID 才清理；延迟错误不得删除新建草稿的恢复指针。
 批次上传与单份会话上传的 multipart 回归还必须覆盖：附件流累计超过50 MiB时立即拒绝且停止读取；主报告10 MiB与附件50 MiB的合法边界、最多100个附件、一个报告及单文件10 MiB限制。
 
-前端状态同步回归由 `tests/frontend-async-state.test.ts`、`tests/consume-sse.test.ts`、`tests/grading-batch-page-rerender.test.ts` 及各页面 `*-source.test.ts` 覆盖：最新请求归属、串行轮询、轮询停止后的错误抑制、SSE 终态、操作中标签、路由切换取消、编辑草稿保护，以及批次 Review 自动刷新当前会话。批次草稿恢复测试在 happy-dom 中挂载页面，并在草稿请求未完成时触发评分标准切换、列表和详情响应。实机验收按 `docs/acceptance/windows-release-frontend-state-sync.md` 记录。
+前端状态同步与规模化体验回归由 `tests/frontend-async-state.test.ts`、`tests/consume-sse.test.ts`、`tests/grading-page-model.test.ts`、`tests/grading-batch-page-model.test.ts`、`tests/grading-batch-page-rerender.test.ts`、`tests/grading-export-page-model.test.ts`、`tests/grading-export-page.test.tsx` 及各页面 `*-source.test.ts` 覆盖：最新请求归属、串行轮询、轮询停止后的错误抑制、SSE 终态、操作中标签、路由切换取消、编辑草稿保护、非空评分标准默认选择、状态筛选计数与标题去重、跨多标准学生导出自动汇总与得分率统计、导出入口严格条件快捷返回、顶栏列设置浮层与预览行勾选联动统计重算，以及批次 Review 排序与自动刷新当前会话；服务端 `tests/grading-api.test.ts` 与 `tests/grading-csv-export-service.test.ts` 覆盖单份确认同步批次计数及跨标准导出统计。批次草稿恢复测试在 happy-dom 中挂载页面，并在草稿请求未完成时触发评分标准切换、列表和详情响应。实机验收按 `docs/acceptance/windows-release-frontend-state-sync.md` 记录。
 
 ```powershell
 npm test -- --run tests/grading-state-machine.test.ts tests/grading-concurrency.test.ts tests/grading-recovery.test.ts tests/summary-service.test.ts tests/grading-batch-acceptance.test.ts tests/grading-batch-page-model.test.ts tests/grading-batch-page-source.test.ts tests/grading-batch-review-page-model.test.ts tests/grading-batch-review-page-source.test.ts tests/grading-api.test.ts tests/grading-run-service.test.ts tests/web-assets.test.ts

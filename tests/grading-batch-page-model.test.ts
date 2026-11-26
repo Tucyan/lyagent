@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUploadDraftResponse, batchActions, batchProgress, batchReviewHref, batchStatusLabel, batchUploadItemStatusLabel, canCommitBatchUpload, canConfirmBatchJob, canConfirmFromBatchList, canRetryBatchJob, completeCommittedUploadDraftRestore, formatBatchConfidence, formatBatchScore, shouldPollBatch, shouldPollBatchUpload, UploadDraftRequestTracker, waitForBatchSessionsReady } from "../web/src/pages/grading-batch-page-model.js";
+import { applyUploadDraftResponse, batchActions, batchExportHref, batchJobStatusTone, batchProgress, batchReviewHref, batchStatusLabel, batchUploadItemStatusLabel, canCommitBatchUpload, canConfirmBatchJob, canConfirmFromBatchList, canRetryBatchJob, completeCommittedUploadDraftRestore, countBatchDetailJobsByFilter, formatBatchConfidence, formatBatchScore, shouldPollBatch, shouldPollBatchUpload, sortBatchReviewJobs, UploadDraftRequestTracker, waitForBatchSessionsReady } from "../web/src/pages/grading-batch-page-model.js";
 import { LatestRequestGate } from "../web/src/lib/async-state.js";
 
 describe("batch grading page model", () => {
@@ -107,6 +107,7 @@ describe("batch grading page model", () => {
     expect(canConfirmFromBatchList({ ...ordinaryDraft, reviewStatus: "confirmed" })).toBe(false);
     expect(canConfirmBatchJob({ ...needsReview, reviewStatus: "confirmed" })).toBe(false);
     expect(batchReviewHref("batch 1", "session/1")).toBe("/grading/batches/review?batch=batch+1&session=session%2F1");
+    expect(batchExportHref("batch 1", "a1:2")).toBe("/grading/exports?from=batch&scope=batch&batch=batch+1&rubric=a1%3A2");
   });
 
   it("polls active upload items and commits only when every retained item is ready", () => {
@@ -130,5 +131,27 @@ describe("batch grading page model", () => {
 
     await expect(waitForBatchSessionsReady(["bad"], async () => ({ id: "bad", conversionStatus: "conversion_failed", submissionTitleStatus: "provided" }), { delay: async () => undefined, maxPolls: 1 }))
       .rejects.toThrow("bad 转换失败");
+  });
+
+  it("maps confirmed batch jobs to completed tone, counts filter buckets, and sorts review jobs", () => {
+    expect(batchJobStatusTone({ status: "needs_review", reviewStatus: "confirmed" })).toBe("completed");
+    expect(batchJobStatusTone({ status: "needs_review", reviewStatus: "needs_review" })).toBe("needs_review");
+    expect(batchJobStatusTone({ status: "failed" })).toBe("failed");
+
+    const jobs = [
+      { id: "j1", status: "completed", reviewStatus: "confirmed" as const, confidence: { overall: 0.92 }, score: { earned: 88, possible: 100 } },
+      { id: "j2", status: "needs_review", reviewStatus: "needs_review" as const, confidence: { overall: 0.54 }, score: { earned: 72, possible: 100 } },
+      { id: "j3", status: "completed", reviewStatus: "confirmed" as const, confidence: { overall: 0.85 }, score: { earned: 19, possible: 20 } },
+      { id: "j4", status: "failed" },
+    ];
+    expect(countBatchDetailJobsByFilter(jobs)).toEqual({
+      all: 4,
+      needs_review: 1,
+      waiting_for_teacher: 0,
+      failed: 1,
+      confirmed: 2,
+    });
+    expect(sortBatchReviewJobs(jobs, "confidence_asc").map((j) => j.id)).toEqual(["j2", "j3", "j1", "j4"]);
+    expect(sortBatchReviewJobs(jobs, "score_asc").map((j) => j.id)).toEqual(["j2", "j1", "j3", "j4"]);
   });
 });

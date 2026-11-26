@@ -129,7 +129,7 @@ describe("UX resilience and restrained feedback components", () => {
     expect(container.textContent).not.toContain("后续里程碑");
     expect(container.textContent).not.toContain("企业微信");
     const links = Array.from(container.querySelectorAll(".admin-nav a")).map((a) => a.getAttribute("href"));
-    expect(links).toEqual(["/", "/knowledge", "/qa", "/rubrics", "/grading", "/grading/batches", "/settings/models"]);
+    expect(links).toEqual(["/", "/knowledge", "/qa", "/rubrics", "/grading", "/grading/batches", "/grading/exports", "/settings/models"]);
 
     const toggle = container.querySelector<HTMLButtonElement>(".admin-compact-toggle")!;
     await act(async () => {
@@ -146,6 +146,7 @@ describe("UX resilience and restrained feedback components", () => {
     ];
     expect(filterBatchReviewJobs(jobs, "needs_review", "").map((j) => j.id)).toEqual(["1"]);
     expect(filterBatchReviewJobs(jobs, "unconfirmed", "").map((j) => j.id)).toEqual(["1", "3"]);
+    expect(filterBatchReviewJobs(jobs, "confirmed", "").map((j) => j.id)).toEqual(["2"]);
     expect(filterBatchReviewJobs(jobs, "attention", "").map((j) => j.id)).toEqual(["3"]);
     expect(filterBatchReviewJobs(jobs, "all", "2026002").map((j) => j.id)).toEqual(["2"]);
   });

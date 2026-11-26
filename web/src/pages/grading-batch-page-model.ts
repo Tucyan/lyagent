@@ -66,6 +66,10 @@ export function batchJobStatusLabel(job: Pick<BatchReviewJob, "status" | "review
   return job.reviewStatus === "confirmed" ? "成绩已确认" : batchStatusLabel(job.status);
 }
 
+export function batchJobStatusTone(job: Pick<BatchReviewJob, "status" | "reviewStatus">): string {
+  return job.reviewStatus === "confirmed" ? "completed" : job.status;
+}
+
 export function formatBatchScore(job: Pick<BatchReviewJob, "score">): string {
   return job.score ? `${job.score.earned}/${job.score.possible}` : "—";
 }
@@ -90,6 +94,16 @@ export function batchReviewHref(batchId: string, sessionId?: string): string {
   const params = new URLSearchParams({ batch: batchId });
   if (sessionId) params.set("session", sessionId);
   return `/grading/batches/review?${params.toString()}`;
+}
+
+export function batchExportHref(batchId: string, rubricKey?: string): string {
+  const params = new URLSearchParams({
+    from: "batch",
+    scope: "batch",
+    batch: batchId,
+  });
+  if (rubricKey) params.set("rubric", rubricKey);
+  return `/grading/exports?${params.toString()}`;
 }
 
 export function batchProgress(batch: { totalJobs: number; counts: BatchJobCounts }) {
@@ -195,5 +209,46 @@ export function filterBatchDetailJobs<
     return `${job.studentName} ${job.studentNumber} ${job.submissionTitle}`
       .toLowerCase()
       .includes(normalizedQuery);
+  });
+}
+
+export function countBatchDetailJobsByFilter<
+  T extends { status: string; reviewStatus?: "needs_review" | "confirmed" },
+>(jobs: readonly T[]): Record<BatchDetailJobFilter, number> {
+  const counts: Record<BatchDetailJobFilter, number> = {
+    all: jobs.length,
+    needs_review: 0,
+    waiting_for_teacher: 0,
+    failed: 0,
+    confirmed: 0,
+  };
+  for (const job of jobs) {
+    if (job.reviewStatus === "confirmed") counts.confirmed += 1;
+    else if (job.reviewStatus === "needs_review") counts.needs_review += 1;
+    if (job.status === "waiting_for_teacher") counts.waiting_for_teacher += 1;
+    if (job.status === "failed" || job.status === "interrupted") counts.failed += 1;
+  }
+  return counts;
+}
+
+export type BatchReviewSort = "default" | "confidence_asc" | "score_asc";
+
+export function sortBatchReviewJobs<
+  T extends {
+    confidence?: { overall: number };
+    score?: { earned: number; possible: number };
+  },
+>(jobs: readonly T[], sortBy: BatchReviewSort): T[] {
+  if (sortBy === "default") return [...jobs];
+  const copy = [...jobs];
+  if (sortBy === "confidence_asc") {
+    return copy.sort(
+      (left, right) => (left.confidence?.overall ?? Infinity) - (right.confidence?.overall ?? Infinity),
+    );
+  }
+  return copy.sort((left, right) => {
+    const leftRate = left.score && left.score.possible > 0 ? left.score.earned / left.score.possible : Infinity;
+    const rightRate = right.score && right.score.possible > 0 ? right.score.earned / right.score.possible : Infinity;
+    return leftRate - rightRate;
   });
 }

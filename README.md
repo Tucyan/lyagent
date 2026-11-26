@@ -10,9 +10,11 @@
 
 ## 文档
 
+- [使用说明书](docs/使用说明书.md)：从新建课程、资料发布、课程答疑、评分量表共创到单份/批量批改与导出完整操作指南。
+- [深度真实使用与体验测试报告（2026-11-25）](docs/acceptance/2026-11-25-deep-ux-test-report.md)：真实教师端全流程测试记录与发现的 UI/逻辑问题清单。
 - [工程文档入口](.docs/README.md)：架构、存储、开发、测试与运行安全。
 - [里程碑与用户验收范围](docs/superpowers/plans/2026-08-02-course-agent-milestones.md)：各阶段状态与验收条件。
 - [Windows 发布包前端验收](docs/acceptance/windows-release-frontend-state-sync.md)：页面切换、会话恢复和操作状态检查。
-- [历史文档归档](docs/archive/README.md)：2026-10 试用使用说明、验证报告及早期开发过程记录（仅作历史参考）。
+- [历史文档归档](docs/archive/README.md)：2026-11-24 回归记录、2026-10 试用使用说明、验证报告及早期开发过程记录（仅作历史参考）。
 
 项目当前仍处于里程碑验收阶段，具体交付范围以验收计划为准。

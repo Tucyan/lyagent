@@ -27,6 +27,17 @@ export function clampPreviewPercent(value: number): number {
   return Math.min(72, Math.max(28, Math.round(value)));
 }
 
+export function resolveRubricPreviewPercent(input: {
+  customPreviewPercent?: number;
+  frozenWithoutDraft: boolean;
+  messageCount: number;
+}): number {
+  if (typeof input.customPreviewPercent === "number") {
+    return clampPreviewPercent(input.customPreviewPercent);
+  }
+  return input.frozenWithoutDraft && input.messageCount === 0 ? 58 : 38;
+}
+
 export function assertRubricStreamSucceeded(errorMessage?: string): void {
   if (errorMessage) throw new Error(errorMessage);
 }

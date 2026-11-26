@@ -546,6 +546,58 @@ describe("grading API", () => {
     expect(official.body).not.toContain("待复核");
     const summaryAgain = await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}/export.csv` });
     expect(summaryAgain.body).toBe(exported.body);
+    const batchConfirmedPreview = await app.inject({
+      method: "POST",
+      url: "/api/grading/exports/preview",
+      payload: {
+        scope: { kind: "batch", batchId: batch.id, includeUnconfirmed: false },
+        columns: { studentName: true, studentNumber: true, rubricName: true, totalScore: true, possibleScore: true, reviewStatus: true },
+      },
+    });
+    expect(batchConfirmedPreview.statusCode, batchConfirmedPreview.body).toBe(200);
+    expect(batchConfirmedPreview.json().headers).toEqual(["学生姓名", "学号", "评分标准", "总分", "满分", "复核状态"]);
+    expect(batchConfirmedPreview.json().summary).toMatchObject({
+      totalCount: 1,
+      confirmedCount: 1,
+      needsReviewCount: 0,
+      averageScore: 8,
+    });
+    const batchSummaryPreview = await app.inject({
+      method: "POST",
+      url: "/api/grading/exports/preview",
+      payload: {
+        scope: { kind: "batch", batchId: batch.id, includeUnconfirmed: true },
+        columns: { studentName: true, studentNumber: true, totalScore: true, possibleScore: true, reviewStatus: true },
+      },
+    });
+    expect(batchSummaryPreview.statusCode, batchSummaryPreview.body).toBe(200);
+    expect(batchSummaryPreview.json().summary).toMatchObject({
+      totalCount: 30,
+      confirmedCount: 1,
+      needsReviewCount: 29,
+      averageScore: 8,
+    });
+    const studentsList = await app.inject({
+      method: "GET",
+      url: `/api/grading/exports/students?courseId=${detail.courseId}`,
+    });
+    expect(studentsList.statusCode, studentsList.body).toBe(200);
+    expect(studentsList.json()).toHaveLength(30);
+    expect(studentsList.json()[0]).toMatchObject({ confirmedCount: 1, totalCount: 1 });
+
+    // Confirm another job via direct single-session confirm endpoint and verify batch counts stay synced
+    const extraReviewJob = detail.jobs.find((j: any) => j.sessionId !== confirmJob.sessionId && j.reviewStatus === "needs_review");
+    const extraConfirmRes = await app.inject({
+      method: "POST",
+      url: `/api/grading/sessions/${extraReviewJob.sessionId}/confirm`,
+      payload: { expectedVersion: extraReviewJob.resultVersion, reviewNote: "已通过单份复核确认", acknowledgedReasons: [] },
+    });
+    expect(extraConfirmRes.statusCode, extraConfirmRes.body).toBe(200);
+    const syncedBatchDetail = (await app.inject({ method: "GET", url: `/api/grading/batches/${batch.id}` })).json();
+    expect(syncedBatchDetail.counts).toMatchObject({ completed: 2, needs_review: 28 });
+
+    const rubricsWithCounts = (await app.inject({ method: "GET", url: `/api/grading/rubrics?courseId=${detail.courseId}` })).json();
+    expect(rubricsWithCounts[0]).toMatchObject({ sessionCount: 30, confirmedCount: 2 });
     await app.close();
   }, 30_000);
 
@@ -1111,7 +1163,7 @@ describe("grading API", () => {
     await app.close();
   });
 
-  it("serves a configurable CSV export for an exact frozen rubric", async () => {
+  it("serves a configurable CSV export for an exact frozen rubric and rejects empty columns cleanly", async () => {
     const { app, assignmentId } = await setup();
     const response = await app.inject({
       method: "POST",
@@ -1127,6 +1179,16 @@ describe("grading API", () => {
       "grading-results.csv",
     );
     expect(response.body).toBe("\ufeff学生姓名,总分\r\n");
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/grading/exports/preview",
+      payload: {
+        scope: { kind: "rubric", assignmentId, rubricVersion: 1 },
+        columns: {},
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
     await app.close();
   });
 });

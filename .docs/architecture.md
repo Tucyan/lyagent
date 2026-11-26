@@ -138,9 +138,9 @@ Web /rubrics
 
 ## 教师工作台
 
-根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计，`/setup` 与`/settings/models`复用模型设置表单。主模型尚未配置时，浏览器进入首次设置页，除健康检查和模型设置外的核心API返回`SETUP_REQUIRED`。模型配置只在应用首次启动时检查；配置完成后的同源页面链接、侧栏切换和会话链接统一使用 History API 导航，并监听浏览器前进/后退，不重新挂载启动检查。API下载、外部链接以及模型设置保存后的安全重启仍使用浏览器原生导航。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService` 和 `SessionService` 的受控只读结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
+根路由 `/` 是教师/管理员 Dashboard；`/knowledge` 是课程资料库，`/qa` 是课程答疑，`/rubrics` 是评分表设计，`/setup` 与`/settings/models`复用模型设置表单。主模型尚未配置时，浏览器进入首次设置页，除健康检查和模型设置外的核心API返回`SETUP_REQUIRED`。模型配置只在应用首次启动时检查；配置完成后的同源页面链接、侧栏切换和会话链接统一使用 History API 导航，并监听浏览器前进/后退，不重新挂载启动检查。API下载、外部链接以及模型设置保存后的安全重启仍使用浏览器原生导航。Dashboard 只通过 `DashboardService` 组合 `MaterialService`、`KnowledgeService`、`SessionService`、`RubricAssignmentService` 与批改只读统计接口的受控结果，不调用 Agent、模型或网络服务，也不写入遥测数据。
 
-Dashboard 只返回课程元数据、active release 元数据、文档/会话计数和截断后的会话摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。评分表与单份批改入口已启用；批量任务、运维和企业微信仍是后续里程碑。
+Dashboard 返回课程元数据、active release 元数据、文档/答疑会话计数、评分标准数量、批改与待复核计数、批次数及截断后的最近活动摘要。单个课程的 active release 损坏时，该课程标记为 `unavailable`，不影响其余课程的统计。工作台 `/` 串联资料库、课程答疑、评分标准设计、单份/批量批改与「3. 成绩导出」完整流程。
 
 ## M4单份批改边界
 
@@ -149,7 +149,7 @@ Dashboard 只返回课程元数据、active release 元数据、文档/会话计
 - `PiAssignmentGrader`在正式批改轮次只获得固定13项批改工具。未手填作业名称时，程序在提交转换完成后强制启动专用命名轮次，该轮次只开放作业文件浏览、正文搜索、正文读取和`set_submission_title`；模型必须同时核对正文与原始文件名，冲突时以正文标题为准。冻结评分标准由服务端注入系统提示词；总分、证据、置信度和Review状态由程序在提交草稿时重算。
 - `GradingRunService`默认以并发1执行后台轮次，把安全处理摘要、模型回复、`model_switch`和脱敏工具活动写入可按序号回放的事件表；终态等待以100ms间隔查询SQLite，最后一次等待不超过剩余截止时间。视觉Provider失败不会回退主模型，页面断开不会取消运行。
 - `GradingResultService`负责乐观版本、教师审计、Review确认和不可变JSON/Markdown发布。Agent不能直接发布正式结果。
-- `GradingCsvExportService`只聚合已确认JSON结果，按学生或精确冻结评分表生成可重建CSV；Agent不计算或写入成绩表。
+- `GradingCsvExportService`支持按学生、精确冻结评分表或批改批次生成可重建CSV与结构化预览统计；除批次汇总显式开启`includeUnconfirmed`外，仅读取校验通过的已确认JSON结果；Agent不计算或写入成绩表。`/grading/exports`是独立成绩导出工作视图，顶栏提供可展开的列设置浮层（含独立`评分标准`列、`得分率`列与精简得分点表头），按学生跨多份评分标准（`>=2` 份）预览时自动切换为精简汇总预设并支持一键展开全部明细列；预览中满分不统一时统计卡片自动切换为平均与最高/最低得分率。预览表格默认全选并支持逐行勾选导出，采用可搜索选择器筛选批次/评分标准，仅从单份批改或批量批改入口跳转进入时才提供对应的快捷返回入口；侧栏折叠按钮与浮层保持高于导出粘性表头的层级。
 
 ## 依赖方向
 
@@ -170,9 +170,9 @@ channels/api → core/agents/tools → services → db/filesystem/provider inter
 
 ## M5 批量批改边界
 
-`/grading/batches` 是独立于 M4 单份会话页的批量操作界面。批次只编排已有的单份批改会话：每个学生仍由自己的 M4 会话、转换结果、草稿和 Agent 工具上下文隔离，批量协调器不合并学生正文，也不扩大 Agent 的文件权限。
+`/grading/batches` 是独立于 M4 单份会话页的批量操作界面，仅保留跳转至 `/grading/exports` 的「导出成绩」入口（自动选中当前批次并提供快捷返回）。批次只编排已有的单份批改会话：每个学生仍由自己的 M4 会话、转换结果、草稿和 Agent 工具上下文隔离，批量协调器不合并学生正文，也不扩大 Agent 的文件权限。
 
-批次详情从各会话当前草稿或正式结果动态补充分数、整体置信度和 Review 状态，不在 SQLite 重复保存评分事实。`/grading/batches/review?batch=…&session=…` 提供批次内页内复核：左侧会话列表与报告/评分双栏共用同一 SPA，浏览器前进后退可恢复选择；教师可拖动双栏分界线、版本化修改结构化评分、重新批改或正式确认。重新批改只创建下一次受限尝试，正式确认仍由 `GradingResultService` 校验复核原因并发布不可变结果。
+批次详情从各会话当前草稿或正式结果动态补充分数、整体置信度和 Review 状态，不在 SQLite 重复保存评分事实；M4 保存草稿或正式确认后路由同步调用 `syncSessionResult` 更新 SQLite `review_status` 计数。`/grading/batches` 默认加载当前课程全部标准的批改历史（支持「全部标准 / 当前标准」切换与关键词检索）。`/grading/batches/review?batch=…&session=…` 提供批次内页内复核：左侧会话列表与报告/评分双栏共用同一 SPA，支持状态计数筛选、置信度/总分排序、当前项自动滚入可视区域及浏览器前进后退恢复选择；教师可拖动双栏分界线、版本化修改结构化评分、重新批改或正式确认。重新批改只创建下一次受限尝试，正式确认仍由 `GradingResultService` 校验复核原因并发布不可变结果。
 
 批量文件先进入 SQLite 驱动的上传草稿和受控 `batch-uploads/` staging。每项独立推进身份、转换、命名与就绪状态，进程重启后从持久状态恢复；只有全部保留项就绪时，正式批次、job 预留和草稿 `committed` 状态才在同一 immediate 事务中提交。Markdown 共享附件由程序按实际引用筛选后复制到各自会话，Agent 仍只看到当前会话的受控路径。
 

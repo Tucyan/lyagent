@@ -6,6 +6,8 @@ import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import { COURSE_CHANGED_EVENT, readCourseFromUrl, resolveActiveCourseId, withCourseQuery } from "../lib/course-context";
 import {
   batchActions,
+  batchExportHref,
+  batchJobStatusTone,
   batchProgress,
   batchReviewHref,
   batchStatusLabel,
@@ -16,6 +18,7 @@ import {
   canConfirmFromBatchList,
   canRetryBatchJob,
   completeCommittedUploadDraftRestore,
+  countBatchDetailJobsByFilter,
   filterBatchDetailJobs,
   formatBatchConfidence,
   formatBatchScore,
@@ -25,9 +28,17 @@ import {
   type BatchDetailJobFilter,
   type BatchJobCounts,
 } from "./grading-batch-page-model";
+import { pickPreferredExportRubric } from "./grading-export-page-model";
 import { buildAssetManifest } from "./grading-page-model";
 
-type FrozenRubric = { assignmentId: string; courseId?: string; title: string; version: number };
+type FrozenRubric = {
+  assignmentId: string;
+  courseId?: string;
+  title: string;
+  version: number;
+  sessionCount?: number;
+  confirmedCount?: number;
+};
 type BatchJob = {
   id: string; sessionId: string; studentName: string; studentNumber: string;
   submissionTitle: string; status: string; attemptCount: number; maxAttempts: number;
@@ -98,6 +109,8 @@ export function GradingBatchPage() {
   const [identities, setIdentities] = useState<Record<string, { studentName: string; studentNumber: string }>>({});
   const [jobFilter, setJobFilter] = useState<BatchDetailJobFilter>("all");
   const [jobSearch, setJobSearch] = useState("");
+  const [historyScope, setHistoryScope] = useState<"all" | "rubric">("all");
+  const [historySearch, setHistorySearch] = useState("");
   const [confirmState, setConfirmState] = useState<{
     title: string;
     description: string;
@@ -130,11 +143,20 @@ export function GradingBatchPage() {
     setBusyJobIds((current) => active ? (current.includes(id) ? current : [...current, id]) : current.filter((item) => item !== id));
   };
 
-  const refreshList = async (rubric = selectedRubric, preferredBatchId = "") => {
+  const refreshList = async (
+    rubric = selectedRubric,
+    preferredBatchId = "",
+    options: { scope?: "all" | "rubric"; courseId?: string } = {},
+  ) => {
     const lease = listGate.current.begin();
-    const next = rubric
-      ? await api<Batch[]>(`/api/grading/batches?assignmentId=${encodeURIComponent(rubric.assignmentId)}&rubricVersion=${rubric.version}`)
-      : [];
+    const effectiveCourseId = options.courseId ?? activeCourseId;
+    const scope = options.scope ?? historyScope;
+    const url = scope === "all" && effectiveCourseId
+      ? `/api/grading/batches?courseId=${encodeURIComponent(effectiveCourseId)}`
+      : rubric
+        ? `/api/grading/batches?assignmentId=${encodeURIComponent(rubric.assignmentId)}&rubricVersion=${rubric.version}`
+        : "";
+    const next = url ? await api<Batch[]>(url) : [];
     if (!lease.isCurrent()) return undefined;
     setBatches(next);
     const preferred = next.find((batch) => batch.id === preferredBatchId) ?? next[0];
@@ -186,18 +208,23 @@ export function GradingBatchPage() {
         const params = new URLSearchParams(window.location.search);
         const requestedRubricKey = params.get("rubric") ?? "";
         const requestedBatchId = params.get("batch") ?? "";
-        const storedRubricKey = localStorage.getItem(rubricStorageKey) ?? "";
+        const storedRubricKey = localStorage.getItem(batchRubricStorageKey(nextCourseId)) ?? "";
         const preferredRubricKey = requestedRubricKey || storedRubricKey;
-        const savedValid = preferredRubricKey && nextRubrics.some((item) => `${item.assignmentId}:${item.version}` === preferredRubricKey);
-        const key = savedValid ? preferredRubricKey : (nextRubrics[0] ? `${nextRubrics[0].assignmentId}:${nextRubrics[0].version}` : "");
+        const key = pickPreferredExportRubric(nextRubrics, preferredRubricKey);
         setRubricKey(key);
         if (key) localStorage.setItem(rubricStorageKey, key);
+        const initialHistoryScope: "all" | "rubric" = nextCourseId ? "all" : "rubric";
+        setHistoryScope(initialHistoryScope);
         selectedIdRef.current = "";
         setSelectedId("");
         setDetail(undefined);
         uploadDraftIdRef.current.set(undefined);
         setUploadDraft(undefined);
-        const nextBatches = await refreshList(nextRubrics.find((item) => `${item.assignmentId}:${item.version}` === key), requestedBatchId);
+        const nextBatches = await refreshList(
+          nextRubrics.find((item) => `${item.assignmentId}:${item.version}` === key),
+          requestedBatchId,
+          { scope: initialHistoryScope, courseId: nextCourseId },
+        );
         if (nextBatches?.some((batch) => batch.id === requestedBatchId)) {
           setCreatingBatch(false);
           setNotice("已返回当前批次。");
@@ -275,13 +302,32 @@ export function GradingBatchPage() {
 
   const chooseRubric = async (key: string) => {
     setRubricKey(key);
+    setHistoryScope("rubric");
     localStorage.setItem(batchRubricStorageKey(activeCourseId), key);
     selectedIdRef.current = undefined;
     detailGate.current.invalidate();
     setSelectedId(undefined);
     setDetail(undefined);
     try {
-      await refreshList(rubrics.find((item) => `${item.assignmentId}:${item.version}` === key));
+      await refreshList(
+        rubrics.find((item) => `${item.assignmentId}:${item.version}` === key),
+        "",
+        { scope: "rubric" },
+      );
+    } catch (error) {
+      setNotice((error as Error).message);
+      toast.fromError(error);
+    }
+  };
+
+  const switchHistoryScope = async (nextScope: "all" | "rubric") => {
+    setHistoryScope(nextScope);
+    selectedIdRef.current = undefined;
+    detailGate.current.invalidate();
+    setSelectedId(undefined);
+    setDetail(undefined);
+    try {
+      await refreshList(selectedRubric, "", { scope: nextScope });
     } catch (error) {
       setNotice((error as Error).message);
       toast.fromError(error);
@@ -584,8 +630,54 @@ export function GradingBatchPage() {
         {!showGuidedCreate && <label>评分标准<select aria-label="批量评分标准" value={rubricKey} onChange={(event) => void chooseRubric(event.target.value)}>
           <option value="">选择冻结评分标准</option>{rubrics.map((rubric) => <option key={`${rubric.assignmentId}:${rubric.version}`} value={`${rubric.assignmentId}:${rubric.version}`}>{rubric.title} · v{rubric.version}</option>)}
         </select></label>}
-        <p className="batch-sidebar-heading">历史批次（{batches.length}）</p>
-        <nav>{batches.length === 0 ? <p className="muted">尚无历史批次</p> : batches.map((batch) => <div className={`batch-history-card ${!showGuidedCreate && selectedId === batch.id ? "active" : ""}`} key={batch.id}><button className="batch-history-select" type="button" onClick={() => chooseBatch(batch.id)}><strong>{batch.title}</strong><span>{batchStatusLabel(batch.status)} · {batch.totalJobs} 份</span></button><div className="grading-session-actions"><button type="button" onClick={() => { setBatchToRename(batch); setRenameTitle(batch.title); setRenameError(""); }}>重命名</button></div></div>)}</nav>
+        <div className="batch-history-controls">
+          <div className="batch-history-head">
+            <p className="batch-sidebar-heading">历史批次（{batches.length}）</p>
+            {activeCourseId && (
+              <div className="batch-history-scope-pills" role="group" aria-label="历史批次范围">
+                <button
+                  type="button"
+                  className={historyScope === "all" ? "active" : ""}
+                  onClick={() => void switchHistoryScope("all")}
+                >
+                  全部标准
+                </button>
+                <button
+                  type="button"
+                  className={historyScope === "rubric" ? "active" : ""}
+                  onClick={() => void switchHistoryScope("rubric")}
+                >
+                  当前标准
+                </button>
+              </div>
+            )}
+          </div>
+          {batches.length > 0 && (
+            <input
+              type="search"
+              className="grading-session-search"
+              aria-label="搜索历史批次"
+              value={historySearch}
+              onChange={(event) => setHistorySearch(event.target.value)}
+              placeholder="搜索批次名称…"
+            />
+          )}
+        </div>
+        {(() => {
+          const hQuery = historySearch.trim().toLowerCase();
+          const filteredBatches = hQuery
+            ? batches.filter((batch) => batch.title.toLowerCase().includes(hQuery))
+            : batches;
+          return <nav>{filteredBatches.length === 0 ? <p className="muted">{batches.length === 0 ? "尚无历史批次" : "没有匹配的历史批次"}</p> : filteredBatches.map((batch) => (
+            <div className={`batch-history-card ${!showGuidedCreate && selectedId === batch.id ? "active" : ""}`} key={batch.id}>
+              <button className="batch-history-select" type="button" onClick={() => chooseBatch(batch.id)}>
+                <strong>{batch.title}</strong>
+                <span>{batchStatusLabel(batch.status)} · 已确认 {batch.counts.completed}/{batch.totalJobs} 份</span>
+              </button>
+              <div className="grading-session-actions"><button type="button" onClick={() => { setBatchToRename(batch); setRenameTitle(batch.title); setRenameError(""); }}>重命名</button></div>
+            </div>
+          ))}</nav>;
+        })()}
       </aside>
       <main className="batch-grading-main">
         {showGuidedCreate && <form className="batch-create-card batch-guided-card" onSubmit={create}>
@@ -660,8 +752,7 @@ export function GradingBatchPage() {
             {actions?.canStart && <button className="primary-button" disabled={busy} onClick={() => void command("start")}>启动批改</button>}
             {actions?.canPause && <button disabled={busy} onClick={() => void command("pause")}>暂停领取</button>}
             {actions?.canResume && <button className="primary-button" disabled={busy} onClick={() => void command("resume")}>恢复批改</button>}
-            {detail.counts.completed > 0 && <a className="button-link" href={`/api/grading/batches/${detail.id}/export.csv?scope=confirmed`}>导出已确认成绩 CSV</a>}
-            {actions?.canExport && <a className="button-link" href={`/api/grading/batches/${detail.id}/export.csv`}>导出处理汇总 CSV（含待复核）</a>}
+            {actions?.canExport && <a className="button-link" href={withCourseQuery(batchExportHref(detail.id, `${detail.assignmentId}:${detail.rubricVersion}`), activeCourseId)}>导出成绩</a>}
             {detail.status !== "draft" && <a className="button-link primary-link" href={withCourseQuery(batchReviewHref(detail.id, firstReviewJob?.sessionId), activeCourseId)}>进入复核</a>}
           </div>
           <div className="batch-counts">{Object.entries(detail.counts).filter(([, count]) => count > 0).map(([status, count]) => <span key={status}>{status === "completed" ? "已确认" : batchStatusLabel(status)} <strong>{count}</strong></span>)}</div>
@@ -669,13 +760,14 @@ export function GradingBatchPage() {
           {(() => {
             const allJobs = detail.jobs ?? [];
             const visibleJobs = filterBatchDetailJobs(allJobs, jobFilter, jobSearch);
+            const filterCounts = countBatchDetailJobsByFilter(allJobs);
             const hasJobFilter = jobFilter !== "all" || Boolean(jobSearch.trim());
             const filterTabs: Array<[BatchDetailJobFilter, string]> = [
-              ["all", "全部"],
-              ["needs_review", "待复核"],
-              ["waiting_for_teacher", "待回答"],
-              ["failed", "失败"],
-              ["confirmed", "已确认"],
+              ["all", `全部 (${filterCounts.all})`],
+              ["needs_review", `待复核 (${filterCounts.needs_review})`],
+              ["waiting_for_teacher", `待回答 (${filterCounts.waiting_for_teacher})`],
+              ["failed", `失败 (${filterCounts.failed})`],
+              ["confirmed", `已确认 (${filterCounts.confirmed})`],
             ];
             return <>
               <div className="batch-detail-filters" aria-label="筛选批次作业">
@@ -714,7 +806,7 @@ export function GradingBatchPage() {
               </div>
               <div className="batch-job-table"><table><thead><tr><th>学生</th><th>作业</th><th>状态</th><th>分数</th><th>置信度</th><th>尝试</th><th>操作</th></tr></thead><tbody>{visibleJobs.length === 0 ? <tr><td colSpan={7} className="muted">当前筛选条件下没有匹配的作业</td></tr> : visibleJobs.map((job) => {
             const jobBusy = busy || busyJobIds.includes(job.id);
-            return <tr key={job.id}><td>{job.studentName}<small>{job.studentNumber}</small></td><td><a href={withCourseQuery(batchReviewHref(detail.id, job.sessionId), activeCourseId)}>{job.submissionTitle}</a></td><td><span className={`batch-status ${job.status}`}>{batchJobStatusLabel(job)}</span>{job.lastErrorCode && <small>{userErrorMessage(job.lastErrorCode)}</small>}</td><td>{formatBatchScore(job)}</td><td>{formatBatchConfidence(job)}</td><td>{job.attemptCount}/{job.maxAttempts}</td><td><div className="batch-row-actions">{canRetryBatchJob(job) && <button disabled={jobBusy} onClick={() => void jobCommand(job, "retry")}>{retryingJobId === job.id ? "重试中…" : "重试"}</button>}{canConfirmFromBatchList(job) && <button className="primary-button" disabled={jobBusy} onClick={() => confirmJob(job)}>{busyJobIds.includes(job.id) ? "确认中…" : "确认"}</button>}{job.status === "waiting_for_teacher" && <div className="batch-answer"><span>{job.question}</span><input aria-label={`回答 ${job.studentName}`} value={answers[job.id] ?? ""} onChange={(event) => setAnswers({ ...answers, [job.id]: event.target.value })} /><button disabled={jobBusy || !(answers[job.id] ?? "").trim()} onClick={() => void jobCommand(job, "answer")}>回答</button></div>}{!canRetryBatchJob(job) && !canConfirmFromBatchList(job) && job.status !== "waiting_for_teacher" && "—"}</div></td></tr>;
+            return <tr key={job.id}><td>{job.studentName}<small>{job.studentNumber}</small></td><td><a href={withCourseQuery(batchReviewHref(detail.id, job.sessionId), activeCourseId)}>{job.submissionTitle}</a></td><td><span className={`batch-status ${batchJobStatusTone(job)}`}>{batchJobStatusLabel(job)}</span>{job.lastErrorCode && <small>{userErrorMessage(job.lastErrorCode)}</small>}</td><td>{formatBatchScore(job)}</td><td>{formatBatchConfidence(job)}</td><td>{job.attemptCount}/{job.maxAttempts}</td><td><div className="batch-row-actions">{canRetryBatchJob(job) && <button disabled={jobBusy} onClick={() => void jobCommand(job, "retry")}>{retryingJobId === job.id ? "重试中…" : "重试"}</button>}{canConfirmFromBatchList(job) && <button className="primary-button" disabled={jobBusy} onClick={() => confirmJob(job)}>{busyJobIds.includes(job.id) ? "确认中…" : "确认"}</button>}{job.status === "waiting_for_teacher" && <div className="batch-answer"><span>{job.question}</span><input aria-label={`回答 ${job.studentName}`} value={answers[job.id] ?? ""} onChange={(event) => setAnswers({ ...answers, [job.id]: event.target.value })} /><button disabled={jobBusy || !(answers[job.id] ?? "").trim()} onClick={() => void jobCommand(job, "answer")}>回答</button></div>}{!canRetryBatchJob(job) && !canConfirmFromBatchList(job) && job.status !== "waiting_for_teacher" && "—"}</div></td></tr>;
           })}</tbody></table></div>
             </>;
           })()}

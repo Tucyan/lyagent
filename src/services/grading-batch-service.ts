@@ -289,6 +289,7 @@ export class GradingBatchService {
         || typeof result.confidence.lowCount !== "number") return job;
       return {
         ...job,
+        ...(source.reviewStatus === "confirmed" && job.status === "needs_review" ? { status: "completed" as const } : {}),
         score: { earned: result.score.earned, possible: result.score.possible },
         confidence: {
           overall: result.confidence.overall,
@@ -473,6 +474,34 @@ export class GradingBatchService {
       if (source?.reviewStatus === "confirmed") entries.push({ ...job, jobId: job.id, ...source });
     }
     return renderBatchCsv(entries);
+  }
+
+  async syncSessionResult(sessionId: string): Promise<void> {
+    const batchId = this.owningBatchId(sessionId);
+    if (!batchId) return;
+    const row = this.database.prepare("SELECT * FROM grading_batch_jobs WHERE session_id = ? LIMIT 1").get(sessionId) as JobRow | undefined;
+    if (!row || !["needs_review", "completed"].includes(row.status)) return;
+    const source = await this.dependencies.readResult(sessionId);
+    if (!source) return;
+    const job = jobFromRow(row);
+    await this.writeJobSnapshot(job, source);
+    const nextStatus = source.reviewStatus === "confirmed" ? "completed" : "needs_review";
+    if (job.status !== nextStatus) {
+      this.database.prepare(
+        "UPDATE grading_batch_jobs SET status = ?, updated_at = ? WHERE id = ? AND status IN ('needs_review', 'completed')",
+      ).run(nextStatus, this.now(), job.id);
+    }
+    await this.rebuildSummary(batchId);
+  }
+
+  countBatchesByCourse(): Record<string, number> {
+    const result: Record<string, number> = {};
+    for (const row of this.database.prepare(
+      "SELECT course_id, COUNT(*) AS count FROM grading_batches WHERE course_id IS NOT NULL GROUP BY course_id",
+    ).all() as Array<{ course_id: string; count: number }>) {
+      result[row.course_id] = row.count;
+    }
+    return result;
   }
 
   owningBatchId(sessionId: string): string | undefined {
@@ -662,9 +691,27 @@ export class GradingBatchService {
 
   private async batchFromRow(row: BatchRow): Promise<GradingBatch> {
     const counts = Object.fromEntries(ALL_JOB_STATUSES.map((status) => [status, 0])) as Record<GradingBatchJobStatus, number>;
-    for (const item of this.database.prepare(
-      "SELECT status, COUNT(*) AS count FROM grading_batch_jobs WHERE batch_id = ? GROUP BY status",
-    ).all(row.id) as Array<{ status: GradingBatchJobStatus; count: number }>) counts[item.status] = item.count;
+    const sessionColumns = this.database
+      .prepare("PRAGMA table_info(grading_sessions)")
+      .all() as Array<{ name: string }>;
+    const hasSessionGradingStatus = sessionColumns.some((column) => column.name === "grading_status");
+    const countRows = (hasSessionGradingStatus
+      ? this.database.prepare(
+        `SELECT CASE
+           WHEN j.status IN ('needs_review', 'completed') AND s.grading_status = 'confirmed' THEN 'completed'
+           WHEN j.status IN ('needs_review', 'completed') AND s.grading_status IN ('draft_ready', 'needs_review') THEN 'needs_review'
+           ELSE j.status
+         END AS status,
+         COUNT(*) AS count
+         FROM grading_batch_jobs j
+         LEFT JOIN grading_sessions s ON s.id = j.session_id
+         WHERE j.batch_id = ?
+         GROUP BY 1`,
+      ).all(row.id)
+      : this.database.prepare(
+        "SELECT status, COUNT(*) AS count FROM grading_batch_jobs WHERE batch_id = ? GROUP BY status",
+      ).all(row.id)) as Array<{ status: GradingBatchJobStatus; count: number }>;
+    for (const item of countRows) counts[item.status] = item.count;
     return {
       id: row.id,
       ...(row.course_id ? { courseId: row.course_id } : {}),

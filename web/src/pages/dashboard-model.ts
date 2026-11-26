@@ -7,6 +7,12 @@ export type DashboardCourse = {
   releaseCount: number;
   documentCount: number;
   qaSessionCount: number;
+  rubricCount?: number;
+  frozenRubricCount?: number;
+  gradingSessionCount?: number;
+  confirmedGradingCount?: number;
+  pendingReviewCount?: number;
+  batchCount?: number;
   lastActivityAt: string;
 };
 

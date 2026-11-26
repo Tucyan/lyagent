@@ -1,6 +1,6 @@
 # Course Agent 真实使用回归记录
 
-2026-11-24，新加坡时间。使用 `http://localhost:5173/` 的现有模型配置，通过浏览器操作虚构课程「图书馆研讨室预约（体验复测）」。[复测素材](fixtures/library-booking-2026-11-24/README.md)
+2026-11-24，新加坡时间。使用 `http://localhost:5173/` 的现有模型配置，通过浏览器操作虚构课程「图书馆研讨室预约（体验复测）」。[复测素材](../../acceptance/fixtures/library-booking-2026-11-24/README.md)
 
 ## 修复与复测
 
@@ -23,9 +23,9 @@
 4. 上传 LIB001 和 LIB002，刷新页面后恢复草稿。以并发 1 启动并暂停，已领取的 LIB001 完成，LIB002 保持等待。恢复才领取第二份。人工确认 LIB001 的 14/20，LIB002 的 3/20 待复核。分别下载“已确认成绩 CSV”和“处理汇总 CSV（含待复核）”，核对 1 行及 2 行。
 5. 用一份正常报告、一份缺失身份的 Markdown 和一份坏 PDF 创建异常测试批次。重启应用后草稿与已就绪项仍可恢复。补填 LIB003 的姓名和学号，测试用坏 PDF 替换 LIB002 被拒，再用有效 TXT 替换 LIB004。正式批次 3/3 完成，LIB002 为 3/20、LIB003 为 6/20、LIB004 为 11/20，均待复核。
 
-[答疑修复前](screenshots/2026-11-24-iteration/01-qa-before-fix.jpg) · [答疑修复后](screenshots/2026-11-24-iteration/04-qa-after-fix.jpg) · [评分区间复测](screenshots/2026-11-24-iteration/11-rubric-range-count.jpg) · [暂停场景](screenshots/2026-11-24-iteration/03-batch-paused.jpg) · [返回较早批次](screenshots/2026-11-24-iteration/06-return-older-batch.jpg) · [知识版本回滚](screenshots/2026-11-24-iteration/07-knowledge-rollback.jpg)
+[答疑修复前](screenshots/01-qa-before-fix.jpg) · [答疑修复后](screenshots/04-qa-after-fix.jpg) · [评分区间复测](screenshots/11-rubric-range-count.jpg) · [暂停场景](screenshots/03-batch-paused.jpg) · [返回较早批次](screenshots/06-return-older-batch.jpg) · [知识版本回滚](screenshots/07-knowledge-rollback.jpg)
 
-[窄屏评分入口修复前](screenshots/2026-11-24-iteration/08-rubric-history-hidden.jpg) · [窄屏打开已有会话](screenshots/2026-11-24-iteration/10-rubric-history-restored.jpg) · [坏文件保护原报告](screenshots/2026-11-24-iteration/12-invalid-upload-preserves-ready.jpg) · [恢复后三份批改结果](screenshots/2026-11-24-iteration/14-recovered-batch-results.jpg)
+[窄屏评分入口修复前](screenshots/08-rubric-history-hidden.jpg) · [窄屏打开已有会话](screenshots/10-rubric-history-restored.jpg) · [坏文件保护原报告](screenshots/12-invalid-upload-preserves-ready.jpg) · [恢复后三份批改结果](screenshots/14-recovered-batch-results.jpg)
 
 ## 验证范围
 

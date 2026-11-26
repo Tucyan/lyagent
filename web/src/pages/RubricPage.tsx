@@ -17,10 +17,19 @@ import {
 } from "../lib/course-context";
 import { LatestRequestGate, type RequestLease } from "../lib/async-state";
 import { consumeSse } from "../lib/consume-sse";
-import { appendRubricProcess, appendRubricReply, assertRubricStreamSucceeded, assignmentIdFromSearch, clampPreviewPercent, loadRubricSession, rubricCompletionNotice, rubricDeleteWarning, rubricProblemTargetKey, shouldFollowRubricStream } from "./rubric-page-model";
+import { appendRubricProcess, appendRubricReply, assertRubricStreamSucceeded, assignmentIdFromSearch, clampPreviewPercent, loadRubricSession, resolveRubricPreviewPercent, rubricCompletionNotice, rubricDeleteWarning, rubricProblemTargetKey, shouldFollowRubricStream } from "./rubric-page-model";
 
 type Course = { id: string; name: string };
-type RubricAssignment = { id: string; courseId: string; title: string; totalScore: number; requirements: string; sources: Array<{ id: string; role: "rubric_draft" | "note"; name: string; size: number }> };
+type RubricAssignment = {
+  id: string;
+  courseId: string;
+  title: string;
+  totalScore: number;
+  requirements: string;
+  sources: Array<{ id: string; role: "rubric_draft" | "note"; name: string; size: number }>;
+  frozenVersionCount?: number;
+  latestFrozenVersion?: number | null;
+};
 type Recommendation = { mode: RubricMode; recommended: boolean; reason?: string; benefit?: string };
 type RubricDraft = { version: number; updatedAt: string; baseRubricVersion?: number; rubric: RubricValue };
 type FrozenRubric = { version: number; hash: string; frozenAt: string; rubric: RubricValue };
@@ -73,7 +82,7 @@ export function RubricPage() {
   const [submitting, setSubmitting] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia(narrowRubricWorkspace).matches);
-  const [previewPercent, setPreviewPercent] = useState(38);
+  const [previewPercent, setPreviewPercent] = useState<number>();
   const [dragging, setDragging] = useState(false);
   const splitRef = useRef<HTMLElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -313,6 +322,8 @@ export function RubricPage() {
 
   useEffect(() => {
     if (!dragging) return;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
     const move = (event: PointerEvent) => {
       const bounds = splitRef.current?.getBoundingClientRect();
       if (!bounds) return;
@@ -321,7 +332,13 @@ export function RubricPage() {
     const stop = () => setDragging(false);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop, { once: true });
-    return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); };
+    window.addEventListener("pointercancel", stop, { once: true });
+    return () => {
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
   }, [dragging]);
 
   useEffect(() => {
@@ -550,7 +567,12 @@ export function RubricPage() {
   const selectedFrozen = typeof previewVersion === "number" ? versions.find((version) => version.version === previewVersion) : undefined;
   const previewRubric = previewVersion === "draft" ? draft?.rubric : selectedFrozen?.rubric;
   const frozenWithoutDraft = !draft && versions.length > 0;
-  const workspaceStyle = { "--rubric-preview-width": `${previewPercent}%` } as CSSProperties;
+  const effectivePreviewPercent = resolveRubricPreviewPercent({
+    customPreviewPercent: previewPercent,
+    frozenWithoutDraft,
+    messageCount: messages.length,
+  });
+  const workspaceStyle = { "--rubric-preview-width": `${effectivePreviewPercent}%` } as CSSProperties;
 
   const currentCourse = courses.find((course) => course.id === courseId);
   const titleReady = Boolean(title.trim());
@@ -567,7 +589,7 @@ export function RubricPage() {
 
   const hasUnsavedEdits = Boolean(editing && draft && previewVersion === "draft" && editedRubric && JSON.stringify(editedRubric) !== JSON.stringify(draft.rubric));
   const showPreviewDocument = Boolean(previewRubric && (!editing || !draft || previewVersion !== "draft" || previewFullscreen));
-  const previewPanel = <aside className={`rubric-preview-panel ${previewFullscreen ? "fullscreen" : ""}`} aria-label="评分表预览"><div className="rubric-preview-toolbar"><div><h2>{editing && previewFullscreen ? "评分表双栏编辑" : "评分表预览"}</h2><span title={selectedFrozen ? "只有冻结版本才允许被正式应用于批改" : undefined}>{previewVersion === "draft" && draft ? `可编辑草稿 v${draft.version}` : selectedFrozen ? `冻结版本 v${selectedFrozen.version}` : "尚无草稿"}</span>{hasUnsavedEdits && <em className="rubric-unsaved-pill">有未保存修改</em>}</div><div>{(draft || versions.length > 0) && <select aria-label="选择预览版本" value={previewVersion} onChange={(event) => { const value = event.target.value; setPreviewVersion(value === "draft" ? "draft" : Number(value)); setEditing(false); setValidation(undefined); }}><option value="draft" disabled={!draft}>当前草稿{draft ? ` v${draft.version}` : "（无）"}</option>{versions.map((version) => <option value={version.version} key={version.version}>冻结版本 v{version.version}</option>)}</select>}{showPreviewDocument && levelToggleState.total > 0 && <button type="button" className="rubric-expand-all-btn" onClick={() => rubricDocRef.current?.toggleAllLevels()}>{levelToggleState.allExpanded ? "收起全部细则" : `展开全部细则 (${levelToggleState.total})`}</button>}{draft && previewVersion === "draft" && <button type="button" onClick={() => { setEditing((value) => !value); setEditedRubric(structuredClone(draft.rubric)); setEditFocusTarget(undefined); }}>{editing ? "查看预览" : "人工编辑"}</button>}<button type="button" onClick={() => setPreviewFullscreen((value) => !value)}>{previewFullscreen ? "退出全屏" : editing ? "全屏双栏编辑" : "全屏预览"}</button></div></div><div className="rubric-preview-body">{previewRubric ? editing && draft && previewVersion === "draft" && editedRubric ? (previewFullscreen ? <div className="rubric-fullscreen-edit-split"><div className="rubric-fullscreen-edit-pane"><RubricEditor rubric={editedRubric} onChange={setEditedRubric} {...(editFocusTarget ? { focusTarget: editFocusTarget } : {})} /></div><div className="rubric-fullscreen-preview-pane"><div className="rubric-fullscreen-preview-tip">点击任意项目右上角“✎ 编辑”可在左侧快速定位展开</div><RubricDocument rubric={editedRubric} docRef={rubricDocRef} onLevelToggleStateChange={setLevelToggleState} {...(editFocusTarget ? { activeTargetKey: editFocusTarget.key } : {})} onSelectTarget={(key) => setEditFocusTarget((prev) => ({ key, nonce: (prev?.nonce ?? 0) + 1 }))} /></div></div> : <RubricEditor rubric={editedRubric} onChange={setEditedRubric} {...(editFocusTarget ? { focusTarget: editFocusTarget } : {})} />) : <RubricDocument rubric={previewRubric} docRef={rubricDocRef} onLevelToggleStateChange={setLevelToggleState} /> : <div className="rubric-preview-empty"><strong>{assignment ? "等待评分表草稿" : "尚未开始设计"}</strong><p>{assignment ? "选择评分制度后，Agent 生成的草稿会显示在这里。" : "创建会话后，可在这里预览、编辑和冻结评分表。"}</p></div>}</div>{draft && previewVersion === "draft" && <footer className="rubric-preview-actions">{editing ? <>{hasUnsavedEdits && <small>修改后请记得点击保存，保存后才会更新草稿版本。</small>}<button type="button" onClick={() => { setEditing(false); setEditedRubric(structuredClone(draft.rubric)); setEditFocusTarget(undefined); }}>取消修改</button><button className="primary-button" type="button" disabled={submitting} onClick={() => void saveManualDraft()}>保存人工修改</button></> : <><button type="button" disabled={submitting} onClick={() => void validateForFreeze()}>校验并准备冻结</button>{freezeReady && <button className="primary-button" type="button" disabled={submitting} onClick={() => void freezeDraft()}>确认冻结为正式版本</button>}</>}{validation && <div className={`rubric-validation ${validation.errors.length ? "error" : "success"}`}><strong>{validation.errors.length ? `${validation.errors.length} 个错误` : "校验通过"}</strong>{[...validation.errors, ...validation.warnings].map((problem, index) => { const targetKey = rubricProblemTargetKey(draft?.rubric, problem.path); return targetKey ? <p key={`${problem.code}-${index}`}><button type="button" className="text-button" onClick={() => { if (draft) { setEditedRubric(structuredClone(draft.rubric)); setEditing(true); setEditFocusTarget((prev) => ({ key: targetKey, nonce: (prev?.nonce ?? 0) + 1 })); } }}>{rubricProblemMessage(problem)}（点击定位）</button></p> : <p key={`${problem.code}-${index}`}>{rubricProblemMessage(problem)}</p>; })}</div>}</footer>}{selectedFrozen && <footer className="rubric-preview-actions frozen-footer"><button className="primary-button" type="button" disabled={submitting || Boolean(draft)} onClick={() => void createRevision(selectedFrozen.version)}>基于 v{selectedFrozen.version} 创建修订</button><div className="rubric-export-links"><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.md`} download>导出 Markdown</a><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.json`} download>导出 JSON</a></div></footer>}</aside>;
+  const previewPanel = <aside className={`rubric-preview-panel ${previewFullscreen ? "fullscreen" : ""}`} aria-label="评分表预览"><div className="rubric-preview-toolbar"><div><h2>{editing && previewFullscreen ? "评分表双栏编辑" : "评分表预览"}</h2><span title={selectedFrozen ? "只有冻结版本才允许被正式应用于批改" : undefined}>{previewVersion === "draft" && draft ? `可编辑草稿 v${draft.version}` : selectedFrozen ? `冻结版本 v${selectedFrozen.version}` : "尚无草稿"}</span>{hasUnsavedEdits && <em className="rubric-unsaved-pill">有未保存修改</em>}</div><div>{(draft || versions.length > 0) && <select aria-label="选择预览版本" value={previewVersion} onChange={(event) => { const value = event.target.value; setPreviewVersion(value === "draft" ? "draft" : Number(value)); setEditing(false); setValidation(undefined); }}><option value="draft" disabled={!draft}>当前草稿{draft ? ` v${draft.version}` : "（无）"}</option>{versions.map((version) => <option value={version.version} key={version.version}>冻结版本 v{version.version}</option>)}</select>}{showPreviewDocument && levelToggleState.total > 0 && <button type="button" className="rubric-expand-all-btn" onClick={() => rubricDocRef.current?.toggleAllLevels()}>{levelToggleState.allExpanded ? "收起全部细则" : `展开全部细则 (${levelToggleState.total})`}</button>}{draft && previewVersion === "draft" && <button type="button" onClick={() => { setEditing((value) => !value); setEditedRubric(structuredClone(draft.rubric)); setEditFocusTarget(undefined); }}>{editing ? "查看预览" : "人工编辑"}</button>}<button type="button" onClick={() => setPreviewFullscreen((value) => !value)}>{previewFullscreen ? "退出全屏" : editing ? "全屏双栏编辑" : "全屏预览"}</button></div></div><div className="rubric-preview-body">{previewRubric ? editing && draft && previewVersion === "draft" && editedRubric ? (previewFullscreen ? <div className="rubric-fullscreen-edit-split"><div className="rubric-fullscreen-edit-pane"><RubricEditor rubric={editedRubric} onChange={setEditedRubric} {...(editFocusTarget ? { focusTarget: editFocusTarget } : {})} /></div><div className="rubric-fullscreen-preview-pane"><div className="rubric-fullscreen-preview-tip">点击任意项目右上角“✎ 编辑”可在左侧快速定位展开</div><RubricDocument rubric={editedRubric} docRef={rubricDocRef} onLevelToggleStateChange={setLevelToggleState} {...(editFocusTarget ? { activeTargetKey: editFocusTarget.key } : {})} onSelectTarget={(key) => setEditFocusTarget((prev) => ({ key, nonce: (prev?.nonce ?? 0) + 1 }))} /></div></div> : <RubricEditor rubric={editedRubric} onChange={setEditedRubric} {...(editFocusTarget ? { focusTarget: editFocusTarget } : {})} />) : <RubricDocument rubric={previewRubric} docRef={rubricDocRef} onLevelToggleStateChange={setLevelToggleState} /> : <div className="rubric-preview-empty"><strong>{assignment ? "等待评分表草稿" : "尚未开始设计"}</strong><p>{assignment ? "选择评分制度后，Agent 生成的草稿会显示在这里。" : "创建会话后，可在这里预览、编辑和冻结评分表。"}</p></div>}</div>{draft && previewVersion === "draft" && <footer className="rubric-preview-actions">{editing ? <>{hasUnsavedEdits && <small>修改后请记得点击保存，保存后才会更新草稿版本。</small>}<button type="button" onClick={() => { setEditing(false); setEditedRubric(structuredClone(draft.rubric)); setEditFocusTarget(undefined); }}>取消修改</button><button className="primary-button" type="button" disabled={submitting} onClick={() => void saveManualDraft()}>保存人工修改</button></> : <><button type="button" disabled={submitting} onClick={() => void validateForFreeze()}>校验并准备冻结</button>{freezeReady && <button className="primary-button" type="button" disabled={submitting} onClick={() => void freezeDraft()}>确认冻结为正式版本</button>}</>}{validation && <div className={`rubric-validation ${validation.errors.length ? "error" : "success"}`}><strong>{validation.errors.length ? `${validation.errors.length} 个错误` : "校验通过"}</strong>{[...validation.errors, ...validation.warnings].map((problem, index) => { const targetKey = rubricProblemTargetKey(draft?.rubric, problem.path); return targetKey ? <p key={`${problem.code}-${index}`}><button type="button" className="text-button" onClick={() => { if (draft) { setEditedRubric(structuredClone(draft.rubric)); setEditing(true); setEditFocusTarget((prev) => ({ key: targetKey, nonce: (prev?.nonce ?? 0) + 1 })); } }}>{rubricProblemMessage(problem)}（点击定位）</button></p> : <p key={`${problem.code}-${index}`}>{rubricProblemMessage(problem)}</p>; })}</div>}</footer>}{selectedFrozen && <footer className="rubric-preview-actions frozen-footer">{!(frozenWithoutDraft && versions[0] && selectedFrozen.version === versions[0].version) && <button className="primary-button" type="button" disabled={submitting || Boolean(draft)} onClick={() => void createRevision(selectedFrozen.version)}>基于 v{selectedFrozen.version} 创建修订</button>}<div className="rubric-export-links"><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.md`} download>导出 Markdown</a><a href={`/api/rubrics/assignments/${selectedAssignmentId}/versions/${selectedFrozen.version}/export.json`} download>导出 JSON</a></div></footer>}</aside>;
 
   return <div className="rubric-page">
     <header className="rubric-page-header">
@@ -581,11 +603,11 @@ export function RubricPage() {
         <div className="rubric-pane-heading"><div><h2>评分会话</h2><span>{assignments.length}</span></div><button className="rubric-pane-collapse" type="button" onClick={() => setSidebarCollapsed(true)} aria-label="收起评分会话列表" title="收起会话列表">«</button></div>
         <a className="rubric-new-session" href={withCourseQuery("/rubrics", courseId)}>＋ 新建评分表</a>
         {assignments.length > 0 && <input type="search" className="grading-session-search" aria-label="搜索评分会话" value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} placeholder="搜索评分标准名称…" />}
-        {assignments.length === 0 ? <p className="rubric-empty">当前课程尚未创建评分会话。</p> : (() => { const q = sessionQuery.trim().toLowerCase(); const filtered = assignments.filter((item) => !q || item.title.toLowerCase().includes(q)); return filtered.length === 0 ? <div className="sidebar-empty-hint"><p className="muted">没有匹配的评分会话</p><button type="button" className="sidebar-clear-filter" onClick={() => setSessionQuery("")}>清除搜索</button></div> : <nav>{filtered.map((item) => <div className={`rubric-session-row ${item.id === selectedAssignmentId ? "active" : ""}`} key={item.id}><a href={withCourseQuery(`/rubrics?assignment=${encodeURIComponent(item.id)}`, courseId)} title={item.title}><strong>{item.title}</strong><small>{item.totalScore} 分 · {item.sources.length} 份参考资料</small></a><button type="button" aria-label={`删除评分会话：${item.title}`} title="删除评分会话" disabled={submitting || deleting} onClick={() => { setAssignmentToDelete(item); setDeleteError(""); }}>删除</button></div>)}</nav>; })()}
+        {assignments.length === 0 ? <p className="rubric-empty">当前课程尚未创建评分会话。</p> : (() => { const q = sessionQuery.trim().toLowerCase(); const filtered = assignments.filter((item) => !q || item.title.toLowerCase().includes(q)); return filtered.length === 0 ? <div className="sidebar-empty-hint"><p className="muted">没有匹配的评分会话</p><button type="button" className="sidebar-clear-filter" onClick={() => setSessionQuery("")}>清除搜索</button></div> : <nav>{filtered.map((item) => <div className={`rubric-session-row ${item.id === selectedAssignmentId ? "active" : ""}`} key={item.id}><a href={withCourseQuery(`/rubrics?assignment=${encodeURIComponent(item.id)}`, courseId)} title={`${item.title}${item.latestFrozenVersion ? ` · 已定稿 v${item.latestFrozenVersion}` : ""} · ${item.totalScore} 分`}><strong>{item.title}</strong><span className="rubric-session-row-meta">{item.latestFrozenVersion ? <span className="rubric-session-version-pill">v{item.latestFrozenVersion}</span> : null}<small>{item.totalScore} 分 · {item.sources.length} 份参考资料</small></span></a><button type="button" aria-label={`删除评分会话：${item.title}`} title="删除评分会话" disabled={submitting || deleting} onClick={() => { setAssignmentToDelete(item); setDeleteError(""); }}>删除</button></div>)}</nav>; })()}
       </aside>
       <section className={`rubric-design-split ${!assignment ? "is-creating" : ""}`} ref={splitRef}>
         <section className="rubric-start-panel">{chatContent}</section>
-        {assignment && <button className={`rubric-resizer ${dragging ? "dragging" : ""}`} type="button" aria-label="拖动调整会话与预览宽度" onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setDragging(true); }} />}
+        {assignment && <button className={`rubric-resizer ${dragging ? "dragging" : ""}`} type="button" aria-label="拖动调整会话与预览宽度" onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setDragging(true); }} />}
         {assignment && previewPanel}
       </section>
     </section>

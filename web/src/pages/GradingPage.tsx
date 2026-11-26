@@ -27,8 +27,11 @@ export { DecisionCards, DecisionEditor };
 import {
   applyGradingEvent,
   buildAssetManifest,
+  buildSingleGradingExportHref,
   clampGradingPreviewPercent,
   conversionPresentation,
+  countGradingSessionsByStatus,
+  formatGradingSessionDisplayTitle,
   gradingSessionStatusLabel,
   gradingSessionWorkflowSummary,
   gradingStatusLabel,
@@ -36,22 +39,13 @@ import {
   canAnswerGradingQuestion,
   gradingItemLabel,
   initialLiveMessage,
-  normalizeGradingExportOptions,
-  parseGradingExportOptions,
-  exportPresetOptions,
-  filterCsvPreviewRows,
   filterGradingSessions,
-  parseCsvPreview,
-  serializeCsvTable,
-  type CsvPreviewTable,
-  type GradingExportPreset,
   type GradingSessionFilterStatus,
   resolveGradingSessionScope,
   resolveGradingRubricKey,
   rubricSelectionKey,
   shouldPollSessionPreparation,
   submissionTitlePresentation,
-  type GradingExportOptions,
   type GradingToolStep,
   type LiveGradingMessage,
 } from "./grading-page-model";
@@ -125,6 +119,8 @@ type FrozenRubric = {
   version: number;
   hash: string;
   rubric: RubricValue;
+  sessionCount?: number;
+  confirmedCount?: number;
 };
 
 async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
@@ -165,16 +161,12 @@ export function GradingPage() {
     [renameTitle, setRenameTitle] = useState(""),
     [sessionToDelete, setSessionToDelete] = useState<GradingSession>(),
     [sessionActionError, setSessionActionError] = useState(""),
-    [exportModalOpen, setExportModalOpen] = useState(false),
     [sessionSearch, setSessionSearch] = useState(""),
     [sessionStatusFilter, setSessionStatusFilter] = useState<GradingSessionFilterStatus>("all"),
     [rubricPickerOpen, setRubricPickerOpen] = useState(false),
     [rubricSearch, setRubricSearch] = useState("");
   const [retryingTitle, setRetryingTitle] = useState<string>();
   const [sessionOperations, setSessionOperations] = useState<string[]>([]);
-  const [exportOptions, setExportOptions] = useState<GradingExportOptions>(() =>
-    parseGradingExportOptions(localStorage.getItem("grading-csv-columns")),
-  );
   const splitRef = useRef<HTMLElement>(null);
   const detailGate = useRef(new LatestRequestGate());
   const listGate = useRef(new LatestRequestGate());
@@ -268,7 +260,6 @@ export function GradingPage() {
     };
   }, []);
   useEffect(() => {
-    setExportModalOpen(false);
     setRubricPickerOpen(false);
     setCreating(!selectedId && !query.has("rubric"));
   }, [locationSearch]);
@@ -330,7 +321,7 @@ export function GradingPage() {
         const rubric = nextRubrics.find(
           (item) => rubricSelectionKey(item) === key,
         );
-        await refreshList(
+        const loadedSessions = await refreshList(
           scopedDetail ??
             (rubric
               ? {
@@ -340,6 +331,11 @@ export function GradingPage() {
               : undefined),
         );
         if (!lease.isCurrent()) return;
+        const firstSession = loadedSessions?.[0];
+        if (!scopedDetail && !selectedId && query.has("rubric") && firstSession) {
+          navigateToSession(firstSession.id);
+          return;
+        }
         setNotice("会话状态已恢复；不会自动重新调用模型。");
       } catch (error) {
         if (lease.isCurrent()) setNotice((error as Error).message);
@@ -349,9 +345,6 @@ export function GradingPage() {
       if (lease.isCurrent()) pageLoadGate.current.invalidate();
     };
   }, [locationSearch]);
-  useEffect(() => {
-    localStorage.setItem("grading-csv-columns", JSON.stringify(exportOptions));
-  }, [exportOptions]);
   useEffect(() => {
     setAcknowledgedReasons([]);
   }, [detail?.draft?.version]);
@@ -608,79 +601,6 @@ export function GradingPage() {
       setSessionActionError((error as Error).message);
     }
   };
-  const updateExportOption = (
-    key: keyof GradingExportOptions,
-    value: boolean,
-  ) =>
-    setExportOptions((current) =>
-      normalizeGradingExportOptions({ ...current, [key]: value }),
-    );
-  const fetchExportCsv = async (
-    kind: "student" | "rubric",
-    options: GradingExportOptions,
-  ): Promise<{ filename: string; text: string }> => {
-    if (!selectedRubric || (kind === "student" && !detail)) {
-      throw new Error("请先选择评分标准或批改会话");
-    }
-    const scope =
-      kind === "student"
-        ? {
-            kind,
-            courseId: detail!.courseId,
-            studentNumber: detail!.studentNumber,
-          }
-        : {
-            kind,
-            assignmentId: selectedRubric.assignmentId,
-            rubricVersion: selectedRubric.version,
-          };
-    const response = await apiFetch(
-      "/api/grading/exports/csv",
-      withJsonHeaders({
-        method: "POST",
-        body: JSON.stringify({ scope, columns: options }),
-      }),
-    );
-    if (!response.ok) throw await apiErrorFromResponse(response, "导出失败");
-    const text = await response.text();
-    const filename =
-      kind === "student"
-        ? `${detail!.studentNumber}-全部作业.csv`
-        : `${selectedRubric.title}-v${selectedRubric.version}-全部学生.csv`;
-    return { filename, text };
-  };
-  const downloadCsv = async (kind: "student" | "rubric") => {
-    if (!selectedRubric || (kind === "student" && !detail)) return;
-    const scope =
-      kind === "student"
-        ? {
-            kind,
-            courseId: detail!.courseId,
-            studentNumber: detail!.studentNumber,
-          }
-        : {
-            kind,
-            assignmentId: selectedRubric.assignmentId,
-            rubricVersion: selectedRubric.version,
-          };
-    const response = await apiFetch(
-      "/api/grading/exports/csv",
-      withJsonHeaders({
-        method: "POST",
-        body: JSON.stringify({ scope, columns: exportOptions }),
-      }),
-    );
-    if (!response.ok) throw await apiErrorFromResponse(response, "导出失败");
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement("a");
-    link.href = url;
-    link.download =
-      kind === "student"
-        ? `${detail!.studentNumber}-全部作业.csv`
-        : `${selectedRubric.title}-v${selectedRubric.version}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
   useEffect(() => {
     if (detail?.activeRunId && (!live || live.runId !== detail.activeRunId))
       void followRun(detail.id, detail.activeRunId).catch((error: Error) =>
@@ -750,11 +670,14 @@ export function GradingPage() {
               >
                 <span className="rubric-picker-value" title={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}>
                   {selectedRubric
-                    ? `${selectedRubric.title} · v${selectedRubric.version}`
+                    ? selectedRubric.title
                     : rubrics.length === 0
                       ? "当前课程暂无评分标准"
                       : "选择评分标准"}
                 </span>
+                {selectedRubric && (
+                  <span className="rubric-picker-version-badge">v{selectedRubric.version}</span>
+                )}
                 <span className="rubric-picker-caret" aria-hidden="true">▾</span>
               </button>
               {rubricPickerOpen && (
@@ -780,6 +703,8 @@ export function GradingPage() {
                       return matched.map((rubric) => {
                         const key = rubricSelectionKey(rubric);
                         const active = key === selectedRubricKey;
+                        const sessionCount = rubric.sessionCount ?? 0;
+                        const confirmedCount = rubric.confirmedCount ?? 0;
                         return (
                           <button
                             key={key}
@@ -795,7 +720,14 @@ export function GradingPage() {
                             }}
                           >
                             <strong>{rubric.title}</strong>
-                            <span>v{rubric.version}</span>
+                            <span className="rubric-picker-option-meta">
+                              {typeof rubric.sessionCount === "number" && (
+                                <span className="rubric-picker-count">
+                                  {confirmedCount}/{sessionCount} 份
+                                </span>
+                              )}
+                              <span className="rubric-picker-version-badge">v{rubric.version}</span>
+                            </span>
                           </button>
                         );
                       });
@@ -805,12 +737,17 @@ export function GradingPage() {
               )}
             </div>
           </div>
-          <ExportPanel
-            options={exportOptions}
-            active={exportModalOpen}
-            disabled={!selectedRubric && !detail}
-            onOpen={() => setExportModalOpen((current) => !current)}
-          />
+          <a
+            className="grading-export-header-button"
+            href={buildSingleGradingExportHref({
+              courseId: activeCourseId,
+              rubricKey: selectedRubricKey,
+              sessionId: detail?.id,
+              studentNumber: detail?.studentNumber,
+            })}
+          >
+            导出成绩
+          </a>
         </div>
       </header>
       <div
@@ -832,137 +769,134 @@ export function GradingPage() {
               «
             </button>
           </div>
-          <button type="button" onClick={() => { setExportModalOpen(false); setCreating(true); }}>
+          <button type="button" onClick={() => setCreating(true)}>
             ＋ 上传作业
           </button>
-          {sessions.length > 0 && (
-            <div className="grading-session-filter-box">
-              <input
-                type="search"
-                className="grading-session-search"
-                aria-label="搜索批改会话"
-                value={sessionSearch}
-                onChange={(event) => setSessionSearch(event.target.value)}
-                placeholder="搜索姓名、学号或作业…"
-              />
-              <div className="grading-session-filters" role="tablist" aria-label="按批改状态筛选">
-                {(
-                  [
-                    ["all", "全部"],
-                    ["pending", "待确认"],
-                    ["confirmed", "已确认"],
-                    ["attention", "异常"],
-                  ] as Array<[GradingSessionFilterStatus, string]>
-                ).map(([statusKey, label]) => (
-                  <button
-                    key={statusKey}
-                    type="button"
-                    className={sessionStatusFilter === statusKey ? "active" : ""}
-                    onClick={() => setSessionStatusFilter(statusKey)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          <nav>
-            {(() => {
-              const displayedSessions = detail
-                ? sessions.map((session) => session.id === detail.id
-                  ? { ...session, conversionStatus: detail.conversionStatus }
-                  : session)
-                : sessions;
-              const filteredSessions = filterGradingSessions(
-                displayedSessions,
-                sessionStatusFilter,
-                sessionSearch,
-              );
-              if (sessions.length > 0 && filteredSessions.length === 0) {
-                return (
-                  <div className="sidebar-empty-hint">
-                    <p className="muted">没有符合筛选条件的作业</p>
-                    <button
-                      type="button"
-                      className="sidebar-clear-filter"
-                      onClick={() => {
-                        setSessionSearch("");
-                        setSessionStatusFilter("all");
-                      }}
-                    >
-                      清除筛选
-                    </button>
+          {(() => {
+            const displayedSessions = detail
+              ? sessions.map((session) => session.id === detail.id
+                ? { ...session, conversionStatus: detail.conversionStatus }
+                : session)
+              : sessions;
+            const statusCounts = countGradingSessionsByStatus(displayedSessions);
+            const filteredSessions = filterGradingSessions(
+              displayedSessions,
+              sessionStatusFilter,
+              sessionSearch,
+            );
+            return (
+              <>
+                {sessions.length > 0 && (
+                  <div className="grading-session-filter-box">
+                    <input
+                      type="search"
+                      className="grading-session-search"
+                      aria-label="搜索批改会话"
+                      value={sessionSearch}
+                      onChange={(event) => setSessionSearch(event.target.value)}
+                      placeholder="搜索姓名、学号或作业…"
+                    />
+                    <div className="grading-session-filters" role="tablist" aria-label="按批改状态筛选">
+                      {(
+                        [
+                          ["all", `全部 ${statusCounts.all}`],
+                          ["pending", `待确认 ${statusCounts.pending}`],
+                          ["confirmed", `已确认 ${statusCounts.confirmed}`],
+                          ["attention", `异常 ${statusCounts.attention}`],
+                        ] as Array<[GradingSessionFilterStatus, string]>
+                      ).map(([statusKey, label]) => (
+                        <button
+                          key={statusKey}
+                          type="button"
+                          className={sessionStatusFilter === statusKey ? "active" : ""}
+                          onClick={() => setSessionStatusFilter(statusKey)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                );
-              }
-              return filteredSessions.map((session) => (
-              <article
-                className={session.id === selectedId ? "active" : ""}
-                key={session.id}
-              >
-                <a
-                  href={`/grading?session=${session.id}`}
-                  title={`${session.studentName}（${session.studentNumber}）· ${session.title}`}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    setExportModalOpen(false);
-                    setCreating(false);
-                    navigateToSession(session.id);
-                  }}
-                >
-                  <strong>{session.title}</strong>
-                  {(!session.submissionTitle || !(session.title ?? "").includes(session.submissionTitle)) && (
-                    <span>{session.submissionTitle ?? gradingSessionStatusLabel(session)}</span>
+                )}
+                <nav>
+                  {sessions.length > 0 && filteredSessions.length === 0 ? (
+                    <div className="sidebar-empty-hint">
+                      <p className="muted">没有符合筛选条件的作业</p>
+                      <button
+                        type="button"
+                        className="sidebar-clear-filter"
+                        onClick={() => {
+                          setSessionSearch("");
+                          setSessionStatusFilter("all");
+                        }}
+                      >
+                        清除筛选
+                      </button>
+                    </div>
+                  ) : (
+                    filteredSessions.map((session) => {
+                      const displayTitle = formatGradingSessionDisplayTitle(session);
+                      const statusTone =
+                        session.conversionStatus === "conversion_failed" || session.gradingStatus === "failed"
+                          ? "is-error"
+                          : session.gradingStatus === "confirmed"
+                            ? "is-confirmed"
+                            : "";
+                      return (
+                        <article
+                          className={session.id === selectedId ? "active" : ""}
+                          key={session.id}
+                        >
+                          <a
+                            href={`/grading?session=${session.id}`}
+                            title={`${session.studentName}（${session.studentNumber}）· ${session.title}`}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              setCreating(false);
+                              navigateToSession(session.id);
+                            }}
+                          >
+                            <div className="grading-session-card-head">
+                              <strong>{session.studentName} · {session.studentNumber}</strong>
+                              <small className={`grading-workflow-tag ${statusTone}`}>
+                                {gradingSessionWorkflowSummary(session)}
+                              </small>
+                            </div>
+                            {displayTitle &&
+                              displayTitle !== session.studentName &&
+                              displayTitle !== `${session.studentName} · ${session.studentNumber}` && (
+                                <span className="grading-session-card-subtitle">{displayTitle}</span>
+                              )}
+                          </a>
+                          <div className="grading-session-actions">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSessionToRename(session);
+                                setRenameTitle(session.title);
+                                setSessionActionError("");
+                              }}
+                            >
+                              重命名
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSessionToDelete(session);
+                                setSessionActionError("");
+                              }}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })
                   )}
-                  {session.title !== `${session.studentName} · ${session.studentNumber}` && (
-                    <small>
-                      {session.studentName} · {session.studentNumber}
-                    </small>
-                  )}
-                  <small className={`grading-workflow-tag ${session.conversionStatus === "conversion_failed" || session.gradingStatus === "failed" ? "is-error" : session.gradingStatus === "confirmed" ? "is-confirmed" : ""}`}>
-                    {gradingSessionWorkflowSummary(session)}
-                  </small>
-                </a>
-                <div className="grading-session-actions">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSessionToRename(session);
-                      setRenameTitle(session.title);
-                      setSessionActionError("");
-                    }}
-                  >
-                    重命名
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSessionToDelete(session);
-                      setSessionActionError("");
-                    }}
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-              ));
-            })()}
-          </nav>
+                </nav>
+              </>
+            );
+          })()}
         </aside>
-        {exportModalOpen ? (
-          <ExportPreviewDialog
-            open={exportModalOpen}
-            options={exportOptions}
-            setOption={updateExportOption}
-            applyPreset={(preset) => setExportOptions(exportPresetOptions(preset))}
-            canExportStudent={Boolean(detail)}
-            canExportRubric={Boolean(selectedRubric)}
-            studentLabel={detail ? `${detail.studentName}（${detail.studentNumber}）` : undefined}
-            rubricLabel={selectedRubric ? `${selectedRubric.title} · v${selectedRubric.version}` : undefined}
-            fetchCsv={fetchExportCsv}
-            onClose={() => setExportModalOpen(false)}
-          />
-        ) : (
         <section
           className={`grading-split ${creating ? "is-creating" : ""}`}
           ref={splitRef}
@@ -1175,7 +1109,6 @@ export function GradingPage() {
             </div>
           </aside>
         </section>
-        )}
       </div>
       <PromptDialog
         open={Boolean(sessionToRename)}
@@ -1706,334 +1639,5 @@ function NewSessionPanel({
         </div>
       </form>
     </div>
-  );
-}
-
-function ExportPanel({
-  options,
-  active,
-  disabled,
-  onOpen,
-}: {
-  options: GradingExportOptions;
-  active: boolean;
-  disabled: boolean;
-  onOpen(): void;
-}) {
-  const selectedCount = Object.values(options).filter(Boolean).length;
-  return (
-    <button
-      type="button"
-      className={`grading-export-header-button ${active ? "active" : ""}`}
-      aria-pressed={active}
-      disabled={disabled}
-      title={`预览并导出成绩表 CSV（已选 ${selectedCount} 列）`}
-      onClick={onOpen}
-    >
-      {active ? "返回批改" : `导出 CSV（${selectedCount}列）`}
-    </button>
-  );
-}
-
-function ExportPreviewDialog({
-  open,
-  options,
-  setOption,
-  applyPreset,
-  canExportStudent,
-  canExportRubric,
-  studentLabel,
-  rubricLabel,
-  fetchCsv,
-  onClose,
-}: {
-  open: boolean;
-  options: GradingExportOptions;
-  setOption(key: keyof GradingExportOptions, value: boolean): void;
-  applyPreset(preset: GradingExportPreset): void;
-  canExportStudent: boolean;
-  canExportRubric: boolean;
-  studentLabel?: string;
-  rubricLabel?: string;
-  fetchCsv(
-    kind: "student" | "rubric",
-    options: GradingExportOptions,
-  ): Promise<{ filename: string; text: string }>;
-  onClose(): void;
-}) {
-  const [scopeKind, setScopeKind] = useState<"student" | "rubric">(
-    canExportRubric ? "rubric" : "student",
-  );
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [csvText, setCsvText] = useState("");
-  const [filename, setFilename] = useState("grades.csv");
-  const [preview, setPreview] = useState<CsvPreviewTable>({ headers: [], rows: [] });
-  const [reloadNonce, setReloadNonce] = useState(0);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [minScore, setMinScore] = useState("");
-  const [maxScore, setMaxScore] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    if (scopeKind === "student" && !canExportStudent && canExportRubric) {
-      setScopeKind("rubric");
-    } else if (scopeKind === "rubric" && !canExportRubric && canExportStudent) {
-      setScopeKind("student");
-    }
-  }, [open, canExportStudent, canExportRubric, scopeKind]);
-
-  useEffect(() => {
-    if (!open) return;
-    if ((scopeKind === "student" && !canExportStudent) || (scopeKind === "rubric" && !canExportRubric)) {
-      setPreview({ headers: [], rows: [] });
-      setCsvText("");
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-    void fetchCsv(scopeKind, options)
-      .then((result) => {
-        if (cancelled) return;
-        setCsvText(result.text);
-        setFilename(result.filename);
-        setPreview(parseCsvPreview(result.text));
-      })
-      .catch((cause: Error) => {
-        if (cancelled) return;
-        setError(cause.message);
-        setCsvText("");
-        setPreview({ headers: [], rows: [] });
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, scopeKind, options, canExportStudent, canExportRubric, reloadNonce]);
-
-  useEffect(() => {
-    setSearchQuery("");
-    setMinScore("");
-    setMaxScore("");
-  }, [scopeKind]);
-
-  if (!open) return null;
-
-  const fields: Array<[keyof GradingExportOptions, string]> = [
-    ["studentName", "学生姓名"],
-    ["studentNumber", "学号"],
-    ["submissionTitle", "作业名称"],
-    ["itemDetails", "详细得分点 / 扣分点"],
-    ["totalScore", "总分"],
-    ["overallConfidence", "总置信度"],
-  ];
-
-  const scoreFilterAvailable =
-    options.totalScore && preview.headers.some((header) => /总分|score/i.test(header));
-  const hasActiveFilter = Boolean(
-    searchQuery.trim() || (scoreFilterAvailable && (minScore.trim() || maxScore.trim())),
-  );
-  const filteredPreview = filterCsvPreviewRows(preview, {
-    query: searchQuery,
-    minScore: scoreFilterAvailable ? minScore : "",
-    maxScore: scoreFilterAvailable ? maxScore : "",
-  });
-
-  const triggerDownload = () => {
-    if (!csvText || filteredPreview.rows.length === 0) return;
-    const outputText = hasActiveFilter ? serializeCsvTable(filteredPreview) : csvText;
-    const blob = new Blob([outputText], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <section
-      className="export-workspace"
-      aria-label="导出成绩表预览"
-    >
-      <div className="export-preview-modal">
-        <header className="export-preview-header">
-          <div>
-            <h2>导出成绩表 CSV</h2>
-            <p>选择导出范围与列，筛选并实时预览表格内容后再下载。</p>
-          </div>
-        </header>
-
-        <section className="export-preview-controls">
-          <div className="export-scope-row" role="radiogroup" aria-label="导出范围">
-            <button
-              type="button"
-              className={`export-scope-tab ${scopeKind === "rubric" ? "active" : ""}`}
-              disabled={!canExportRubric}
-              onClick={() => setScopeKind("rubric")}
-            >
-              <strong>当前评分标准全部学生</strong>
-              <small title={rubricLabel}>{rubricLabel ?? "请先选择评分标准"}</small>
-            </button>
-            <button
-              type="button"
-              className={`export-scope-tab ${scopeKind === "student" ? "active" : ""}`}
-              disabled={!canExportStudent}
-              onClick={() => setScopeKind("student")}
-            >
-              <strong>当前学生全部作业</strong>
-              <small title={studentLabel}>{studentLabel ?? "请先选择一份批改会话"}</small>
-            </button>
-          </div>
-
-          <div className="export-presets-row">
-            <span>快捷方案：</span>
-            <button type="button" onClick={() => applyPreset("summary")}>仅成绩汇总</button>
-            <button type="button" onClick={() => applyPreset("detailed")}>完整明细</button>
-            <button type="button" onClick={() => applyPreset("full")}>含子项置信度</button>
-          </div>
-
-          <div className="export-column-chips" aria-label="导出列选择">
-            {fields.map(([key, label]) => (
-              <label key={key} className={options[key] ? "checked" : ""}>
-                <input
-                  type="checkbox"
-                  checked={options[key]}
-                  onChange={(event) => setOption(key, event.target.checked)}
-                />
-                {label}
-              </label>
-            ))}
-            <label className={`${options.itemConfidence ? "checked" : ""} ${!options.itemDetails ? "disabled" : ""}`}>
-              <input
-                type="checkbox"
-                checked={options.itemConfidence}
-                disabled={!options.itemDetails}
-                onChange={(event) => setOption("itemConfidence", event.target.checked)}
-              />
-              子项置信度
-            </label>
-          </div>
-        </section>
-
-        <section className="export-preview-table-section" aria-label="导出数据预览">
-          <div className="export-filter-bar" aria-label="数据筛选">
-            <input
-              type="search"
-              className="export-filter-search"
-              aria-label="关键词筛选"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="搜索学生姓名、学号、作业名称或评语…"
-            />
-            <div
-              className={`export-score-range ${!scoreFilterAvailable ? "disabled" : ""}`}
-              title={!scoreFilterAvailable ? "勾选「总分」列后可按总分区间筛选" : undefined}
-            >
-              <span>总分区间</span>
-              <input
-                type="number"
-                aria-label="最低分"
-                disabled={!scoreFilterAvailable}
-                value={minScore}
-                onChange={(event) => setMinScore(event.target.value)}
-                placeholder="最低"
-              />
-              <span>–</span>
-              <input
-                type="number"
-                aria-label="最高分"
-                disabled={!scoreFilterAvailable}
-                value={maxScore}
-                onChange={(event) => setMaxScore(event.target.value)}
-                placeholder="最高"
-              />
-            </div>
-            {hasActiveFilter && (
-              <button
-                type="button"
-                className="export-filter-reset"
-                onClick={() => {
-                  setSearchQuery("");
-                  setMinScore("");
-                  setMaxScore("");
-                }}
-              >
-                重置筛选
-              </button>
-            )}
-          </div>
-          <div className="export-preview-bar">
-            <span>
-              {loading
-                ? "正在生成预览…"
-                : hasActiveFilter
-                  ? `筛选结果：显示 ${filteredPreview.rows.length} / 共 ${preview.rows.length} 条记录 · ${preview.headers.length} 列（导出将仅包含筛选结果）`
-                  : `预览结果：共 ${preview.rows.length} 条记录 · ${preview.headers.length} 列`}
-            </span>
-            <button type="button" disabled={loading} onClick={() => setReloadNonce((n) => n + 1)}>
-              刷新预览
-            </button>
-          </div>
-          {error ? (
-            <p className="export-preview-error" role="alert">{error}</p>
-          ) : loading ? (
-            <div className="export-preview-empty">正在读取当前范围的成绩数据…</div>
-          ) : preview.headers.length === 0 || preview.rows.length === 0 ? (
-            <div className="export-preview-empty">
-              当前范围内暂无已确认发布的成绩记录。请先在批改会话中确认并发布正式结果后再导出。
-            </div>
-          ) : filteredPreview.rows.length === 0 ? (
-            <div className="export-preview-empty">
-              没有符合当前筛选条件的记录，请调整关键词或总分区间。
-            </div>
-          ) : (
-            <div className="export-preview-table-wrap">
-              <table className="export-preview-table">
-                <thead>
-                  <tr>
-                    {filteredPreview.headers.map((header, index) => (
-                      <th key={`${header}-${index}`}>{header}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredPreview.rows.map((row, rowIndex) => (
-                    <tr key={rowIndex}>
-                      {filteredPreview.headers.map((_, colIndex) => {
-                        const value = row[colIndex] ?? "";
-                        return (
-                          <td key={colIndex} title={value}>
-                            {value}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        <footer className="export-preview-footer">
-          <span className="export-preview-filename" title={filename}>文件名：{filename}</span>
-          <div className="export-preview-footer-actions">
-            <button type="button" onClick={onClose}>返回</button>
-            <button
-              type="button"
-              className="primary-button"
-              disabled={loading || !csvText || filteredPreview.rows.length === 0}
-              onClick={triggerDownload}
-            >
-              确认下载 CSV（{filteredPreview.rows.length} 条）
-            </button>
-          </div>
-        </footer>
-      </div>
-    </section>
   );
 }

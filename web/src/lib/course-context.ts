@@ -66,6 +66,11 @@ export function selectActiveCourse(courseId: string, targetPath?: string): void 
   if (targetPath === undefined && url.pathname === "/qa" && previousCourseId && previousCourseId !== courseId) {
     url.searchParams.delete("session");
   }
+  if (targetPath === undefined && url.pathname === "/grading/exports" && previousCourseId !== courseId) {
+    for (const param of ["from", "scope", "batch", "rubric", "session", "student", "includeUnconfirmed"]) {
+      url.searchParams.delete(param);
+    }
+  }
   if (courseId) url.searchParams.set("course", courseId);
   else url.searchParams.delete("course");
   navigateWithinApp(`${url.pathname}${url.search}${url.hash}`);
