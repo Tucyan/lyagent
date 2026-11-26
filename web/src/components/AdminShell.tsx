@@ -137,7 +137,7 @@ export function AdminShell({
     </a>
   );
 
-  return <div className={`admin-shell ${compact ? "nav-compact" : ""}`}>
+  return <div className={`admin-shell admin-shell-teacher ${compact ? "nav-compact" : ""}`}>
     <button className="admin-menu-toggle" type="button" aria-label="打开工作台导航" onClick={() => setOpen(true)}>☰</button>
     {open && <button className="admin-nav-backdrop" type="button" aria-label="关闭工作台导航" onClick={() => setOpen(false)} />}
     <aside className={`admin-nav ${open ? "open" : ""}`} aria-label="教师工作台导航">

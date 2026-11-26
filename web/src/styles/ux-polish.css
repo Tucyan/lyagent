@@ -37,6 +37,13 @@ textarea:focus-visible {
 }
 
 /* Collapsible AdminShell */
+
+@media (min-width: 961px) {
+  .admin-shell-teacher {
+    --nav-width-expanded: 184px;
+  }
+}
+
 .admin-shell {
   grid-template-columns: var(--nav-width-expanded) minmax(0, 1fr);
   background: var(--bg-canvas);
@@ -179,6 +186,10 @@ textarea:focus-visible {
 .admin-course-switcher label {
   display: grid;
   gap: 4px;
+}
+
+.admin-shell-teacher .admin-course-switcher label {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .admin-course-switcher select {
