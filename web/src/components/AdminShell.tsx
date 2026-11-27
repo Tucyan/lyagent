@@ -105,16 +105,6 @@ export function AdminShell({
     };
   }, []);
 
-  useEffect(() => {
-    try {
-      if (window.localStorage.getItem(COMPACT_STORAGE_KEY) === null) {
-        setCompact(compactDefault);
-      }
-    } catch {
-      setCompact(compactDefault);
-    }
-  }, [compactDefault]);
-
   const toggleCompact = () => {
     setCompact((current) => {
       const next = !current;

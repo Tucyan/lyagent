@@ -57,7 +57,7 @@ export function App() {
     }
   }, [path]);
   if (path === "/setup") return <ToastProvider><ModelSettingsPage mode="setup" /></ToastProvider>;
-  return <ToastProvider><SetupGuard path={path}>{path === "/settings/models" ? <AdminShell active="model-settings"><ModelSettingsPage mode="settings" /></AdminShell> : <ApplicationPage path={path} />}</SetupGuard></ToastProvider>;
+  return <ToastProvider><SetupGuard path={path}><ApplicationPage path={path} /></SetupGuard></ToastProvider>;
 }
 
 function SetupGuard({ path, children }: { path: string; children: ReactNode }) {
@@ -70,6 +70,7 @@ function SetupGuard({ path, children }: { path: string; children: ReactNode }) {
 }
 
 function ApplicationPage({ path }: { path: string }) {
+  if (path === "/settings/models") return <AdminShell active="model-settings"><ModelSettingsPage mode="settings" /></AdminShell>;
   if (path === "/qa") return <AdminShell active="qa" compactDefault><CourseQaPage /></AdminShell>;
   if (path === "/knowledge") return <AdminShell active="knowledge"><KnowledgeLibraryPage /></AdminShell>;
   if (path === "/rubrics") return <AdminShell active="rubrics" compactDefault><RubricPage /></AdminShell>;
