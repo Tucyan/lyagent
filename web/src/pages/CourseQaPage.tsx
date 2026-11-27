@@ -20,9 +20,10 @@ type Session = { id: string; releaseId: string; answerInProgress?: boolean; mess
 type ActiveKnowledge = { releaseId: string; documents: Array<{ path: string; title: string }> };
 type StreamEvent = { code?: string; type: string; id?: string; name?: string; label?: string; summary?: string; status?: "completed" | "failed"; delta?: string; answer?: string; citations?: Citation[]; insufficient?: boolean; message?: string };
 type QaRequest = { courseId: string; sessionId: string; controller: AbortController; runId?: string | null; stopRequested: boolean; terminal?: "final" | "error" | "cancelled" };
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
+async function api<T>(url: string, init?: RequestInit, onResponse?: (response: Response) => void): Promise<T> {
   const response = await apiFetch(url, withJsonHeaders(init));
   if (!response.ok) throw await apiErrorFromResponse(response);
+  onResponse?.(response);
   return response.json() as Promise<T>;
 }
 
@@ -33,6 +34,8 @@ export function CourseQaPage() {
   const [courseId, setCourseId] = useState(query.get("course") ?? "");
   const [active, setActive] = useState<ActiveKnowledge>();
   const [knowledgeStatus, setKnowledgeStatus] = useState<KnowledgeStatus>(courseId ? "loading" : "idle");
+  const [sessionListFailed, setSessionListFailed] = useState(false);
+  const [damagedSessionCount, setDamagedSessionCount] = useState(0);
   const [sessions, setSessions] = useState<QaSessionSummary[]>([]);
   const [sessionId, setSessionId] = useState(query.get("session") ?? "");
   const [sessionTurnStatus, setSessionTurnStatus] = useState<"loading" | "pending" | "idle">(sessionId ? "loading" : "idle");
@@ -76,18 +79,27 @@ export function CourseQaPage() {
       if (lease.isCurrent()) {
         setActive(undefined);
         setSessions([]);
+        setDamagedSessionCount(0);
+        setSessionListFailed(false);
         setKnowledgeStatus("idle");
       }
       return undefined;
     }
     setKnowledgeStatus("loading");
+    setDamagedSessionCount(0);
+    setSessionListFailed(false);
+    let damagedCount = 0;
     const [activeResult, sessionsResult] = await Promise.allSettled([
       api<ActiveKnowledge>(`/api/courses/${id}/qa/active`),
-      api<QaSessionSummary[]>(`/api/courses/${id}/qa/sessions`),
+      api<QaSessionSummary[]>(`/api/courses/${id}/qa/sessions`, undefined, (response) => {
+        damagedCount = Number(response.headers?.get("x-damaged-session-count")) || 0;
+      }),
     ]);
     if (!lease.isCurrent() || id !== courseIdRef.current) return undefined;
     const nextSessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : [];
     setSessions(nextSessions);
+    setDamagedSessionCount(damagedCount);
+    setSessionListFailed(sessionsResult.status === "rejected");
     if (activeResult.status === "rejected") {
       setActive(undefined);
       throw activeResult.reason;
@@ -364,6 +376,8 @@ export function CourseQaPage() {
     <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="打开会话侧栏">☰</button>
     <ChatSidebar courses={courses} courseId={courseId} sessions={sessions} activeSessionId={sessionId || undefined} onCourseChange={selectCourse} onNewChat={beginNewChat} onRename={(session) => { setSessionToRename(session); setRenameTitle(session.summary); setSessionActionError(""); }} onDelete={(session) => { setSessionToDelete(session); setSessionActionError(""); }} open={sidebarOpen} onClose={() => setSidebarOpen(false)} hideCourseSelect />
     <main className="qa-main">
+      {sessionListFailed && <p role="status">无法加载会话列表，请重新打开当前课程后重试。</p>}
+      {damagedSessionCount > 0 && <p role="status">有 {damagedSessionCount} 条会话记录无法读取，其余会话可正常使用。</p>}
       <header className="qa-header"><span>{currentCourse?.name ?? "课程答疑"}</span><small role="status">{runNotice ?? (sessionTurnStatus === "pending" ? waitingNotice : notice)}</small></header>
       <section
         ref={messageListRef}

@@ -9,11 +9,33 @@ export function openStudentDatabase(workspaceRoot: string, nowIso = () => new Da
   mkdirSync(stateDir, { recursive: true });
   const dbPath = path.join(stateDir, "student-portal.sqlite");
   const db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
-  migrateStudentDatabase(db, nowIso);
-  return db;
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    db.pragma("busy_timeout = 5000");
+    migrateStudentDatabase(db, nowIso);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+export function acquireStudentWorkspaceLock(canonicalRoot: string): () => void {
+  const stateDir = path.join(canonicalRoot, "state");
+  mkdirSync(stateDir, { recursive: true });
+  const lock = new Database(path.join(stateDir, "student-portal-instance.sqlite"), { timeout: 0 });
+  try {
+    // Hold the writer lock for the server's lifetime. SQLite releases it when the process exits.
+    lock.exec("BEGIN IMMEDIATE");
+  } catch (error) {
+    lock.close();
+    if (error instanceof Database.SqliteError && error.code === "SQLITE_BUSY") {
+      throw new Error("该 Workspace 的学生端服务已在运行", { cause: error });
+    }
+    throw error;
+  }
+  return () => lock.close();
 }
 
 function migrateStudentDatabase(db: Database.Database, nowIso: () => string): void {

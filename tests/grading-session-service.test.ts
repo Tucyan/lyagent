@@ -777,7 +777,7 @@ describe("GradingSessionService", () => {
     service.close();
   });
 
-  it("migrates pre-title session rows without losing existing control state", async () => {
+  it("preserves pre-title session state and interrupted title recovery across restarts", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "grading-session-migration-"),
     );
@@ -815,14 +815,41 @@ describe("GradingSessionService", () => {
         "2026-01-01T00:00:00.000Z",
       );
     database.close();
-    const service = new GradingSessionService(root, rubrics);
-    expect(
-      await service.getSession("11111111-2222-4333-8444-555555555555"),
-    ).toMatchObject({
+    const sessionId = "11111111-2222-4333-8444-555555555555";
+    const interruptedAt = "2026-08-04T10:00:00.000Z";
+    const service = new GradingSessionService(root, rubrics, {
+      now: () => interruptedAt,
+    });
+    const original = await service.getSession(sessionId);
+    await service.beginSubmissionTitleResolution(sessionId);
+    service.close();
+    expect(original).toMatchObject({
       title: "旧会话",
       studentNumber: "20250001",
       submissionTitleStatus: "pending",
+      conversionStatus: "ready",
+      gradingStatus: "not_started",
+      submissionVersion: 1,
+      submissionHash: "submission-hash",
     });
-    service.close();
+
+    const restarted = new GradingSessionService(root, rubrics);
+    const recovered = await restarted.getSession(sessionId);
+    restarted.close();
+    expect(recovered).toEqual({
+      ...original,
+      submissionTitleStatus: "failed",
+      submissionTitleError: {
+        code: "LEGACY_SUBMISSION_TITLE_FAILURE",
+        message: "作业名称识别被应用重启中断，请重试",
+        lastFailedAt: interruptedAt,
+      },
+      updatedAt: interruptedAt,
+    });
+
+    const restartedAgain = new GradingSessionService(root, rubrics);
+    const recoveredAgain = await restartedAgain.getSession(sessionId);
+    restartedAgain.close();
+    expect(recoveredAgain).toEqual(recovered);
   });
 });

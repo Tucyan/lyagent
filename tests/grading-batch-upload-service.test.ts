@@ -31,6 +31,7 @@ function dependencies() {
     sessions,
     createSession,
     value: {
+      async assertFrozenRubric() {},
       async resolveIdentity(input: { filename: string }) {
         if (input.filename.startsWith("unknown"))
           throw new StudentIdentityError("请补填身份", "STUDENT_IDENTITY_NOT_FOUND");

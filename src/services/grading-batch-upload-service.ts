@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
+import { withAssignmentMutation } from "./assignment-mutation-lock.js";
 import {
   referencedMarkdownAssetPaths,
   SubmissionAssetError,
@@ -56,6 +57,7 @@ export interface BatchUploadSessionSummary {
 }
 
 export interface GradingBatchUploadDependencies {
+  assertFrozenRubric(assignmentId: string, version: number): Promise<void>;
   resolveIdentity(input: { studentName: string; studentNumber: string; filename: string }): Promise<StudentIdentity>;
   createSession(input: {
     assignmentId: string;
@@ -140,6 +142,7 @@ export class GradingBatchUploadService {
   private readonly filesystem: SafeFilesystem;
   private readonly active = new Map<string, Promise<GradingBatchUploadItem>>();
   private readonly itemOperations = new Map<string, Promise<void>>();
+  private readonly stopSignal = new AbortController();
   private readonly removeDirectory: (relativePath: string) => Promise<void>;
 
   constructor(
@@ -176,22 +179,25 @@ export class GradingBatchUploadService {
     if (input.items.length < 1 || input.items.length > 120)
       throw new GradingBatchUploadError("BATCH_UPLOAD_INVALID", "批次必须包含 1–120 份报告");
     const filenames = input.items.map(({ filename }) => validateFilename(filename));
-    const id = randomUUID();
-    const now = this.now();
-    this.database.transaction(() => {
-      this.database.prepare(
-        `INSERT INTO grading_batch_uploads
+    return withAssignmentMutation(this.root, input.assignmentId, async () => {
+      await this.dependencies.assertFrozenRubric(input.assignmentId, input.rubricVersion);
+      const id = randomUUID();
+      const now = this.now();
+      this.database.transaction(() => {
+        this.database.prepare(
+          `INSERT INTO grading_batch_uploads
          (id, title, assignment_id, rubric_version, concurrency, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)`,
-      ).run(id, title, input.assignmentId, input.rubricVersion, input.concurrency, now, now);
-      const insert = this.database.prepare(
-        `INSERT INTO grading_batch_upload_items
+        ).run(id, title, input.assignmentId, input.rubricVersion, input.concurrency, now, now);
+        const insert = this.database.prepare(
+          `INSERT INTO grading_batch_upload_items
          (id, upload_id, filename, asset_manifest_json, status, created_at, updated_at)
          VALUES (?, ?, ?, '[]', 'pending', ?, ?)`,
-      );
-      for (const filename of filenames) insert.run(randomUUID(), id, filename, now, now);
-    }).immediate();
-    return this.getUpload(id);
+        );
+        for (const filename of filenames) insert.run(randomUUID(), id, filename, now, now);
+      }).immediate();
+      return this.getUpload(id);
+    });
   }
 
   async getUpload(id: string): Promise<GradingBatchUpload> {
@@ -330,6 +336,7 @@ export class GradingBatchUploadService {
   }
 
   async processItem(uploadId: string, itemId: string): Promise<GradingBatchUploadItem> {
+    this.stopSignal.signal.throwIfAborted();
     const key = `${uploadId}:${itemId}`;
     const existing = this.active.get(key);
     if (existing) return existing;
@@ -419,11 +426,12 @@ export class GradingBatchUploadService {
     });
   }
 
-  async recover(): Promise<void> {
+  async recover(options: { startProcessing?: boolean } = {}): Promise<Array<{ uploadId: string; itemId: string }>> {
     const replacements = this.database.prepare(
       "SELECT * FROM grading_batch_upload_replacements ORDER BY created_at, rowid",
     ).all() as ReplacementRow[];
     for (const replacement of replacements) {
+      if (this.stopSignal.signal.aborted) return [];
       try { await this.recoverReplacement(replacement); }
       catch { /* Keep the durable record and retry on the next startup/recovery. */ }
     }
@@ -432,12 +440,25 @@ export class GradingBatchUploadService {
        JOIN grading_batch_uploads u ON u.id = i.upload_id
        WHERE u.status = 'draft' AND i.report_path IS NOT NULL AND i.status IN ('pending', 'converting', 'naming')`,
     ).all() as ItemRow[];
-    for (const item of items) this.startProcessing(item.upload_id, item.id);
+    const pending = items.map((item) => ({ uploadId: item.upload_id, itemId: item.id }));
+    if (options.startProcessing !== false)
+      for (const { uploadId, itemId } of pending) this.startProcessing(uploadId, itemId);
+    return pending;
   }
 
-  close(): void { this.database.close(); }
+  stop(): void { this.stopSignal.abort(); }
+
+  async drain(): Promise<void> {
+    await Promise.allSettled(this.active.values());
+  }
+
+  close(): void {
+    this.stop();
+    if (this.database.open) this.database.close();
+  }
 
   private async processItemUnlocked(uploadId: string, itemId: string): Promise<GradingBatchUploadItem> {
+    this.stopSignal.signal.throwIfAborted();
     const upload = await this.getUpload(uploadId);
     if (upload.status !== "draft") throw new GradingBatchUploadError("BATCH_UPLOAD_COMMITTED", "已提交的上传草稿不能处理");
     let row = this.getItemRow(uploadId, itemId);
@@ -448,18 +469,21 @@ export class GradingBatchUploadService {
     if (!studentName || !studentNumber) {
       try {
         const identity = await this.dependencies.resolveIdentity({ studentName, studentNumber, filename: row.filename });
+        this.stopSignal.signal.throwIfAborted();
         studentName = identity.studentName;
         studentNumber = identity.studentNumber;
         this.database.prepare(
           "UPDATE grading_batch_upload_items SET student_name = ?, student_number = ?, updated_at = ? WHERE id = ?",
         ).run(studentName, studentNumber, this.now(), itemId);
       } catch (error: unknown) {
+        this.stopSignal.signal.throwIfAborted();
         if (error instanceof StudentIdentityError)
           return this.recordFailure(row, "identity_required", error.code, error.message);
         return this.recordFailure(row, "identity_required", "STUDENT_IDENTITY_REQUEST_FAILED", "学生身份识别失败，请补填姓名和学号");
       }
     }
     try {
+      this.stopSignal.signal.throwIfAborted();
       if (!row.session_id) {
         const manifest = JSON.parse(row.asset_manifest_json) as string[];
         const revisionAssets = await Promise.all(manifest.map(async (assetPath) => ({
@@ -481,12 +505,14 @@ export class GradingBatchUploadService {
         ).run(created.id, this.now(), itemId);
         row = this.getItemRow(uploadId, itemId);
       }
+      this.stopSignal.signal.throwIfAborted();
       let session = await this.dependencies.getSession(row.session_id!);
       if (session.conversionStatus !== "ready") {
         if (["conversion_failed", "result_rejected"].includes(session.conversionStatus))
           return this.recordFailure(row, "failed", session.conversionError?.code ?? "BATCH_UPLOAD_CONVERSION_FAILED", session.conversionError?.message ?? "报告转换失败，请重试或替换文件");
         this.updateStatus(row, "converting");
         await this.dependencies.processConversion(session.id);
+        this.stopSignal.signal.throwIfAborted();
         session = await this.dependencies.getSession(session.id);
         if (session.conversionStatus !== "ready") return itemFromRow(this.getItemRow(uploadId, itemId));
       }
@@ -495,6 +521,7 @@ export class GradingBatchUploadService {
           return this.recordFailure(row, "failed", session.submissionTitleError?.code ?? "SUBMISSION_TITLE_MODEL_FAILED", session.submissionTitleError?.message ?? "作业名称识别失败，请重试");
         this.updateStatus(row, "naming");
         await this.dependencies.resolveTitle(session.id);
+        this.stopSignal.signal.throwIfAborted();
         session = await this.dependencies.getSession(session.id);
         if (!["provided", "resolved"].includes(session.submissionTitleStatus))
           return itemFromRow(this.getItemRow(uploadId, itemId));
@@ -502,6 +529,7 @@ export class GradingBatchUploadService {
       this.updateStatus(row, "ready");
       return itemFromRow(this.getItemRow(uploadId, itemId));
     } catch (error: unknown) {
+      this.stopSignal.signal.throwIfAborted();
       const safe = safeItemError(error);
       return this.recordFailure(row, "failed", safe.code, safe.message);
     }

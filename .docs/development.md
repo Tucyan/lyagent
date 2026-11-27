@@ -46,24 +46,17 @@ M4额外读取`converter`配置。开发模式可单独启动Docling Serve；Win
 
 ## 当前代码布局
 
-```text
-src/
-├─main.ts
-├─core/
-│  ├─agent-router.ts
-│  ├─agent-runtime.ts
-│  ├─message-bus.ts
-│  ├─tool-registry.ts
-│  └─workspace.ts
-└─schemas/
-   ├─messages.ts
-   └─tools.ts
+| 位置 | 用途 |
+|---|---|
+| `src/main.ts` | 教师 API 与本地模型运行时 |
+| `src/student-main.ts` | 独立的学生端 API |
+| `src/launcher.ts` | Windows 发布入口和子进程监督 |
+| `src/services/` | 共用与教师端业务服务 |
+| `src/student/` | 学生端路由、数据和业务服务 |
+| `web/、web-student/` | 教师和学生两个 React 前端 |
+| `tests/、scripts/` | 测试、验收和发布脚本 |
 
-tests/
-└─core.test.ts
-```
-
-目标目录和未来文件见`plan.md`及`.docs/architecture.md`。只有实现对应能力时才创建目录，不提前铺设空模块。
+批改会话服务委托专用模块执行 SQLite 迁移和提交文件访问。会话状态、并发锁与写入顺序由批改会话服务维护。
 
 ## TypeScript约定
 

@@ -35,11 +35,14 @@ describe("API Host and Origin boundary", () => {
       criteria: [{ id: "quality", name: "质量", maxScore: 10, description: "报告质量", scorePolicy: "continuous", evidenceRequired: true }],
     };
     await app.inject({ method: "PUT", url: `/api/rubrics/assignments/${assignment.id}/draft`, payload: { expectedVersion: 0, rubric } });
-    await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/freeze`, payload: { expectedVersion: 1, acknowledgedWarningCodes: [] } });
-    const upload = (await app.inject({ method: "POST", url: "/api/grading/batch-uploads", payload: {
+    const frozen = await app.inject({ method: "POST", url: `/api/rubrics/assignments/${assignment.id}/freeze`, payload: { expectedVersion: 1, acknowledgedWarningCodes: ["CONTINUOUS_WITHOUT_ANCHORS"] } });
+    expect(frozen.statusCode, frozen.body).toBe(201);
+    const uploadResponse = await app.inject({ method: "POST", url: "/api/grading/batch-uploads", payload: {
       title: "受保护学生作业", assignmentId: assignment.id, rubricVersion: 1, concurrency: 1,
       items: [{ filename: "20260001_张晓明_校园AI报告.md" }],
-    } })).json() as { id: string };
+    } });
+    expect(uploadResponse.statusCode, uploadResponse.body).toBe(201);
+    const upload = uploadResponse.json() as { id: string };
     try {
       const local = await app.inject({
         method: "GET", url: `/api/courses/${course.id}/releases/${release.id}/content?path=notes.md`,

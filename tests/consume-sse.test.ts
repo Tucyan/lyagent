@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { consumeStudentQaStream } from "../web-student/src/lib/qa-stream.js";
 import { consumeSse } from "../web/src/lib/consume-sse.js";
 
 describe("consumeSse", () => {
@@ -35,4 +36,43 @@ describe("consumeSse", () => {
 
     expect(result.terminalEvent).toBe("final");
   });
+});
+
+it("distinguishes a named final frame from a stream ending after a delta", async () => {
+  const body = 'event: final\ndata: {"answer":{"answer":"完成"}}\n\n';
+  await expect(consumeSse(new Response(body), () => undefined)).resolves.toEqual({ terminalEvent: "final" });
+  await expect(consumeSse(new Response('event: answer_delta\ndata: {"delta":"未完成"}\n\n'), () => undefined)).resolves.toEqual({});
+});
+
+it("reconciles on a transport error after receiving partial answer data", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: answer_delta\ndata: {"delta":"partial"}\n\n'));
+    },
+    pull(controller) {
+      controller.error(new TypeError("connection reset"));
+    },
+  });
+  const events: string[] = [];
+  const saved = { message: "already persisted", quotaUsed: 1 };
+  let restored: typeof saved | undefined;
+  const result = await consumeStudentQaStream(new Response(body), (event) => events.push(event), async () => { restored = saved; });
+  expect(events).toEqual(["answer_delta"]);
+  expect(result).toEqual({});
+  expect(restored).toBe(saved);
+});
+
+it("keeps a received terminal outcome if the transport then fails", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: final\ndata: {"answer":{"answer":"saved"}}\n\n'));
+    },
+    pull(controller) {
+      controller.error(new TypeError("connection reset"));
+    },
+  });
+  let recovered = false;
+  const result = await consumeStudentQaStream(new Response(body), () => undefined, async () => { recovered = true; });
+  expect(result.terminalEvent).toBe("final");
+  expect(recovered).toBe(false);
 });

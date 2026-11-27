@@ -40,6 +40,10 @@ export function registerStudentQaRoutes(
   const knowledge = new KnowledgeService(deps.workspaceRoot);
   const sessions = new StudentSessionService(deps.workspaceRoot);
   const activeRuns = new Map<string, { userId: string; controller: AbortController }>();
+  app.addHook("preClose", async () => {
+    for (const { controller } of activeRuns.values()) controller.abort();
+  });
+
 
   app.get<{ Params: { courseId: string } }>("/api/student/courses/:courseId/quota", async (request, reply) => {
     const courseId = courseIdSchema.parse(request.params.courseId);
@@ -81,7 +85,7 @@ export function registerStudentQaRoutes(
     const courseId = courseIdSchema.parse(request.params.courseId);
     const user = await deps.requireCourseAccess(request, reply, courseId);
     if (!user) return;
-    return { sessions: await sessions.list(user.id, courseId) };
+    return sessions.listWithDiagnostics(user.id, courseId);
   });
 
   app.post<{ Params: { courseId: string } }>("/api/student/courses/:courseId/sessions", async (request, reply) => {
@@ -144,6 +148,8 @@ export function registerStudentQaRoutes(
       const existingSession = await sessions.get(user.id, courseId, sessionId);
       const courseKnowledge = await knowledge.forCourse(courseId);
 
+      if (reply.raw.destroyed) return reply.hijack();
+
       // Reserve quota before starting model execution (teachers bypass quota deduction)
       let ledgerId: string | undefined;
       if (user.role === "student") {
@@ -161,6 +167,9 @@ export function registerStudentQaRoutes(
       const controller = new AbortController();
       activeRuns.set(runId, { userId: user.id, controller });
 
+      const onClose = () => controller.abort();
+      reply.raw.once("close", onClose);
+      reply.hijack();
       reply.raw.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform",
@@ -174,8 +183,6 @@ export function registerStudentQaRoutes(
         }
       };
 
-      const onClose = () => controller.abort();
-      request.raw.once("close", onClose);
       const keepAlive = setInterval(() => {
         if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.write(sseComment("keepalive"));
       }, 15_000);
@@ -218,6 +225,10 @@ export function registerStudentQaRoutes(
           return reply;
         }
 
+        if (controller.signal.aborted) {
+          if (ledgerId) deps.quotas.refundQuota(ledgerId, "client_aborted");
+          return reply;
+        }
         const updatedSession = await sessions.appendCompletedTurn(
           user.id,
           courseId,
@@ -229,6 +240,7 @@ export function registerStudentQaRoutes(
             citations: answer.citations,
             ...(answer.insufficient ? { insufficient: true } : {}),
           },
+          controller.signal,
         );
         if (ledgerId) deps.quotas.completeQuota(ledgerId, usage);
         const quota = deps.quotas.getStudentQuotaSummary(user.id, courseId);
@@ -250,7 +262,7 @@ export function registerStudentQaRoutes(
         }
       } finally {
         clearInterval(keepAlive);
-        request.raw.removeListener("close", onClose);
+        reply.raw.removeListener("close", onClose);
         activeRuns.delete(runId);
         if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.end();
       }

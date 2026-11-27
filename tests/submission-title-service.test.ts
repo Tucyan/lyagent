@@ -63,7 +63,7 @@ describe("SubmissionTitleService", () => {
     const agent: PiAssignmentGrader = { run };
     const service = new SubmissionTitleService(sessions, () => agent);
     await expect(service.resolve(session.id)).resolves.toMatchObject({ submissionTitle: "正文主题", submissionTitleStatus: "resolved" });
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ kind: "name" }), undefined, undefined);
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ kind: "name" }), undefined, expect.any(AbortSignal));
     await service.resolve(session.id);
     expect(run).toHaveBeenCalledTimes(1);
     sessions.close();

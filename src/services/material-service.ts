@@ -391,28 +391,54 @@ export class MaterialService {
     if (!integrity.tree.some(({ path: targetPath }) => targetPath === relativePath))
       throw new KnowledgeReleaseError("Requested document is not part of the release");
     const content = await this.filesystem.readText(this.releaseFile(courseId, releaseId, relativePath));
-    if (hashText(content) !== integrity.contentHashes.get(relativePath))
+    if (hashContent(content) !== integrity.contentHashes.get(relativePath))
       throw new KnowledgeReleaseError("Knowledge release document integrity validation failed");
     return content;
   }
 
-  private async verifyReleaseIntegrity(courseId: string, release: KnowledgeRelease): Promise<Pick<ActiveKnowledgeReleaseSnapshot, "tree" | "contentHashes">> {
+  async validateReleaseForSync(courseId: string, releaseId: string, manifestHash: string, stagingId?: string): Promise<void> {
+    const directory = stagingId === undefined
+      ? this.releaseRelativeDirectory(courseId, releaseId)
+      : `inbox/sync-staging/${courseId}/${stagingId}/releases/${releaseId}`;
+    const release = await this.readJson<KnowledgeRelease>(`${directory}/index/release.json`);
+    if (!release || release.courseId !== courseId || release.id !== releaseId || release.manifestHash !== manifestHash ||
+      typeof release.importId !== "string" || !release.importId || typeof release.createdAt !== "string" || !release.createdAt ||
+      (release.treeHash !== undefined && !/^[0-9a-f]{64}$/u.test(release.treeHash))) {
+      throw new KnowledgeReleaseError("Knowledge release pointer does not match release metadata");
+    }
+    await this.verifyReleaseIntegrity(courseId, release, { directory, scanBodies: true });
+  }
+
+  private async verifyReleaseIntegrity(
+    courseId: string,
+    release: KnowledgeRelease,
+    { directory = this.releaseRelativeDirectory(courseId, release.id), scanBodies = false } = {},
+  ): Promise<Pick<ActiveKnowledgeReleaseSnapshot, "tree" | "contentHashes">> {
     let tree: KnowledgeTreeEntry[];
     try {
-      tree = await this.readJson<KnowledgeTreeEntry[]>(this.releaseFile(courseId, release.id, "index/tree.json"));
+      tree = await this.readJson<KnowledgeTreeEntry[]>(`${directory}/index/tree.json`);
       if (!Array.isArray(tree) || tree.some((entry) => !entry || typeof entry.path !== "string" || entry.type !== "file"
         || typeof entry.title !== "string" || !Array.isArray(entry.sourceSectionIds)))
         throw new Error("Invalid release tree");
+      if (scanBodies) {
+        const paths = new Set<string>();
+        for (const entry of tree) {
+          validateDocumentPath(entry.path);
+          const key = entry.path.toLowerCase();
+          if (entry.path.includes("\\") || paths.has(key)) throw new Error("Invalid release document path");
+          paths.add(key);
+        }
+      }
       const treeHash = hashJson(tree);
       if (release.treeHash && treeHash !== release.treeHash)
         throw new Error("Release tree hash does not match its metadata");
       if (!release.treeHash) {
         // Older releases predate treeHash; publish kept the original draft as a second tree record.
-        const draft = await this.readJson<StoredDraft>(this.releaseFile(courseId, release.id, "index/draft.json"));
+        const draft = await this.readJson<StoredDraft>(`${directory}/index/draft.json`);
         if (draft.manifestHash !== release.manifestHash || hashJson(draft.tree) !== treeHash)
           throw new Error("Legacy release tree does not match its preserved draft");
       }
-      const manifest = await this.readJson<StoredReleaseManifest>(this.releaseFile(courseId, release.id, "index/manifest.json"));
+      const manifest = await this.readJson<StoredReleaseManifest>(`${directory}/index/manifest.json`);
       let entries: ContentManifestEntry[];
       if (manifest.manifestIndexHash !== undefined || manifest.entries !== undefined) {
         if (!isContentManifest(manifest.entries, tree)) throw new Error("Release manifest entries are invalid");
@@ -428,12 +454,19 @@ export class MaterialService {
         if (manifest.manifestIndexHash !== manifestIndexHash ||
           hashJson({ manifestIndexHash, treeHash }) !== release.manifestHash)
           throw new Error("Release manifest hash does not match its metadata");
+        if (scanBodies) {
+          for (const entry of entries) {
+            const bytes = await this.filesystem.readBytes(`${directory}/${entry.path}`);
+            if (hashContent(bytes) !== entry.contentHash)
+              throw new Error("Release document hash does not match its manifest");
+          }
+        }
       } else {
         // Older releases have no per-file hash index. Verify the whole body set
         // once per persistent MaterialService instance, then every caller still
         // hashes the selected body immediately before use.
         const cacheKey = `${courseId}:${release.id}:${release.manifestHash}`;
-        const cachedHashes = this.verifiedLegacyContentHashes.get(cacheKey);
+        const cachedHashes = scanBodies ? undefined : this.verifiedLegacyContentHashes.get(cacheKey);
         const cacheUsable = Boolean(cachedHashes && cachedHashes.size === tree.length && tree.every(({ path: targetPath }) => cachedHashes.has(targetPath)));
         if (cacheUsable && cachedHashes) {
           entries = tree.map(({ path: targetPath, sourceSectionIds }) => ({
@@ -442,7 +475,7 @@ export class MaterialService {
             contentHash: cachedHashes.get(targetPath)!,
           }));
         } else {
-          entries = await this.calculateManifestEntries(this.releaseRelativeDirectory(courseId, release.id), tree);
+          entries = await this.calculateManifestEntries(directory, tree, scanBodies);
         }
         const contentManifestHash = hashJson(entries);
         if ((manifest.contentManifestHash && manifest.contentManifestHash !== contentManifestHash) ||
@@ -454,7 +487,8 @@ export class MaterialService {
           : contentManifestHash;
         if (manifestHash !== release.manifestHash)
           throw new Error("Release content hash does not match its metadata");
-        if (!cacheUsable) this.verifiedLegacyContentHashes.set(cacheKey, new Map(entries.map(({ path: targetPath, contentHash }) => [targetPath, contentHash])));
+        if (!scanBodies && !cacheUsable)
+          this.verifiedLegacyContentHashes.set(cacheKey, new Map(entries.map(({ path: targetPath, contentHash }) => [targetPath, contentHash])));
       }
       return { tree, contentHashes: new Map(entries.map(({ path: targetPath, contentHash }) => [targetPath, contentHash])) };
     } catch (error: unknown) {
@@ -485,12 +519,12 @@ export class MaterialService {
     }
   }
 
-  private async calculateManifestEntries(rootRelativePath: string, tree: KnowledgeTreeEntry[]): Promise<ContentManifestEntry[]> {
-    return Promise.all(tree.map(async ({ path: targetPath, sourceSectionIds }) => ({
-      path: targetPath,
-      sourceSectionIds: [...sourceSectionIds],
-      contentHash: hashText(await this.filesystem.readText(`${rootRelativePath}/${targetPath}`)),
-    })));
+  private async calculateManifestEntries(rootRelativePath: string, tree: KnowledgeTreeEntry[], hashBytes = false): Promise<ContentManifestEntry[]> {
+    return Promise.all(tree.map(async ({ path: targetPath, sourceSectionIds }) => {
+      const target = `${rootRelativePath}/${targetPath}`;
+      const content = hashBytes ? await this.filesystem.readBytes(target) : await this.filesystem.readText(target);
+      return { path: targetPath, sourceSectionIds: [...sourceSectionIds], contentHash: hashContent(content) };
+    }));
   }
 
   private async getCourse(courseId: string): Promise<Course> {
@@ -611,7 +645,7 @@ function hashJson(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function hashText(value: string): string {
+function hashContent(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 

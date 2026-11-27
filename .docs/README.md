@@ -22,6 +22,7 @@
 - [testing.md](testing.md)：测试分层、fixture和验收门槛。
 - [operations-and-security.md](operations-and-security.md)：运行、日志、恢复、密钥和数据安全。
 - [decisions/README.md](decisions/README.md)：长期架构决策索引。
+- [稳定性与可维护性优化计划](../docs/superpowers/plans/2026-11-27-stability-refactor.md)：实施顺序、验收与进度。
 
 ## 文档边界
 
@@ -36,6 +37,8 @@
 当文档与代码冲突时，先通过测试确认真实行为，再在同一变更中修正文档或代码。不要让“计划中的设计”伪装成“已经实现”。
 
 ## 维护规则
+
+- 阶段计划和记录被当前资料替代后，移入[历史归档](../docs/archive/README.md)，更新入口及相对链接。里程碑验收资料保存在验收目录。
 
 - 每份文档只承担一种职责，优先链接，不复制大段内容。
 - 只记录能指导开发决策的信息；删除过期描述，不追加更正日志。

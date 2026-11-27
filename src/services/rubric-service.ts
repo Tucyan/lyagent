@@ -10,6 +10,8 @@ import {
   type RubricValidation,
 } from "../schemas/rubric.js";
 import { normalizeRubric, type NormalizedAdjustmentRule } from "../schemas/rubric-engine.js";
+import { withAssignmentMutation } from "./assignment-mutation-lock.js";
+import { hasGradingRubricReferences } from "./grading-rubric-references.js";
 
 export type RubricSourceRole = "rubric_draft" | "note";
 export const RUBRIC_SAFE_PROCESS_SUMMARY = "Agent 正在分析作业要求、参考资料和现有评分表，并准备结构化评分规则。";
@@ -103,6 +105,13 @@ export class RubricConflictError extends RubricServiceError {
   }
 }
 
+export class RubricInUseError extends RubricServiceError {
+  constructor() {
+    super("This rubric assignment is referenced by grading records");
+    this.name = "RubricInUseError";
+  }
+}
+
 export class RubricValidationError extends RubricServiceError {
   constructor(public readonly validation: RubricValidation) {
     super("Rubric cannot be frozen until validation errors are resolved");
@@ -113,7 +122,6 @@ export class RubricValidationError extends RubricServiceError {
 export class RubricService {
   public readonly root: string;
   private readonly filesystem: SafeFilesystem;
-  private readonly mutationTails = new Map<string, Promise<void>>();
   private readonly afterFreezeVersionWrite?: RubricServiceOptions["afterFreezeVersionWrite"];
   private readonly afterFreezeDraftDelete?: RubricServiceOptions["afterFreezeDraftDelete"];
 
@@ -211,6 +219,7 @@ export class RubricService {
   async deleteAssignment(assignmentId: string): Promise<void> {
     return this.mutateAssignment(assignmentId, async () => {
       await this.getAssignment(assignmentId);
+      if (await hasGradingRubricReferences(this.root, assignmentId)) throw new RubricInUseError();
       await this.filesystem.removeDirectory(`assignments/${assignmentId}`);
     });
   }
@@ -435,20 +444,8 @@ export class RubricService {
     }
   }
 
-  private async mutateAssignment<T>(assignmentId: string, action: (waited: boolean) => Promise<T>): Promise<T> {
-    const waited = this.mutationTails.has(assignmentId);
-    const previous = this.mutationTails.get(assignmentId) ?? Promise.resolve();
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const tail = previous.catch(() => undefined).then(() => gate);
-    this.mutationTails.set(assignmentId, tail);
-    await previous.catch(() => undefined);
-    try {
-      return await action(waited);
-    } finally {
-      release?.();
-      if (this.mutationTails.get(assignmentId) === tail) this.mutationTails.delete(assignmentId);
-    }
+  private mutateAssignment<T>(assignmentId: string, action: (waited: boolean) => Promise<T>): Promise<T> {
+    return withAssignmentMutation(this.root, assignmentId, action);
   }
 
   private async readJson<T>(relativePath: string): Promise<T> {

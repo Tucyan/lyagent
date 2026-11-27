@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import {
   ConversionTaskFailedError,
   ConversionTaskMissingError,
@@ -25,6 +26,7 @@ export class SubmissionConversionService {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly nowMs: () => number;
   private readonly active = new Map<string, Promise<void>>();
+  private readonly stopSignal = new AbortController();
 
   constructor(
     private readonly sessions: GradingSessionService,
@@ -37,15 +39,16 @@ export class SubmissionConversionService {
     this.retryDelaysMs = options.retryDelaysMs ?? [5_000, 30_000, 120_000];
     this.sleep =
       options.sleep ??
-      ((milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)));
+      ((milliseconds) => delay(milliseconds, undefined, { signal: this.stopSignal.signal }));
     this.nowMs = options.nowMs ?? Date.now;
   }
 
-  process(sessionId: string): Promise<void> {
+  async process(sessionId: string): Promise<void> {
+    this.stopSignal.signal.throwIfAborted();
     const existing = this.active.get(sessionId);
     if (existing) return existing;
     const running = this.processUnlocked(sessionId).then(async () => {
+      this.stopSignal.signal.throwIfAborted();
       const session = await this.sessions.getSession(sessionId);
       // Waiting is only active while this worker owns a retry. Once it stops,
       // keep the original retryable but release the session for deletion.
@@ -63,7 +66,14 @@ export class SubmissionConversionService {
       await this.process(session.id);
   }
 
+  stop(): void { this.stopSignal.abort(); }
+
+  async drain(): Promise<void> {
+    await Promise.allSettled(this.active.values());
+  }
+
   private async processUnlocked(sessionId: string): Promise<void> {
+    const { signal } = this.stopSignal;
     let session = await this.sessions.getSession(sessionId);
     if (session.conversionStatus === "ready") return;
     if (
@@ -80,6 +90,7 @@ export class SubmissionConversionService {
     try {
       original = await this.sessions.readOriginal(sessionId);
     } catch {
+      signal.throwIfAborted();
       await this.sessions.recordConversionFailure(sessionId, {
         status: "conversion_failed",
         code: "ORIGINAL_UNAVAILABLE",
@@ -92,12 +103,16 @@ export class SubmissionConversionService {
     let taskId = job?.externalTaskId;
     if (!taskId) {
       while (!taskId) {
+        signal.throwIfAborted();
         session = await this.sessions.beginConversionAttempt(sessionId);
         try {
-          const submitted = await this.client.submit(original);
+          signal.throwIfAborted();
+          const submitted = await this.client.submit(original, signal);
+          signal.throwIfAborted();
           taskId = submitted.taskId;
           job = await this.sessions.recordConversionTask(sessionId, taskId);
         } catch (error: unknown) {
+          signal.throwIfAborted();
           if (!(error instanceof ConversionUnavailableError)) {
             await this.sessions.recordConversionFailure(
               sessionId,
@@ -118,12 +133,14 @@ export class SubmissionConversionService {
           )
             return;
           await this.sleep(delay);
+          signal.throwIfAborted();
         }
       }
     }
     const startedAt = this.nowMs();
     let transientFailures = 0;
     while (true) {
+      signal.throwIfAborted();
       if (this.nowMs() - startedAt > this.taskTimeoutMs) {
         await this.sessions.recordConversionFailure(sessionId, {
           status: "waiting_for_converter",
@@ -135,8 +152,10 @@ export class SubmissionConversionService {
       }
       let status: ConversionTaskStatus;
       try {
-        status = await this.client.status(taskId);
+        status = await this.client.status(taskId, signal);
+        signal.throwIfAborted();
       } catch (error: unknown) {
+        signal.throwIfAborted();
         if (!(error instanceof ConversionTaskMissingError)) {
           if (error instanceof ConversionUnavailableError) {
             transientFailures += 1;
@@ -149,6 +168,7 @@ export class SubmissionConversionService {
             );
             if (delay === undefined) return;
             await this.sleep(delay);
+            signal.throwIfAborted();
             continue;
           } else {
             await this.sessions.recordConversionFailure(
@@ -170,10 +190,13 @@ export class SubmissionConversionService {
         }
         session = await this.sessions.beginConversionAttempt(sessionId);
         try {
-          const submitted = await this.client.submit(original);
+          signal.throwIfAborted();
+          const submitted = await this.client.submit(original, signal);
+          signal.throwIfAborted();
           taskId = submitted.taskId;
           job = await this.sessions.recordConversionTask(sessionId, taskId);
         } catch (error: unknown) {
+          signal.throwIfAborted();
           if (error instanceof ConversionUnavailableError)
             await this.sessions.recordConversionFailure(
               sessionId,
@@ -202,12 +225,16 @@ export class SubmissionConversionService {
             return;
           }
           await this.sleep(delay);
+          signal.throwIfAborted();
           session = await this.sessions.beginConversionAttempt(sessionId);
           try {
-            const submitted = await this.client.submit(original);
+            signal.throwIfAborted();
+            const submitted = await this.client.submit(original, signal);
+            signal.throwIfAborted();
             taskId = submitted.taskId;
             job = await this.sessions.recordConversionTask(sessionId, taskId);
           } catch (error: unknown) {
+            signal.throwIfAborted();
             await this.sessions.recordConversionFailure(
               sessionId,
               error instanceof ConversionUnavailableError
@@ -228,12 +255,13 @@ export class SubmissionConversionService {
         let taskReplaced = false;
         while (!taskReplaced) {
           try {
-            const imported = importConversionResult(
-              await this.client.result(taskId),
-            );
+            const result = await this.client.result(taskId, signal);
+            signal.throwIfAborted();
+            const imported = importConversionResult(result);
             await this.sessions.completeConversion(sessionId, imported);
             return;
           } catch (error: unknown) {
+            signal.throwIfAborted();
             if (error instanceof ConversionTaskFailedError) {
               if (!error.retryable) {
                 await this.sessions.recordConversionFailure(
@@ -253,9 +281,12 @@ export class SubmissionConversionService {
                 return;
               }
               await this.sleep(delay);
+              signal.throwIfAborted();
               session = await this.sessions.beginConversionAttempt(sessionId);
               try {
-                const submitted = await this.client.submit(original);
+                signal.throwIfAborted();
+                const submitted = await this.client.submit(original, signal);
+                signal.throwIfAborted();
                 taskId = submitted.taskId;
                 job = await this.sessions.recordConversionTask(
                   sessionId,
@@ -265,6 +296,7 @@ export class SubmissionConversionService {
                 taskReplaced = true;
                 continue;
               } catch (submitError: unknown) {
+                signal.throwIfAborted();
                 await this.sessions.recordConversionFailure(
                   sessionId,
                   submitError instanceof ConversionUnavailableError
@@ -285,6 +317,7 @@ export class SubmissionConversionService {
               );
               if (delay === undefined) return;
               await this.sleep(delay);
+              signal.throwIfAborted();
               continue;
             }
             if (error instanceof ConversionTaskMissingError) {
@@ -301,7 +334,9 @@ export class SubmissionConversionService {
               }
               await this.sessions.beginConversionAttempt(sessionId);
               try {
-                const submitted = await this.client.submit(original);
+                signal.throwIfAborted();
+                const submitted = await this.client.submit(original, signal);
+                signal.throwIfAborted();
                 taskId = submitted.taskId;
                 job = await this.sessions.recordConversionTask(
                   sessionId,
@@ -311,6 +346,7 @@ export class SubmissionConversionService {
                 taskReplaced = true;
                 continue;
               } catch (submitError: unknown) {
+                signal.throwIfAborted();
                 if (submitError instanceof ConversionUnavailableError)
                   await this.sessions.recordConversionFailure(
                     sessionId,
@@ -347,6 +383,7 @@ export class SubmissionConversionService {
         return;
       }
       await this.sleep(this.pollIntervalMs);
+      signal.throwIfAborted();
     }
   }
 

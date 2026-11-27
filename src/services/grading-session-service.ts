@@ -1,10 +1,19 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { Unzip } from "fflate";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
 import type { LockedSubmission } from "../schemas/grading.js";
+import { withAssignmentMutation } from "./assignment-mutation-lock.js";
+import { migrateGradingSessions } from "./grading-session-migrations.js";
+import {
+  GradingSubmissionFiles,
+  hashSubmission,
+  hashSubmissionAsset,
+  sha256,
+  submissionMarkdownFilename,
+} from "./grading-submission-files.js";
 import type { RubricService } from "./rubric-service.js";
 
 export type ConversionStatus =
@@ -242,6 +251,19 @@ const maxSubmissionAssets = 100;
 const maxSubmissionAssetBytes = 10 * 1024 * 1024;
 const maxSubmissionAssetTotalBytes = 50 * 1024 * 1024;
 
+interface CreateGradingSessionInput {
+  assignmentId: string;
+  rubricVersion: number;
+  studentName: string;
+  studentNumber: string;
+  submissionTitle?: string;
+  originalPath: string;
+  originalFilename: string;
+  autoStartAfterConversion: boolean;
+  converterAvailable?: boolean;
+  revisionAssets?: Array<{ path: string; bytes: Uint8Array }>;
+}
+
 export class GradingSessionService {
   private readonly database: Database.Database;
   private readonly filesystem: SafeFilesystem;
@@ -270,21 +292,14 @@ export class GradingSessionService {
     this.database.pragma("foreign_keys = ON");
     this.now = options.now ?? (() => new Date().toISOString());
     this.maxUploadBytes = options.maxUploadBytes ?? 10 * 1024 * 1024;
-    this.migrate();
+    migrateGradingSessions(this.database);
   }
 
-  async createSession(input: {
-    assignmentId: string;
-    rubricVersion: number;
-    studentName: string;
-    studentNumber: string;
-    submissionTitle?: string;
-    originalPath: string;
-    originalFilename: string;
-    autoStartAfterConversion: boolean;
-    converterAvailable?: boolean;
-    revisionAssets?: Array<{ path: string; bytes: Uint8Array }>;
-  }): Promise<GradingSession> {
+  async createSession(input: CreateGradingSessionInput): Promise<GradingSession> {
+    return withAssignmentMutation(this.root, input.assignmentId, () => this.createSessionUnlocked(input));
+  }
+
+  private async createSessionUnlocked(input: CreateGradingSessionInput): Promise<GradingSession> {
     const studentName = input.studentName.trim();
     const studentNumber = input.studentNumber.trim();
     if (!studentName || !studentNumber)
@@ -348,34 +363,24 @@ export class GradingSessionService {
     const id = randomUUID();
     const batchId = randomUUID();
     const studentKey = randomUUID();
-    const base = this.submissionBase(input.assignmentId, batchId, studentKey);
-    const storedOriginal = `original/submission${extension}`;
-    await this.filesystem.copyInto(
-      input.originalPath,
-      `${base}/${storedOriginal}`,
-    );
+    const files = new GradingSubmissionFiles(this.filesystem, {
+      assignmentId: input.assignmentId,
+      batchId,
+      studentKey,
+    });
+    const storedOriginal = await files.copyOriginal(input.originalPath, extension);
     const now = this.now();
     let conversionStatus: ConversionStatus = "queued";
     let gradingStatus: GradingStatus = "not_started";
     let submissionVersion: number | undefined;
     let submissionHash: string | undefined;
     let storedAssets: string[] = [];
-    if (isPlainTextSubmission) {
+    if (markdown !== undefined) {
       storedAssets = revisionAssets.map(({ path: assetPath }) => assetPath);
       submissionVersion = 1;
-      await this.filesystem.writeText(
-        `${base}/converted/submission-v1.md`,
-        markdown!,
-      );
-      const assetHashes: string[] = [];
-      for (const asset of revisionAssets) {
-        await this.filesystem.writeBytes(
-          `${base}/converted/${asset.path}`,
-          asset.bytes,
-        );
-        assetHashes.push(`${asset.path}:${sha256(Buffer.from(asset.bytes))}`);
-      }
-      submissionHash = hashSubmission(originalHash, markdown!, assetHashes);
+      await files.writeMarkdown(submissionVersion, markdown);
+      const assetHashes = await files.writeAssets(revisionAssets);
+      submissionHash = hashSubmission(originalHash, markdown, assetHashes);
       conversionStatus = "ready";
       if (input.autoStartAfterConversion) gradingStatus = "queued";
     }
@@ -402,25 +407,18 @@ export class GradingSessionService {
       createdAt: now,
       updatedAt: now,
     };
-    await this.filesystem.writeText(
-      `${base}/metadata.json`,
-      JSON.stringify(
-        {
-          sessionId: id,
-          assignmentId: input.assignmentId,
-          batchId,
-          studentKey,
-          originalFilename: filename,
-          storedOriginal,
-          originalHash,
-          size: sourceStat.size,
-          assets: storedAssets,
-          createdAt: now,
-        },
-        null,
-        2,
-      ),
-    );
+    await files.writeMetadata({
+      sessionId: id,
+      assignmentId: input.assignmentId,
+      batchId,
+      studentKey,
+      originalFilename: filename,
+      storedOriginal,
+      originalHash,
+      size: sourceStat.size,
+      assets: storedAssets,
+      createdAt: now,
+    });
     this.insertSession(session);
     return session;
   }
@@ -707,20 +705,7 @@ export class GradingSessionService {
     sessionId: string,
   ): Promise<{ filename: string; bytes: Uint8Array }> {
     const session = await this.getSession(sessionId);
-    const base = this.submissionBase(
-      session.assignmentId,
-      session.batchId,
-      session.studentKey,
-    );
-    const metadata = JSON.parse(
-      await this.filesystem.readText(`${base}/metadata.json`),
-    ) as { originalFilename: string; storedOriginal: string };
-    return {
-      filename: metadata.originalFilename,
-      bytes: new Uint8Array(
-        await this.filesystem.readBytes(`${base}/${metadata.storedOriginal}`),
-      ),
-    };
+    return new GradingSubmissionFiles(this.filesystem, session).readOriginal();
   }
 
   async getConversionJob(
@@ -815,46 +800,22 @@ export class GradingSessionService {
       ({ path: assetPath }) => assetPath,
     );
     validateMarkdown(imported.markdown, allowedAssets);
-    const base = this.submissionBase(
-      session.assignmentId,
-      session.batchId,
-      session.studentKey,
-    );
-    const metadataPath = `${base}/metadata.json`;
-    const metadata = JSON.parse(
-      await this.filesystem.readText(metadataPath),
-    ) as { originalHash: string; [key: string]: unknown };
-    const assetHashes: string[] = [];
-    for (const asset of imported.assets) {
-      await this.filesystem.writeBytes(
-        `${base}/converted/${asset.path}`,
-        asset.bytes,
-      );
-      assetHashes.push(`${asset.path}:${sha256(Buffer.from(asset.bytes))}`);
-    }
+    const files = new GradingSubmissionFiles(this.filesystem, session);
+    const metadata = await files.readMetadata();
+    const assetHashes = await files.writeAssets(imported.assets);
     const submissionVersion = 1;
-    await this.filesystem.writeText(
-      `${base}/converted/submission-v1.md`,
-      imported.markdown,
-    );
+    await files.writeMarkdown(submissionVersion, imported.markdown);
     const submissionHash = hashSubmission(
       metadata.originalHash,
       imported.markdown,
       assetHashes,
     );
-    await this.filesystem.writeText(
-      metadataPath,
-      JSON.stringify(
-        {
-          ...metadata,
-          assets: imported.assets.map(({ path: assetPath }) => assetPath),
-          submissionVersion,
-          submissionHash,
-        },
-        null,
-        2,
-      ),
-    );
+    await files.writeMetadata({
+      ...metadata,
+      assets: imported.assets.map(({ path: assetPath }) => assetPath),
+      submissionVersion,
+      submissionHash,
+    });
     const gradingStatus: GradingStatus = session.autoStartAfterConversion
       ? "queued"
       : "not_started";
@@ -968,8 +929,8 @@ export class GradingSessionService {
     const session = await this.getSession(sessionId);
     if (!session.submissionVersion)
       throw new GradingSessionError("Submission conversion is not ready");
-    return this.filesystem.readText(
-      `${this.submissionBase(session.assignmentId, session.batchId, session.studentKey)}/converted/submission-v${session.submissionVersion}.md`,
+    return new GradingSubmissionFiles(this.filesystem, session).readMarkdown(
+      session.submissionVersion,
     );
   }
 
@@ -979,10 +940,8 @@ export class GradingSessionService {
   ): Promise<Uint8Array> {
     const session = await this.getSession(sessionId);
     validateSubmissionAssetPath(assetPath);
-    return new Uint8Array(
-      await this.filesystem.readBytes(
-        `${this.submissionBase(session.assignmentId, session.batchId, session.studentKey)}/converted/${assetPath}`,
-      ),
+    return new GradingSubmissionFiles(this.filesystem, session).readAsset(
+      assetPath,
     );
   }
 
@@ -995,16 +954,10 @@ export class GradingSessionService {
     )
       throw new GradingSessionError("Submission conversion is not ready");
     const markdown = await this.readSubmission(sessionId);
-    const base = this.submissionBase(
-      session.assignmentId,
-      session.batchId,
-      session.studentKey,
-    );
-    const metadata = JSON.parse(
-      await this.filesystem.readText(`${base}/metadata.json`),
-    ) as { assets?: string[] };
+    const files = new GradingSubmissionFiles(this.filesystem, session);
+    const metadata = await files.readMetadata();
     return {
-      path: `submission-v${session.submissionVersion}.md`,
+      path: submissionMarkdownFilename(session.submissionVersion),
       lineCount: markdown.split(/\r?\n/).length,
       hash: session.submissionHash,
       lines: markdown.split(/\r?\n/),
@@ -1133,32 +1086,25 @@ export class GradingSessionService {
       throw new GradingSessionError("Submission conversion is not ready");
     if (session.submissionVersion !== expectedVersion)
       throw new GradingConflictError();
-    const metadataForValidation = JSON.parse(
-      await this.filesystem.readText(
-        `${this.submissionBase(session.assignmentId, session.batchId, session.studentKey)}/metadata.json`,
-      ),
-    ) as { assets?: string[] };
+    const files = new GradingSubmissionFiles(this.filesystem, session);
+    const metadataForValidation = await files.readMetadata();
     validateMarkdown(markdown, metadataForValidation.assets ?? []);
     const nextVersion = expectedVersion + 1;
-    const metadata = JSON.parse(
-      await this.filesystem.readText(
-        `${this.submissionBase(session.assignmentId, session.batchId, session.studentKey)}/metadata.json`,
-      ),
-    ) as { originalHash: string; assets?: string[] };
+    const metadata = await files.readMetadata();
     const assetHashes: string[] = [];
     for (const assetPath of metadata.assets ?? [])
       assetHashes.push(
-        `${assetPath}:${sha256(Buffer.from(await this.readSubmissionAsset(sessionId, assetPath)))}`,
+        hashSubmissionAsset(
+          assetPath,
+          await this.readSubmissionAsset(sessionId, assetPath),
+        ),
       );
     const submissionHash = hashSubmission(
       metadata.originalHash,
       markdown,
       assetHashes,
     );
-    await this.filesystem.writeText(
-      `${this.submissionBase(session.assignmentId, session.batchId, session.studentKey)}/converted/submission-v${nextVersion}.md`,
-      markdown,
-    );
+    await files.writeMarkdown(nextVersion, markdown);
     const updatedAt = this.now();
     const update = this.database.prepare(
       "UPDATE grading_sessions SET submission_version = ?, submission_hash = ?, updated_at = ? WHERE id = ? AND submission_version = ? AND grading_status = 'not_started'",
@@ -1213,155 +1159,6 @@ export class GradingSessionService {
 
   close(): void {
     if (this.database.open) this.database.close();
-  }
-
-  private migrate(): void {
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS grading_sessions (
-        id TEXT PRIMARY KEY,
-        course_id TEXT NOT NULL,
-        assignment_id TEXT NOT NULL,
-        rubric_version INTEGER NOT NULL,
-        rubric_hash TEXT NOT NULL,
-        batch_id TEXT NOT NULL UNIQUE,
-        student_key TEXT NOT NULL UNIQUE,
-        student_name TEXT NOT NULL,
-        student_number TEXT NOT NULL,
-        title TEXT NOT NULL,
-        submission_title TEXT,
-        submission_title_status TEXT NOT NULL DEFAULT 'pending',
-        submission_title_error_code TEXT,
-        submission_title_error_message TEXT,
-        submission_title_last_failed_at TEXT,
-        auto_start INTEGER NOT NULL CHECK (auto_start IN (0, 1)),
-        conversion_status TEXT NOT NULL,
-        conversion_attempt_count INTEGER NOT NULL DEFAULT 0,
-        conversion_error_code TEXT,
-        conversion_error_message TEXT,
-        conversion_retryable INTEGER NOT NULL DEFAULT 0,
-        conversion_last_failed_at TEXT,
-        conversion_next_retry_at TEXT,
-        grading_status TEXT NOT NULL,
-        active_run_id TEXT,
-        deletion_pending INTEGER NOT NULL DEFAULT 0 CHECK (deletion_pending IN (0, 1)),
-        submission_version INTEGER,
-        submission_hash TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS grading_jobs (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL REFERENCES grading_sessions(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
-        status TEXT NOT NULL,
-        external_task_id TEXT,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE (session_id, kind)
-      );
-      CREATE TABLE IF NOT EXISTS agent_runs (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL REFERENCES grading_sessions(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
-        input_message TEXT NOT NULL,
-        status TEXT NOT NULL,
-        error_code TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS agent_run_events (
-        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-        sequence INTEGER NOT NULL,
-        event_type TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (run_id, sequence)
-      );
-    `);
-    const columns = new Set(
-      (
-        this.database
-          .prepare("PRAGMA table_info(grading_sessions)")
-          .all() as Array<{ name: string }>
-      ).map(({ name }) => name),
-    );
-    if (!columns.has("submission_title"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN submission_title TEXT",
-      );
-    if (!columns.has("submission_title_status"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN submission_title_status TEXT NOT NULL DEFAULT 'pending'",
-      );
-    if (!columns.has("submission_title_error_code"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN submission_title_error_code TEXT",
-      );
-    if (!columns.has("submission_title_error_message"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN submission_title_error_message TEXT",
-      );
-    if (!columns.has("submission_title_last_failed_at"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN submission_title_last_failed_at TEXT",
-      );
-    if (!columns.has("conversion_attempt_count"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN conversion_attempt_count INTEGER NOT NULL DEFAULT 0",
-      );
-    if (!columns.has("conversion_error_code"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN conversion_error_code TEXT",
-      );
-    if (!columns.has("conversion_error_message"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN conversion_error_message TEXT",
-      );
-    if (!columns.has("conversion_retryable"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN conversion_retryable INTEGER NOT NULL DEFAULT 0",
-      );
-    if (!columns.has("conversion_last_failed_at"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN conversion_last_failed_at TEXT",
-      );
-    if (!columns.has("conversion_next_retry_at"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN conversion_next_retry_at TEXT",
-      );
-    if (!columns.has("deletion_pending"))
-      this.database.exec(
-        "ALTER TABLE grading_sessions ADD COLUMN deletion_pending INTEGER NOT NULL DEFAULT 0 CHECK (deletion_pending IN (0, 1))",
-      );
-    this.database.exec(
-      `UPDATE grading_sessions SET submission_title_status = 'failed',
-       submission_title_error_code = COALESCE(submission_title_error_code, 'LEGACY_SUBMISSION_TITLE_FAILURE'),
-       submission_title_error_message = COALESCE(submission_title_error_message, '作业名称识别被应用重启中断，请重试'),
-       submission_title_last_failed_at = COALESCE(submission_title_last_failed_at, updated_at)
-       WHERE submission_title_status = 'resolving'`,
-    );
-    this.database.exec(
-      `UPDATE grading_sessions SET
-       submission_title_error_code = COALESCE(submission_title_error_code, 'LEGACY_SUBMISSION_TITLE_FAILURE'),
-       submission_title_error_message = COALESCE(submission_title_error_message, '作业名称识别失败，请重试'),
-       submission_title_last_failed_at = COALESCE(submission_title_last_failed_at, updated_at)
-       WHERE submission_title_status = 'failed'`,
-    );
-    this.database.exec(`UPDATE grading_sessions SET
-      conversion_status = CASE
-        WHEN EXISTS (SELECT 1 FROM grading_jobs WHERE grading_jobs.session_id = grading_sessions.id AND kind = 'conversion' AND external_task_id IS NOT NULL) THEN 'conversion_failed'
-        ELSE 'waiting_for_converter'
-      END,
-      conversion_error_code = 'LEGACY_CONVERSION_FAILURE',
-      conversion_error_message = '转换失败，旧记录未保存具体原因。',
-      conversion_retryable = CASE
-        WHEN EXISTS (SELECT 1 FROM grading_jobs WHERE grading_jobs.session_id = grading_sessions.id AND kind = 'conversion' AND external_task_id IS NOT NULL) THEN 0
-        ELSE 1
-      END,
-      conversion_last_failed_at = updated_at
-      WHERE conversion_status = 'failed'`);
-    this.database.pragma("user_version = 5");
   }
 
   private insertSession(session: GradingSession): void {
@@ -1437,14 +1234,6 @@ export class GradingSessionService {
       if (this.sessionMutationTails.get(sessionId) === tail)
         this.sessionMutationTails.delete(sessionId);
     }
-  }
-
-  private submissionBase(
-    assignmentId: string,
-    batchId: string,
-    studentKey: string,
-  ): string {
-    return `assignments/${assignmentId}/submissions/${batchId}/${studentKey}`;
   }
 }
 
@@ -1722,20 +1511,4 @@ function readZipEntryNames(bytes: Uint8Array): Set<string> {
     return new Set();
   }
   return names;
-}
-
-function hashSubmission(
-  originalHash: string,
-  markdown: string,
-  assets: string[],
-): string {
-  return sha256(
-    Buffer.from(
-      `${originalHash}\n${sha256(Buffer.from(markdown))}\n${assets.sort().join("\n")}`,
-    ),
-  );
-}
-
-function sha256(content: Buffer): string {
-  return createHash("sha256").update(content).digest("hex");
 }

@@ -17,7 +17,7 @@ import {
 } from "../services/material-service.js";
 import type { PiRubricDesigner, RubricDesignEvent, RubricDesignerOutcome } from "../agents/rubric-designer/agent.js";
 import { rubricSchema, validateRubric, type Rubric } from "../schemas/rubric.js";
-import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricService, RubricServiceError, RubricRequestError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
+import { RUBRIC_SAFE_PROCESS_SUMMARY, RubricConflictError, RubricInUseError, RubricService, RubricServiceError, RubricRequestError, RubricValidationError, type RubricConversationTool } from "../services/rubric-service.js";
 import { summarizeRubricDraftUpdate } from "../services/rubric-diff-summary.js";
 import { registerGradingApi } from "./grading-routes.js";
 import { StudentIdentityError, type StudentIdentityClient } from "../services/student-identity-service.js";
@@ -168,6 +168,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     if (error instanceof SessionNotFoundError) return reply.code(404).send({ code: "SESSION_NOT_FOUND", message: error.message });
     if (error instanceof KnowledgeReleaseError) return reply.code(error.message.includes("changed") ? 409 : 422).send({ code: error.message.includes("changed") ? "CONFLICT" : "KNOWLEDGE_ERROR", message: error.message });
     if (error instanceof RubricConflictError) return reply.code(409).send({ code: "RUBRIC_CONFLICT", message: "The rubric draft has changed; refresh and try again" });
+    if (error instanceof RubricInUseError) return reply.code(409).send({ code: "RUBRIC_IN_USE", message: error.message });
     if (error instanceof RubricCourseBindingError) return reply.code(422).send({ code: "RUBRIC_COURSE_BINDING_ERROR", message: error.message });
     if (error instanceof RubricValidationError) return reply.code(422).send({ code: "RUBRIC_VALIDATION_FAILED", errors: error.validation.errors, warnings: error.validation.warnings });
     if (error instanceof RubricRequestError) return reply.code(422).send({ code: error.code, message: error.message });
@@ -239,7 +240,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   let inflightConverterCheck: Promise<{ version?: string } | undefined> | undefined;
   const resolveRuntimeStatus = async () => {
     const base = options.runtimeStatus ?? defaultRuntimeStatus;
-    if (!options.conversionClient) return base;
+    if (!options.conversionClient) return { ...base, gradingRecovery: gradingApi.recoveryStatus() };
     if (!inflightConverterCheck) {
       inflightConverterCheck = options.conversionClient
         .health(AbortSignal.timeout(1_500))
@@ -249,6 +250,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     const health = await inflightConverterCheck;
     return {
       ...base,
+      gradingRecovery: gradingApi.recoveryStatus(),
       converter: {
         ...base.converter,
         status: health ? "ready" as const : "unavailable" as const,
@@ -260,7 +262,7 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
   app.get("/api/health", async (_request, reply) => {
     if (options.runtimeOwnerToken) reply.header("x-course-agent-owner", options.runtimeOwnerToken);
     const runtime = options.runtimeStatus ? await resolveRuntimeStatus() : undefined;
-    return { ok: true, ...(runtime ? { ready: runtime.converter.status === "ready" } : {}), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
+    return { ok: true, gradingRecovery: gradingApi.recoveryStatus(), ...(runtime ? { ready: runtime.converter.status === "ready" } : {}), ...(options.runtimeOwnerToken ? { instanceId: options.runtimeOwnerToken } : {}) };
   });
   app.get("/api/system/runtime", async () => resolveRuntimeStatus());
   app.post("/api/agent-runs/:runId/cancel", async (request, reply) => {
@@ -522,9 +524,11 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     const courseKnowledge = await knowledge.forCourse(courseId);
     return reply.code(201).send(await sessions.create(courseId, courseKnowledge.release.id));
   });
-  app.get("/api/courses/:courseId/qa/sessions", async (request) => {
+  app.get("/api/courses/:courseId/qa/sessions", async (request, reply) => {
     const { courseId } = z.object({ courseId: z.string().uuid() }).parse(request.params);
-    return sessions.list(courseId);
+    const { sessions: summaries, damagedCount } = await sessions.listWithDiagnostics(courseId);
+    if (damagedCount) reply.header("x-damaged-session-count", String(damagedCount));
+    return summaries;
   });
   app.get("/api/courses/:courseId/qa/active", async (request) => {
     const { courseId } = z.object({ courseId: z.string().uuid() }).parse(request.params);
@@ -604,6 +608,10 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     }
   });
 
+  app.addHook("preClose", async () => {
+    gradingApi.stop();
+    for (const controller of activeAgentRuns.values()) controller.abort();
+  });
   app.addHook("onClose", async () => gradingApi.close());
   return app;
 }

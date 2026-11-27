@@ -1,45 +1,17 @@
 # 系统架构
 
-## 当前状态
+## 当前运行链路
 
-项目目前处于核心脚手架阶段。已经实现：
+教师工作台由 Windows 启动器协调本地 Fastify、React 和 Docling，提供知识库、答疑、评分标准、单份与批量批改、复核和成绩导出。学生端由独立 Fastify 进程和独立 React 应用提供课程资料和答疑，共用受控知识读取和答疑 Agent。
 
-- `Workspace`：拒绝绝对路径和普通`..`越界；
-- `MessageBus`：进程内异步消息发布与订阅；
-- `AgentRouter`：按管理页面选择四类Agent，默认进入课程答疑；
-- `AgentRuntime`：通过可注入的Pi兼容Agent执行Prompt；
-- `ToolRegistry`：注册并调用已知工具；
-- 基础类型、启动入口和核心单元测试。
+~~~text
+教师 Web → 教师 API → 资料、评分标准、单份和批量批改服务
+学生 Web → 学生 API → 账号、课程权限、额度和知识同步服务
+两端答疑 API → 答疑 Agent → 受控知识读取与网页证据
+业务服务 → 受控 Workspace、SQLite、外部 Provider
+~~~
 
-M1已实现资料导入与发布，M2已实现课程答疑，M3已实现评分表设计与冻结。M4现已实现单份作业转换、会话式批改、教师Review、JSON/Markdown导出，以及从已确认结果生成的CSV成绩表；批量自动批改任务与企业微信仍属于后续里程碑。开发时必须区分本节的当前状态与`plan.md`中的目标设计。
-
-## 目标分层
-
-```text
-Web / WeCom Channel
-        ↓
-Message Bus
-        ↓
-Agent Router
-        ↓
-Agent Runtime
-        ↓
-Agent-scoped Tool Registry
-        ↓
-Local Services
-        ↓
-Safe Filesystem / SQLite / External Providers
-```
-
-### 层级职责
-
-- **Channel**：验证输入身份、规范化消息、返回结果；不读取业务文件，不直接调用模型。
-- **Message Bus**：传递统一消息，不包含业务判断。
-- **Agent Router**：由程序按入口和上下文选择Agent，不让模型自由路由。
-- **Agent Runtime**：创建会话、运行模型循环、注入当前Agent可见工具。
-- **Tool Registry**：执行输入校验、Agent授权和可信上下文绑定。
-- **Service**：实现发布、检索、评分、状态转换和审计等确定性业务规则。
-- **Storage**：文件保存内容与不可变结果；SQLite保存可恢复控制状态。
+HTTP 路由按业务入口选择 Agent 与工具集，服务负责校验身份、状态、引用、分数和版本。组件边界见下文，验收状态见[里程碑总表](../docs/superpowers/plans/2026-08-02-course-agent-milestones.md)。
 
 资料规划、课程答疑、评分表推荐/设计、作业命名与批改的 Pi 调用统一受 `AgentExecutionBudget` 控制：每次业务任务默认最多64个模型轮次、128次工具调用和10分钟总时长。评分表的续问与备用Agent共用该次任务预算，不能通过新Prompt重置；超限或超时中止模型并返回安全错误码，显式取消同样生效。预算只保存计数和截止时间，不记录Prompt或工具参数。
 
@@ -176,7 +148,7 @@ channels/api → core/agents/tools → services → db/filesystem/provider inter
 
 批量文件先进入 SQLite 驱动的上传草稿和受控 `batch-uploads/` staging。每项独立推进身份、转换、命名与就绪状态，进程重启后从持久状态恢复；只有全部保留项就绪时，正式批次、job 预留和草稿 `committed` 状态才在同一 immediate 事务中提交。Markdown 共享附件由程序按实际引用筛选后复制到各自会话，Agent 仍只看到当前会话的受控路径。
 
-`GradingBatchService` 负责 30–120 份成员校验、全局会话预留、1–8 并发调度、暂停/恢复、教师问题、有限重试和租约恢复。队列任务开始时才在 SQLite 事务中领取 job；暂停只阻止新领取，正在运行的 job 会自然结束并释放并发槽。教师回答通过程序控制的 `waiting_for_teacher → queued` 转换，以“继续完成评分”的 grade 轮次恢复，而不是普通咨询 chat。租约 owner 与尝试次数共同构成 fencing 条件，过期执行不能发布或终结后来领取的 job；每次尝试写入独立结果路径，旧执行也不能覆盖新尝试文件。`GradingSummaryService` 为每个成功 job 原子写入带尝试版本的 JSON 事实快照及 Markdown 预览，并以串行写者从当前尝试快照重建班级 CSV。API 和页面只发出确定性命令、读取状态，不自行计算分数。
+`GradingBatchService` 负责 1–120 份成员校验、全局会话预留、1–8 并发调度、暂停/恢复、教师问题、有限重试和租约恢复。队列任务开始时才在 SQLite 事务中领取 job；暂停只阻止新领取，正在运行的 job 会自然结束并释放并发槽。教师回答通过程序控制的 `waiting_for_teacher → queued` 转换，以“继续完成评分”的 grade 轮次恢复，而不是普通咨询 chat。租约 owner 与尝试次数共同构成 fencing 条件，过期执行不能发布或终结后来领取的 job；每次尝试写入独立结果路径，旧执行也不能覆盖新尝试文件。`GradingSummaryService` 为每个成功 job 原子写入带尝试版本的 JSON 事实快照及 Markdown 预览，并以串行写者从当前尝试快照重建班级 CSV。API 和页面只发出确定性命令、读取状态，不自行计算分数。
 
 启动恢复按“有效结果快照、已持久化草稿、前一进程租约”顺序协调状态；已有有效结果时禁止再次调用模型，缺失的 Markdown 会从有效 JSON 补建。教师在 M4 修改或确认后，启动恢复和 CSV 导出都会刷新对应快照、job 状态与汇总。批次完成表示本轮没有可自动继续的 job，不等同于教师确认正式成绩。
 
@@ -185,5 +157,6 @@ channels/api → core/agents/tools → services → db/filesystem/provider inter
 学生端以独立进程 `src/student-main.ts` 与独立前端产物 `dist/web-student/` 运行，支持跨平台部署在 Linux 或 Windows 服务器上，与本地教师工作台彻底隔离（不挂载批改、评分表、资料导入、Docling 或本地模型设置写入接口）。
 
 - **功能范围**：学生端仅提供课程选择、课程资料阅读（含受控搜索与图片资源读取）与课程答疑，并按 `userId + courseId` 隔离保存学生个人的答疑会话历史。
-- **资料共用**：支持同机共享 `workspace/knowledge/`，或由本地教师工作台在资料库页面将已验证的不可变 `active release` 打包并通过 `POST /api/sync/courses/:courseId/releases`（Bearer Sync Token + 整包及逐文件 SHA-256 校验）一键同步至学生端服务器。
-- **账号与额度**：`student-portal.sqlite` 独立管理教师管理员账号、学生账号、课程访问许可、课程邀请码与答疑额度账本；答疑调用前在 SQLite `IMMEDIATE` 事务中原子预占额度，模型失败、超限或客户端取消时自动退还，成功时记录 Token 消耗。
+- **部署** 使用本地磁盘的 Workspace，每个规范路径在同一时刻由一个学生端进程持有。运行和退出边界见[运行与安全](operations-and-security.md#独立学生端安全边界)。
+- **资料共用**：支持同机共享 `workspace/knowledge/`，或由本地教师工作台在资料库页面将已验证的不可变 `active release` 打包并通过 `POST /api/sync/courses/:courseId/releases`（Bearer Sync Token）同步至学生端。服务端在暂存目录校验候选版本的索引、目录树和 manifest 中的正文，再安装不可变版本并原子切换 active 指针。
+- **账号与额度**：`student-portal.sqlite` 独立管理教师管理员账号、学生账号、课程访问许可、课程邀请码与答疑额度账本；答疑调用前在 SQLite `IMMEDIATE` 事务中原子预占额度。答案提交前发生模型失败、超限、断开连接或取消时，服务退还额度。答案提交成功后结算 Token。前端遇到缺少终态的流式响应时重新读取会话和额度，恢复原问题以便继续操作。

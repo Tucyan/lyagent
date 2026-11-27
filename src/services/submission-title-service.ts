@@ -16,11 +16,14 @@ export class SubmissionTitleError extends GradingSessionError {
 
 export class SubmissionTitleService {
   private readonly active = new Map<string, Promise<GradingSession>>();
+  private readonly stopSignal = new AbortController();
 
   constructor(private readonly sessions: GradingSessionService, private readonly createAgent: SubmissionTitleAgentFactory) {}
 
   async start(sessionId: string): Promise<GradingSession> {
+    this.stopSignal.signal.throwIfAborted();
     const session = await this.sessions.getSession(sessionId);
+    this.stopSignal.signal.throwIfAborted();
     if (
       session.submissionTitleStatus === "provided" ||
       session.submissionTitleStatus === "resolved"
@@ -34,12 +37,20 @@ export class SubmissionTitleService {
   }
 
   async resolve(sessionId: string): Promise<GradingSession> {
+    this.stopSignal.signal.throwIfAborted();
     const session = await this.sessions.getSession(sessionId);
+    this.stopSignal.signal.throwIfAborted();
     if (session.submissionTitleStatus === "provided" || session.submissionTitleStatus === "resolved") return session;
     if (session.conversionStatus !== "ready") throw new GradingSessionError("Submission title can only be resolved after conversion");
     const existing = this.active.get(sessionId);
     if (existing) return existing;
     return this.createOperation(sessionId).completion;
+  }
+
+  stop(): void { this.stopSignal.abort(); }
+
+  async drain(): Promise<void> {
+    await Promise.allSettled(this.active.values());
   }
 
   private createOperation(sessionId: string): {
@@ -52,6 +63,7 @@ export class SubmissionTitleService {
       resolveStarted = resolve;
       rejectStarted = reject;
     });
+    void started.catch(() => undefined);
     let completion!: Promise<GradingSession>;
     completion = (async () => {
       try {
@@ -71,9 +83,12 @@ export class SubmissionTitleService {
   }
 
   private async resolveStarted(sessionId: string): Promise<GradingSession> {
+    const { signal } = this.stopSignal;
     try {
+      signal.throwIfAborted();
       const runId = randomUUID();
-      const outcome = await this.createAgent(sessionId, runId).run({ kind: "name", message: "请识别并保存当前学生作业名称。" }, undefined, undefined);
+      const outcome = await this.createAgent(sessionId, runId).run({ kind: "name", message: "请识别并保存当前学生作业名称。" }, undefined, signal);
+      signal.throwIfAborted();
       const session = await this.sessions.getSession(sessionId);
       if (outcome.kind !== "title" || session.submissionTitleStatus !== "resolved" || session.submissionTitle !== outcome.title) {
         throw new SubmissionTitleError(
@@ -83,6 +98,7 @@ export class SubmissionTitleService {
       }
       return session;
     } catch (error: unknown) {
+      signal.throwIfAborted();
       const safe = error instanceof SubmissionTitleError
         ? error
         : new SubmissionTitleError(

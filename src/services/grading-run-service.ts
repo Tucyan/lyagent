@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
 import PQueue from "p-queue";
 import { ZodError } from "zod";
@@ -65,21 +66,25 @@ export class GradingRunService {
   private readonly filesystem: SafeFilesystem;
   private readonly queue: PQueue;
   private readonly controllers = new Map<string, AbortController>();
+  private readonly deferredBatchRuns = new Map<string, GradingRun>();
   private readonly now: () => string;
+  private stopping = false;
 
-  constructor(private readonly root: string, private readonly sessions: GradingSessionService, private readonly graderFactory: GradingAgentFactory, options: { now?: () => string; concurrency?: number } = {}) {
+  constructor(private readonly root: string, private readonly sessions: GradingSessionService, private readonly graderFactory: GradingAgentFactory, options: { now?: () => string; concurrency?: number; deferRecovery?: boolean } = {}) {
     this.database = new Database(path.join(path.resolve(root), "grading.sqlite"));
     this.database.pragma("journal_mode = WAL");
     this.filesystem = new SafeFilesystem(root, { allowedExtensions: new Set([".json"]) });
     this.now = options.now ?? (() => new Date().toISOString());
     const concurrency = options.concurrency ?? 1;
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error("Grading run concurrency must be an integer from 1 to 8");
-    this.queue = new PQueue({ concurrency });
-    this.recoverInterruptedRuns();
+    this.queue = new PQueue({ concurrency, autoStart: !options.deferRecovery });
+    if (!options.deferRecovery) this.recoverInterruptedRuns();
   }
 
   async start(sessionId: string, input: { kind: "grade" | "chat"; message: string }, options: { allowBatchReservation?: boolean } = {}): Promise<GradingRun> {
+    if (this.stopping) throw new GradingConflictError("Grading workers are stopping");
     const session = await this.sessions.getSession(sessionId);
+    if (this.stopping) throw new GradingConflictError("Grading workers are stopping");
     if (input.kind === "grade" && session.gradingStatus !== "queued") throw new GradingConflictError("A grading run cannot start in the current session state");
     if (input.kind === "chat" && (session.conversionStatus !== "ready" || !["not_started", "queued", "waiting_for_teacher", "draft_ready", "needs_review", "failed"].includes(session.gradingStatus))) {
       throw new GradingConflictError("A grading conversation cannot continue in the current session state");
@@ -111,8 +116,28 @@ export class GradingRunService {
     insert.immediate();
     await this.appendConversation(sessionId, { role: "user", content: message, runId: id, createdAt: now });
     await this.sessions.setActiveRun(sessionId, id);
-    void this.queue.add(async () => this.execute(id)).catch(() => undefined);
+    if (!this.stopping) void this.queue.add(async () => this.execute(id)).catch(() => undefined);
     return this.getRun(id);
+  }
+
+  hasDeferredBatchRun(sessionId: string): boolean {
+    return this.deferredBatchRuns.has(sessionId);
+  }
+
+  async resumeDeferredBatchRun(
+    sessionId: string,
+    input: { kind: GradingRun["kind"]; message: string },
+  ): Promise<GradingRun | undefined> {
+    const pending = this.deferredBatchRuns.get(sessionId);
+    if (!pending) return undefined;
+    if (this.stopping) throw new GradingConflictError("Grading workers are stopping");
+    if (pending.kind !== input.kind || pending.message !== input.message.trim())
+      throw new GradingConflictError("The saved grading run does not match this batch job");
+    const run = await this.getRun(pending.id);
+    this.deferredBatchRuns.delete(sessionId);
+    if (run.status === "queued" && !this.stopping)
+      void this.queue.add(async () => this.execute(run.id)).catch(() => undefined);
+    return run;
   }
 
   async getRun(runId: string): Promise<GradingRun> {
@@ -127,14 +152,15 @@ export class GradingRunService {
     return rows.map((row) => ({ sequence: row.sequence, type: row.event_type, ...(JSON.parse(row.payload_json) as Record<string, unknown>) }));
   }
 
-  async waitForTerminal(runId: string, timeoutMs = 5_000): Promise<GradingRun> {
+  async waitForTerminal(runId: string, timeoutMs = 5_000, signal?: AbortSignal): Promise<GradingRun> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
+      signal?.throwIfAborted();
       const run = await this.getRun(runId);
       if (["completed", "waiting_for_teacher", "failed", "cancelled"].includes(run.status)) return run;
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(100, remaining)));
+      await delay(Math.min(100, remaining), undefined, { signal });
     }
     throw new Error("Timed out waiting for grading run");
   }
@@ -160,15 +186,29 @@ export class GradingRunService {
     }
   }
 
-  close(): void {
+  startWorkers(): void {
+    if (!this.stopping) this.queue.start();
+  }
+
+  stop(): void {
+    this.stopping = true;
     this.queue.pause();
+    this.queue.clear();
     for (const controller of this.controllers.values()) controller.abort();
+  }
+
+  async drain(): Promise<void> {
+    await this.queue.onPendingZero();
+  }
+
+  close(): void {
+    this.stop();
     if (this.database.open) this.database.close();
   }
 
   private async execute(runId: string): Promise<void> {
     const run = await this.getRun(runId);
-    if (run.status === "cancelled") return;
+    if (this.stopping || run.status === "cancelled") return;
     const controller = new AbortController();
     this.controllers.set(runId, controller);
     await this.updateRun(runId, "running");
@@ -179,6 +219,7 @@ export class GradingRunService {
     const tools = new Map<string, GradingConversationTool>();
     let eventTail = Promise.resolve();
     const onEvent = (event: GradingAgentEvent) => {
+      if (controller.signal.aborted) return;
       if (event.type === "process_delta") process += event.delta;
       if (event.type === "model_switch") process += `${process ? "\n" : ""}已切换至视觉模型`;
       if (event.type === "reply_delta") reply += event.delta;
@@ -189,13 +230,14 @@ export class GradingRunService {
     try {
       const conversation = await this.getConversation(run.sessionId);
       const history = conversation.messages.filter(({ runId: messageRunId }) => messageRunId !== runId).slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 2_000) }));
+      controller.signal.throwIfAborted();
       const outcome = await this.graderFactory(run.sessionId, runId).run({ kind: run.kind, message: run.message, history }, onEvent, controller.signal);
       await eventTail;
-      if ((await this.getRun(runId)).status === "cancelled") return;
+      if (controller.signal.aborted || (await this.getRun(runId)).status === "cancelled") return;
       await this.persistOutcome(run, outcome, process, reply, [...tools.values()]);
     } catch (error: unknown) {
       await eventTail;
-      if ((await this.getRun(runId)).status === "cancelled" || isAbort(error)) return;
+      if (controller.signal.aborted || isAbort(error) || (await this.getRun(runId)).status === "cancelled") return;
       const failure = classifyGradingFailure(error);
       await this.finishRun(runId, "failed", failure.code);
       await this.appendEvent(runId, "error", failure);
@@ -264,7 +306,7 @@ export class GradingRunService {
     this.database.prepare("UPDATE agent_runs SET status = ?, error_code = ?, updated_at = ? WHERE id = ?").run(status, errorCode ?? null, this.now(), runId);
   }
 
-  private recoverInterruptedRuns(): void {
+  recoverInterruptedRuns(isBatchReserved?: (run: GradingRun) => boolean): void {
     const now = this.now();
     const interrupted = this.database.prepare("SELECT id, session_id, kind FROM agent_runs WHERE status = 'running'").all() as Array<{ id: string; session_id: string; kind: "grade" | "chat" }>;
     const recover = this.database.transaction(() => {
@@ -277,10 +319,15 @@ export class GradingRunService {
       }
     });
     recover();
-    const queued = this.database.prepare("SELECT id FROM agent_runs WHERE status = 'queued' ORDER BY created_at").all() as Array<{ id: string }>;
-    for (const { id } of queued) {
-      this.database.prepare("UPDATE grading_sessions SET active_run_id = ?, updated_at = ? WHERE id = (SELECT session_id FROM agent_runs WHERE id = ?)").run(id, now, id);
-      void this.queue.add(async () => this.execute(id)).catch(() => undefined);
+    const queued = this.database.prepare("SELECT * FROM agent_runs WHERE status = 'queued' ORDER BY created_at").all() as RunRow[];
+    for (const row of queued) {
+      const run = fromRunRow(row);
+      this.database.prepare("UPDATE grading_sessions SET active_run_id = ?, updated_at = ? WHERE id = ?").run(run.id, now, run.sessionId);
+      if (isBatchReserved?.(run)) {
+        this.deferredBatchRuns.set(run.sessionId, run);
+      } else {
+        void this.queue.add(async () => this.execute(run.id)).catch(() => undefined);
+      }
     }
   }
 }

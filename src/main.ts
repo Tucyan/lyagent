@@ -35,6 +35,19 @@ const ddgs = new DdgsSearchService(createDdgsRunner(undefined, config.webSearch.
 const webFetcher = new SafeWebFetcher();
 const webFactory = config.webSearch.enabled ? () => new WebEvidenceService(ddgs, (url) => webFetcher.fetch(url)) : undefined;
 const runtime = createPrimaryModelRuntime({ workspaceRoot, configured: configuredModels, ...(primaryApiKey ? { apiKey: primaryApiKey } : {}), ...(visionApiKey ? { visionApiKey } : {}), ...(webFactory ? { webFactory } : {}) });
+let shuttingDown = false;
+const shutdown = async (exitCode: number) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const deadline = setTimeout(() => process.exit(exitCode), 10_000);
+  try {
+    await app.close();
+  } finally {
+    clearTimeout(deadline);
+    process.exit(exitCode);
+  }
+};
+
 const app = await createServer({
   workspaceRoot,
   ...(runtime.materialPlanner ? { materialPlanner: runtime.materialPlanner } : {}),
@@ -49,7 +62,7 @@ const app = await createServer({
   modelStatus: runtime.status,
   modelConfigService,
   runtimeStatus: { appVersion: "0.1.0", appPort: port, converter: { provider: "docling", status: converterHealth ? "ready" : "unavailable", version: converterHealth?.version ?? process.env.COURSE_AGENT_DOCLING_VERSION ?? "development", device: doclingDevice, port: converterPort }, workspaceConfigured: Boolean(primaryApiKey) },
-  ...(process.env.COURSE_AGENT_SUPERVISED === "1" ? { requestRestart: () => { void app.close().finally(() => process.exit(42)); } } : {}),
+  ...(process.env.COURSE_AGENT_SUPERVISED === "1" ? { requestRestart: () => { void shutdown(42); } } : {}),
   ...(process.env.COURSE_AGENT_RUNTIME_OWNER ? { runtimeOwnerToken: process.env.COURSE_AGENT_RUNTIME_OWNER } : {}),
   modelApiSecurity: {
     csrfToken: process.env.COURSE_AGENT_CSRF_TOKEN ?? randomUUID(),
@@ -57,6 +70,8 @@ const app = await createServer({
     isLoopback: (request) => request.ip === "127.0.0.1" || request.ip === "::1",
   },
 });
+process.once("SIGINT", () => { void shutdown(0); });
+process.once("SIGTERM", () => { void shutdown(0); });
 await registerWebAssets(app, path.resolve("dist/web"));
 await app.listen({ host: "127.0.0.1", port });
 logger.info({ workspace: workspaceRoot, port, model: runtime.status }, "course-agent server is ready");

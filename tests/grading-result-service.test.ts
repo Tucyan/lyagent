@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -10,7 +10,7 @@ import { RubricService } from "../src/services/rubric-service.js";
 
 const roots: string[] = [];
 
-async function setup() {
+async function setup(now = () => "2026-08-04T11:00:00.000Z") {
   const root = await mkdtemp(path.join(os.tmpdir(), "grading-result-service-"));
   roots.push(root);
   const rubrics = new RubricService(root);
@@ -26,7 +26,7 @@ async function setup() {
   const frozen = await rubrics.freeze(assignment.id, 1, []);
   const source = path.join(root, "report.md");
   await writeFile(source, "# 报告\n\n背景内容\n\n实现过程\n", "utf8");
-  const sessions = new GradingSessionService(root, rubrics, { now: () => "2026-08-04T11:00:00.000Z" });
+  const sessions = new GradingSessionService(root, rubrics, { now });
   const session = await sessions.createSession({ assignmentId: assignment.id, rubricVersion: frozen.version, studentName: "张晓明", studentNumber: "20260001", originalPath: source, originalFilename: "report.md", autoStartAfterConversion: false });
   await sessions.lockSubmissionForGrading(session.id);
   const results = new GradingResultService(root, sessions, rubrics, { now: () => "2026-08-04T11:01:00.000Z" });
@@ -53,6 +53,39 @@ afterEach(async () => {
 });
 
 describe("GradingResultService", () => {
+  it.each(["JSON read", "Markdown read", "same-version confirmation"] as const)("keeps healthy confirmation artifacts unchanged on %s", async (operation) => {
+    let now = "2026-08-04T11:00:00.000Z";
+    const { root, sessions, results, session } = await setup(() => now);
+    try {
+      const saved = await results.submitDraft(session.id, 0, draft(0.9), { type: "agent", id: "run-1" });
+      const input = { expectedVersion: saved.version, reviewNote: "", acknowledgedReasons: [] };
+      const confirmed = await results.confirm(session.id, input);
+      const resultDir = path.join(root, "assignments", session.assignmentId, "results", session.batchId);
+      const markdownPath = path.join(resultDir, `${session.studentKey}.md`);
+      const auditPath = path.join(resultDir, "audit", `${session.studentKey}.jsonl`);
+      const markdown = await readFile(markdownPath, "utf8");
+      const audit = await readFile(auditPath, "utf8");
+      const timestamp = new Date(now);
+      await utimes(markdownPath, timestamp, timestamp);
+      await utimes(auditPath, timestamp, timestamp);
+      const markdownMtime = (await stat(markdownPath)).mtimeMs;
+      const auditMtime = (await stat(auditPath)).mtimeMs;
+      const confirmedSession = await sessions.getSession(session.id);
+      now = "2026-08-04T11:02:00.000Z";
+
+      if (operation === "JSON read") await expect(results.readConfirmedResult(session.id)).resolves.toEqual(confirmed);
+      if (operation === "Markdown read") await expect(results.readConfirmedMarkdown(session.id)).resolves.toBe(markdown);
+      if (operation === "same-version confirmation") await expect(results.confirm(session.id, input)).resolves.toEqual(confirmed);
+
+      expect(await sessions.getSession(session.id)).toEqual(confirmedSession);
+      expect((await stat(markdownPath)).mtimeMs).toBe(markdownMtime);
+      expect((await stat(auditPath)).mtimeMs).toBe(auditMtime);
+      expect(await readFile(auditPath, "utf8")).toBe(audit);
+    } finally {
+      sessions.close();
+    }
+  });
+
   it("rejects mismatched versions even after confirmation while recovering same-version retries", async () => {
     const { root, sessions, results, session } = await setup();
     try {
@@ -130,6 +163,34 @@ describe("GradingResultService", () => {
     } finally { sessions.close(); }
   });
 
+  it("repairs stale feedback when exporting Markdown from verified JSON", async () => {
+    let now = "2026-08-04T11:00:00.000Z";
+    const { root, sessions, results, session } = await setup(() => now);
+    try {
+      const saved = await results.submitDraft(session.id, 0, draft(0.9), { type: "agent", id: "run-1" });
+      const confirmed = await results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "", acknowledgedReasons: [] });
+      const resultDir = path.join(root, "assignments", session.assignmentId, "results", session.batchId);
+      const markdownPath = path.join(resultDir, `${session.studentKey}.md`);
+      const auditPath = path.join(resultDir, "audit", `${session.studentKey}.jsonl`);
+      const markdown = await readFile(markdownPath, "utf8");
+      const staleMarkdown = markdown.replace("80/100", "100/100");
+      await writeFile(markdownPath, staleMarkdown, "utf8");
+      await utimes(auditPath, new Date(now), new Date(now));
+      const auditMtime = (await stat(auditPath)).mtimeMs;
+      const confirmedSession = await sessions.getSession(session.id);
+      now = "2026-08-04T11:02:00.000Z";
+
+      await expect(results.readConfirmedResult(session.id)).resolves.toEqual(confirmed);
+      expect(await readFile(markdownPath, "utf8")).toBe(staleMarkdown);
+      await expect(results.readConfirmedMarkdown(session.id)).resolves.toBe(markdown);
+      expect(await readFile(markdownPath, "utf8")).toBe(markdown);
+      expect((await stat(auditPath)).mtimeMs).toBe(auditMtime);
+      expect(await sessions.getSession(session.id)).toEqual(confirmedSession);
+    } finally {
+      sessions.close();
+    }
+  });
+
   it("rejects a confirmed score changed without updating its content hash", async () => {
     const { root, sessions, results, session } = await setup();
     const saved = await results.submitDraft(session.id, 0, draft(), { type: "agent", id: "run-1" });
@@ -143,24 +204,33 @@ describe("GradingResultService", () => {
     sessions.close();
   });
 
-  it("finishes an interrupted confirmation when the confirmed JSON already exists", async () => {
+  it("serializes recovering an interrupted confirmation from reads and retries", async () => {
     const { root, sessions, results, session } = await setup();
     const saved = await results.submitDraft(session.id, 0, draft(0.9), { type: "agent", id: "run-1" });
     const confirmed = await results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "", acknowledgedReasons: [] });
     const markdownPath = path.join(root, "assignments", session.assignmentId, "results", session.batchId, `${session.studentKey}.md`);
     const auditPath = path.join(root, "assignments", session.assignmentId, "results", session.batchId, "audit", `${session.studentKey}.jsonl`);
-    await rm(markdownPath);
+    const markerPath = path.join(root, "assignments", session.assignmentId, "results", session.batchId, `${session.studentKey}.confirm-commit.json`);
+    await writeFile(markerPath, JSON.stringify({ version: saved.version, resultHash: confirmed.resultHash }));
+    await writeFile(markdownPath, "");
     await rm(auditPath);
     const database = new Database(path.join(root, "grading.sqlite"));
     database.prepare("UPDATE grading_sessions SET grading_status = 'needs_review' WHERE id = ?").run(session.id);
     database.close();
 
-    const recovered = await results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "ignored retry", acknowledgedReasons: [] });
+    const [read, markdown, recovered] = await Promise.all([
+      results.readConfirmedResult(session.id),
+      results.readConfirmedMarkdown(session.id),
+      results.confirm(session.id, { expectedVersion: saved.version, reviewNote: "ignored retry", acknowledgedReasons: [] }),
+    ]);
 
+    expect(read).toEqual(confirmed);
+    expect(markdown).toContain("80/100");
     expect(recovered).toEqual(confirmed);
     expect(await readFile(markdownPath, "utf8")).toContain("80/100");
     expect(JSON.parse((await readFile(auditPath, "utf8")).trim())).toMatchObject({ action: "confirm", resultHash: confirmed.resultHash });
     expect((await sessions.getSession(session.id)).gradingStatus).toBe("confirmed");
+    await expect(readFile(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
     sessions.close();
   });
 

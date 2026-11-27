@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { SafeFilesystem } from "../../core/safe-filesystem.js";
 import type { CourseCitation } from "../../schemas/qa-stream.js";
-import type { CourseQaSession, CourseQaSessionSummary, SessionMessage } from "../../services/session-service.js";
-import { SessionNotFoundError } from "../../services/session-service.js";
+import type { CourseQaSession, CourseQaSessionListing, CourseQaSessionSummary, SessionMessage } from "../../services/session-service.js";
+import { SessionNotFoundError, isReadableQaSession, summarizeStoredSessions } from "../../services/session-service.js";
 
 export interface StudentCourseQaSession extends CourseQaSession {
   userId: string;
@@ -32,18 +32,23 @@ export class StudentSessionService {
   }
 
   async get(userId: string, courseId: string, sessionId: string): Promise<StudentCourseQaSession> {
-    let session: StudentCourseQaSession;
     try {
-      session = normalizeSession(
-        JSON.parse(await this.filesystem.readText(this.file(userId, courseId, sessionId))) as StudentCourseQaSession,
-      );
+      return await this.readStored(userId, courseId, sessionId);
     } catch {
       throw new SessionNotFoundError();
     }
-    if (session.userId !== userId || session.courseId !== courseId || session.id !== sessionId) {
+  }
+
+  private async readStored(userId: string, courseId: string, sessionId: string): Promise<StudentCourseQaSession> {
+    const text = await this.filesystem.readText(this.file(userId, courseId, sessionId));
+    try {
+      const session = normalizeSession(JSON.parse(text) as StudentCourseQaSession);
+      if (session.userId === userId && session.courseId === courseId && session.id === sessionId &&
+        isReadableQaSession(session)) return session;
+    } catch {
       throw new SessionNotFoundError();
     }
-    return session;
+    throw new SessionNotFoundError();
   }
 
   async appendCompletedTurn(
@@ -52,6 +57,7 @@ export class StudentSessionService {
     sessionId: string,
     user: Extract<SessionMessage, { role: "user" }>,
     assistant: Extract<SessionMessage, { role: "assistant" }>,
+    signal?: AbortSignal,
   ): Promise<StudentCourseQaSession> {
     return this.mutateSession(userId, courseId, sessionId, async () => {
       const session = await this.get(userId, courseId, sessionId);
@@ -60,6 +66,7 @@ export class StudentSessionService {
         updatedAt: new Date().toISOString(),
         messages: [...session.messages, user, assistant].slice(-20),
       };
+      signal?.throwIfAborted();
       await this.write(updated);
       return updated;
     });
@@ -86,23 +93,12 @@ export class StudentSessionService {
   }
 
   async list(userId: string, courseId: string): Promise<CourseQaSessionSummary[]> {
+    return (await this.listWithDiagnostics(userId, courseId)).sessions;
+  }
+
+  async listWithDiagnostics(userId: string, courseId: string): Promise<CourseQaSessionListing> {
     const entries = await this.filesystem.listFiles(`student-sessions/${userId}/${courseId}`);
-    const sessions = await Promise.all(
-      entries
-        .filter((entry) => entry.endsWith(".json"))
-        .map(async (entry) => this.get(userId, courseId, entry.slice(0, -5))),
-    );
-    return sessions
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map((session) => ({
-        id: session.id,
-        releaseId: session.releaseId,
-        updatedAt: session.updatedAt,
-        summary:
-          session.title ??
-          session.messages.find((message) => message.role === "user")?.content.slice(0, 80) ??
-          "新对话",
-      }));
+    return summarizeStoredSessions(entries, (sessionId) => this.readStored(userId, courseId, sessionId));
   }
 
   private async write(session: StudentCourseQaSession): Promise<void> {

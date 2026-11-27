@@ -43,11 +43,13 @@ workspace/
 │     └─summary.csv
 ├─sessions/
 │  └─web/{courseId}/{sessionId}.json
-├─state/app.db
+├─grading.sqlite
 └─logs/
 ```
 
 M1已由资料导入服务安全创建`inbox/materials`和`knowledge/{courseId}`下的课程、staging、release目录。新增目录必须由启动或Service安全创建，不能依赖开发者手工准备。
+
+独立学生端在其 Workspace 下使用 state/student-portal.sqlite 存储账号、课程权限和额度账本，答疑会话保存在 student-sessions/{userId}/{courseId}/ 下。
 
 ## 事实来源
 
@@ -87,6 +89,8 @@ workspace/batch-grading/{batchId}/
 
 ## Web 答疑会话
 
+两个门户的会话列表跳过单条损坏记录，并返回脱敏的记录计数。原文件保留用于恢复。整体存储错误由接口报错。
+
 同一`SessionService`实例按`courseId + sessionId`串行化完成轮次追加、重命名和删除的读改写；失败操作释放锁，不同会话互不阻塞。删除后排队写入会重新读取并发现会话不存在，不能用旧快照重建文件。该锁是进程内协调，不用于多个独立服务进程共享写入同一Workspace。
 
 每个会话保存`courseId`、创建时的`releaseId`、时间、可选的用户标题与最近 20 条用户/助手消息。助手消息只在结构化答案和引用均通过验证后写入；被用户停止的流式草稿不保存。会话始终按课程目录隔离，新的会话只绑定当时的 active release。标题只能由当前课程会话的重命名接口写入；删除只删除该会话文件，前端必须先获得二次确认。课程引用包含逻辑路径和行号；网络引用包含本会话`sourceId`、标题、URL和已读行号，不持久化完整网页正文。读取旧会话时，缺少`type`的历史引用按课程引用兼容处理。
@@ -104,6 +108,8 @@ workspace/batch-grading/{batchId}/
 - 新release的 `manifest.json` 索引完整内容由release哈希绑定，并保存逐文件正文SHA-256；读取active release时验证active指针、release元数据、索引和完整树，不扫描所有正文。QA搜索或读取每篇正文前按索引校验该文件哈希，`MaterialService.readReleaseContent`也只在目标正文校验通过后返回内容。旧格式release没有逐文件索引时，持久`MaterialService`实例首次读取会全量扫描正文并缓存通过release/manifest哈希校验的逐文件预期哈希；之后每次仍验证active指针、release元数据和由原始draft保护的树，且在实际使用目标正文前重新校验该文件哈希。缓存不改写旧release；缺少原始draft或树不一致时拒绝读取。回滚前验证目标release，回滚只切换active指针，不修改历史release。
 
 ## Rubric规则
+
+评分表删除前检查 SQLite 单份批改、正式批次和上传草稿是否引用该作业的任一冻结版本。现有引用会阻止删除并返回 RUBRIC_IN_USE。教师服务在同一作业级锁中协调删除与新引用写入。
 
 冻结时按去重后的 warning code 集合确认；同一code在多个criterion产生警告只需确认一次，缺少或多余code仍拒绝冻结。
 
@@ -162,6 +168,8 @@ assignments/{assignmentId}/
 会话列表可按`assignmentId + rubricVersion`精确筛选。重命名只修改会话显示名；删除会话会级联删除该会话的转换任务和Agent事件，并移除由程序ID定位的提交与结果目录，不删除共享Assignment或冻结评分表。转换、作业命名或批改仍活动时不得删除；转换已失败或结果已拒绝时，尚未开始的pending命名不阻止删除。提交版本文件写入、手动转换重试与删除共用会话级互斥锁，删除取得锁后以数据库CAS写入`deletion_pending`墓碑阻止其他任务准入，再清理由程序ID定位的目录，全部清理成功后删除数据库行。清理失败保留墓碑和目录定位信息，允许再次执行删除；对已彻底删除的会话重复删除按成功处理，便于上层持久化协调记录在跨服务崩溃后完成收尾，不得留下无法通过服务恢复的孤立敏感目录。
 
 正式成绩首次确认校验当前草稿的`expectedVersion`；重复确认也必须匹配正式结果的版本。同版本重试可补齐Markdown、审计与SQLite终态，版本不匹配返回冲突，不触发恢复写入。
+
+读取和重复确认健康成绩时保持正式 JSON、派生文件、审计和会话时间。确认中断在会话锁内补齐缺失状态。Markdown 下载与正式 JSON 的确定性渲染结果比对，内容不符时重建。
 
 读取已确认结果时必须校验结构和 `resultHash`；损坏或改写的 JSON 不得被恢复流程、Markdown 重建或 CSV 导出当作正式成绩。CSV导出支持三种范围：学生范围使用同一课程与学号聚合其全部已确认作业（涉及多份评分标准时前端自动使用跨标准汇总预设，仅含评分标准、总分、满分与得分率并支持按需展开逐项明细）；评分标准范围使用精确的`assignmentId + rubricVersion`聚合全部已确认学生结果；批次范围按指定`batchId`聚合，默认仅读取校验通过的已确认结果JSON，仅当显式开启`includeUnconfirmed`处理汇总时才会补充读取待复核草稿。列选择可包含姓名、学号、作业名称、评分标准、逐项得分/扣分/加分（默认仅保留条目名，跨多标准重名时附加标准区分）、逐项置信度、总分、满分、得分率、总置信度和复核状态；预览汇总统计在行满分一致时展示原始分，否则展示平均/最高/最低得分率。CSV不是事实来源。
 

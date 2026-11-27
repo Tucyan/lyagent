@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
 import PQueue from "p-queue";
+import { withAssignmentMutation } from "./assignment-mutation-lock.js";
 import { GradingSummaryService, renderBatchCsv, type BatchResultSnapshot } from "./grading-summary-service.js";
 
 export type GradingBatchStatus = "draft" | "running" | "paused" | "completed";
@@ -84,6 +85,7 @@ export interface BatchResultSource {
 
 export interface GradingBatchDependencies {
   getSession(id: string): Promise<BatchSessionSummary>;
+  hasDeferredRun?(sessionId: string): boolean;
   execute(sessionId: string, input: { kind: "grade" | "chat"; message: string }): Promise<BatchExecutionResult>;
   readResult(sessionId: string): Promise<BatchResultSource | undefined>;
 }
@@ -150,12 +152,23 @@ const ALL_JOB_STATUSES: GradingBatchJobStatus[] = [
   "cancelled",
 ];
 
+interface CreateGradingBatchInput {
+  title: string;
+  assignmentId: string;
+  rubricVersion: number;
+  concurrency: number;
+  sessionIds: string[];
+  sourceUploadId?: string;
+}
+
 export class GradingBatchService {
   private readonly database: Database.Database;
   private readonly now: () => string;
   private readonly workerId: string;
   private readonly leaseMs: number;
   private readonly queues = new Map<string, PQueue>();
+  private readonly stopSignal = new AbortController();
+  private workersStarted = true;
   private readonly scheduledJobs = new Set<string>();
   private readonly summaries: GradingSummaryService;
 
@@ -178,14 +191,11 @@ export class GradingBatchService {
     this.migrate();
   }
 
-  async createBatch(input: {
-    title: string;
-    assignmentId: string;
-    rubricVersion: number;
-    concurrency: number;
-    sessionIds: string[];
-    sourceUploadId?: string;
-  }): Promise<GradingBatch> {
+  async createBatch(input: CreateGradingBatchInput): Promise<GradingBatch> {
+    return withAssignmentMutation(this.root, input.assignmentId, () => this.createBatchUnlocked(input));
+  }
+
+  private async createBatchUnlocked(input: CreateGradingBatchInput): Promise<GradingBatch> {
     if (input.sourceUploadId) {
       const source = this.database.prepare(
         "SELECT committed_batch_id FROM grading_batch_uploads WHERE id = ?",
@@ -516,6 +526,12 @@ export class GradingBatchService {
     if (reserved) throw new GradingBatchConflictError("This grading session is reserved by a batch");
   }
 
+  hasJobForQueuedRun(run: { sessionId: string; kind: "grade" | "chat"; message: string }): boolean {
+    return Boolean(this.database.prepare(
+      "SELECT 1 FROM grading_batch_jobs WHERE session_id = ? AND next_kind = ? AND TRIM(next_message) = ? AND status IN ('pending', 'running')",
+    ).get(run.sessionId, run.kind, run.message));
+  }
+
   async recover(): Promise<{ reconciledResults: number; requeuedLeases: number }> {
     let reconciledResults = 0;
     const candidates = this.database.prepare(
@@ -523,6 +539,7 @@ export class GradingBatchService {
     ).all() as JobRow[];
     for (const row of candidates) {
       const job = jobFromRow(row);
+      if (this.dependencies.hasDeferredRun?.(job.sessionId)) continue;
       let existing = await this.summaries.ensureSnapshotArtifacts(job.batchId, job.id, job.attemptCount);
       if (existing && existing.attemptCount !== job.attemptCount) existing = undefined;
       const source = existing ? undefined : await this.dependencies.readResult(job.sessionId);
@@ -546,25 +563,64 @@ export class GradingBatchService {
 
   private async requeueOrphanedLeases(): Promise<number> {
     const now = this.now();
-    return this.database.prepare(
-      `UPDATE grading_batch_jobs SET status = CASE WHEN attempt_count >= max_attempts THEN 'failed' ELSE 'pending' END,
-       lease_owner = NULL, lease_expires_at = NULL, run_id = NULL, last_error_code = 'LEASE_ORPHANED', updated_at = ?
-       WHERE status = 'running' AND (lease_owner IS NULL OR lease_owner <> ?)`,
-    ).run(now, this.workerId).changes;
+    const recover = this.database.transaction(() => {
+      let recoveredQueued = 0;
+      const hasDeferredRun = this.dependencies.hasDeferredRun;
+      if (hasDeferredRun) {
+        const previous = this.database.prepare(
+          "SELECT id, session_id FROM grading_batch_jobs WHERE status = 'running' AND (lease_owner IS NULL OR lease_owner <> ?)",
+        ).all(this.workerId) as Array<{ id: string; session_id: string }>;
+        const releaseQueued = this.database.prepare(
+          "UPDATE grading_batch_jobs SET status = 'pending', attempt_count = MAX(attempt_count - 1, 0), lease_owner = NULL, lease_expires_at = NULL, run_id = NULL, last_error_code = NULL, updated_at = ? WHERE id = ?",
+        );
+        // A persisted queued run never entered the model, so reclaiming it does not consume a retry.
+        for (const { id, session_id } of previous) {
+          if (hasDeferredRun(session_id)) recoveredQueued += releaseQueued.run(now, id).changes;
+        }
+      }
+      const released = this.database.prepare(
+        `UPDATE grading_batch_jobs SET status = CASE WHEN attempt_count >= max_attempts THEN 'failed' ELSE 'pending' END,
+         lease_owner = NULL, lease_expires_at = NULL, run_id = NULL, last_error_code = 'LEASE_ORPHANED', updated_at = ?
+         WHERE status = 'running' AND (lease_owner IS NULL OR lease_owner <> ?)`,
+      ).run(now, this.workerId).changes;
+      return recoveredQueued + released;
+    });
+    return recover.immediate();
   }
 
-  close(): void {
+  startWorkers(): void {
+    if (this.stopSignal.signal.aborted) return;
+    this.workersStarted = true;
+    for (const [batchId, queue] of this.queues) {
+      const row = this.database.prepare("SELECT status FROM grading_batches WHERE id = ?").get(batchId) as Pick<BatchRow, "status"> | undefined;
+      if (row?.status === "running") queue.start();
+    }
+  }
+
+  deferWorkers(): void { this.workersStarted = false; }
+
+  stop(): void {
+    this.stopSignal.abort();
     for (const queue of this.queues.values()) {
       queue.pause();
       queue.clear();
     }
+  }
+
+  async drain(): Promise<void> {
+    await Promise.all([...this.queues.values()].map((queue) => queue.onPendingZero()));
+  }
+
+  close(): void {
+    this.stop();
     if (this.database.open) this.database.close();
   }
 
   private schedule(batchId: string): void {
+    if (this.stopSignal.signal.aborted) return;
     const row = this.database.prepare("SELECT * FROM grading_batches WHERE id = ?").get(batchId) as BatchRow | undefined;
     if (!row) return;
-    const queue = this.queues.get(batchId) ?? new PQueue({ concurrency: row.concurrency });
+    const queue = this.queues.get(batchId) ?? new PQueue({ concurrency: row.concurrency, autoStart: this.workersStarted && row.status !== "paused" });
     if (!this.queues.has(batchId)) this.queues.set(batchId, queue);
     if (row.status === "paused") queue.pause();
     for (const job of this.listJobs(batchId)) {
@@ -579,7 +635,7 @@ export class GradingBatchService {
   private queueFor(batch: GradingBatch): PQueue {
     const existing = this.queues.get(batch.id);
     if (existing) return existing;
-    const queue = new PQueue({ concurrency: batch.concurrency });
+    const queue = new PQueue({ concurrency: batch.concurrency, autoStart: this.workersStarted && batch.status !== "paused" });
     if (batch.status === "paused") queue.pause();
     this.queues.set(batch.id, queue);
     return queue;
@@ -587,7 +643,7 @@ export class GradingBatchService {
 
   private async executeScheduledJob(batchId: string, jobId: string): Promise<void> {
     const claimed = await this.claimJob(batchId, jobId, this.workerId);
-    if (!claimed) return;
+    if (!claimed || this.stopSignal.signal.aborted) return;
     const execution = this.database.prepare("SELECT next_kind, next_message FROM grading_batch_jobs WHERE id = ?").get(jobId) as Pick<JobRow, "next_kind" | "next_message">;
     const fence = { leaseOwner: this.workerId, attemptCount: claimed.attemptCount };
     const interval = setInterval(() => {
@@ -599,6 +655,7 @@ export class GradingBatchService {
         kind: execution.next_kind,
         message: execution.next_message,
       });
+      if (this.stopSignal.signal.aborted) return;
       if (result.status === "waiting_for_teacher") {
         await this.settleJob(jobId, "waiting_for_teacher", {
           ...(result.runId ? { runId: result.runId } : {}),
@@ -619,6 +676,7 @@ export class GradingBatchService {
         }, fence);
       } else await this.failJob(jobId, result.errorCode ?? "GRADING_MODEL_REQUEST_FAILED", fence);
     } catch {
+      if (this.stopSignal.signal.aborted) return;
       const current = await this.getJob(jobId);
       if (current.status === "running") await this.failJob(jobId, "GRADING_MODEL_REQUEST_FAILED", fence).catch(() => undefined);
     } finally {

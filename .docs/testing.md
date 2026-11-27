@@ -97,6 +97,10 @@ Windows问题回归额外覆盖：重复warning code只确认一次、自动转�
 
 Dashboard 测试不得依赖真实模型、网络搜索或本机已有课程资料；使用临时 Workspace 和合成 Markdown。`tests/web-assets.test.ts`除SPA入口外还必须读取至少一个嵌套`/assets/*`文件，防止构建成功但生产页面无法加载脚本或样式。
 
+## 持续集成
+
+main 分支推送和拉取请求使用发布清单锁定的 Node 版本。Windows 执行干净安装、完整测试和构建，再对编译后的教师端启动冒烟。Linux 执行学生端单实例、资料同步和额度答疑测试及学生端启动冒烟。冒烟使用临时 Workspace、环回端口和无模型密钥配置。入口见[验证工作流](../.github/workflows/verify.yml)。
+
 ## 本地验证
 
 `npm run typecheck` 还会通过独立的 `tsconfig.tests.json` 检查 `tests/rubric-preview.test.tsx`；该配置不生成文件，生产构建仍只使用根 `tsconfig.json`。

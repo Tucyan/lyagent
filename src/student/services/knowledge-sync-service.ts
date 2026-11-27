@@ -3,7 +3,7 @@ import path from "node:path";
 import { unzipSync } from "fflate";
 import { z } from "zod";
 import { SafeFilesystem } from "../../core/safe-filesystem.js";
-import { MaterialService, type Course, type KnowledgeRelease } from "../../services/material-service.js";
+import { MaterialService, type Course } from "../../services/material-service.js";
 
 const MAX_BUNDLE_BYTES = 100 * 1024 * 1024;
 const MAX_ENTRY_COUNT = 2_000;
@@ -45,10 +45,11 @@ export interface SyncedReleaseResult {
 }
 
 export class KnowledgeSyncService {
+  private static readonly courseTails = new Map<string, Promise<void>>();
   private readonly filesystem: SafeFilesystem;
   private readonly materials: MaterialService;
 
-  constructor(private readonly workspaceRoot: string) {
+  constructor(workspaceRoot: string) {
     this.filesystem = new SafeFilesystem(workspaceRoot);
     this.materials = new MaterialService(workspaceRoot);
   }
@@ -101,7 +102,7 @@ export class KnowledgeSyncService {
       throw new KnowledgeSyncError("INVALID_BUNDLE", "资料包缺少 course.json 或 active.json", 422);
     }
 
-    const courseMeta = parseJson(courseBytes, courseMetaSchema, "course.json") as Course;
+    const courseMeta = parseJson(courseBytes, courseMetaSchema, "course.json");
     if (courseMeta.id !== input.courseId) {
       throw new KnowledgeSyncError("INVALID_BUNDLE", "资料包课程 ID 与目标课程不一致", 422);
     }
@@ -114,100 +115,92 @@ export class KnowledgeSyncService {
       }
     }
 
-    const releaseJsonBytes = files.get(`${releasePrefix}index/release.json`);
-    const manifestBytes = files.get(`${releasePrefix}index/manifest.json`);
-    const treeBytes = files.get(`${releasePrefix}index/tree.json`);
-    if (!releaseJsonBytes || !manifestBytes || !treeBytes) {
+    if (!["release.json", "manifest.json", "tree.json"].every((file) => files.has(`${releasePrefix}index/${file}`))) {
       throw new KnowledgeSyncError("INVALID_BUNDLE", "资料包缺少 release 索引文件", 422);
     }
 
-    const releaseMeta = JSON.parse(Buffer.from(releaseJsonBytes).toString("utf8")) as KnowledgeRelease;
-    if (
-      releaseMeta.id !== activePointer.releaseId ||
-      releaseMeta.courseId !== input.courseId ||
-      releaseMeta.manifestHash !== activePointer.manifestHash
-    ) {
-      throw new KnowledgeSyncError("INTEGRITY_FAILED", "release 元数据与 active 指针不一致", 422);
+    const coursePath = path.join(this.filesystem.root, courseMeta.id);
+    const key = process.platform === "win32" ? coursePath.toLowerCase() : coursePath;
+    const previous = KnowledgeSyncService.courseTails.get(key) ?? Promise.resolve();
+    const operation = previous.then(() => this.installRelease(courseMeta, activePointer, releasePrefix, files));
+    const tail = operation.then(() => undefined, () => undefined);
+    KnowledgeSyncService.courseTails.set(key, tail);
+    try {
+      return await operation;
+    } finally {
+      if (KnowledgeSyncService.courseTails.get(key) === tail) KnowledgeSyncService.courseTails.delete(key);
     }
+  }
 
-    // Verify per-file hashes if manifest carries entries
-    const manifest = JSON.parse(Buffer.from(manifestBytes).toString("utf8")) as {
-      manifestHash?: string;
-      entries?: Array<{ path: string; contentHash: string }>;
-    };
-    if (Array.isArray(manifest.entries)) {
-      for (const item of manifest.entries) {
-        const docBytes = files.get(`${releasePrefix}${item.path}`);
-        if (!docBytes) {
-          throw new KnowledgeSyncError("INTEGRITY_FAILED", `缺少索引文件 ${item.path}`, 422);
-        }
-        const docHash = createHash("sha256").update(docBytes).digest("hex");
-        if (docHash !== item.contentHash) {
-          throw new KnowledgeSyncError("INTEGRITY_FAILED", `文件 ${item.path} 内容哈希校验失败`, 422);
-        }
-      }
-    }
-
-    // Check if identical release already exists
-    const targetReleaseDir = `knowledge/${input.courseId}/releases/${activePointer.releaseId}`;
-    const existingRelease = await this.materials
-      .listReleases(input.courseId)
-      .then((list) => list.find((r) => r.id === activePointer.releaseId))
-      .catch(() => undefined);
-
-    if (existingRelease && existingRelease.manifestHash === activePointer.manifestHash) {
-      await this.filesystem.writeText(`knowledge/${input.courseId}/course.json`, `${JSON.stringify(courseMeta, null, 2)}\n`);
-      await this.filesystem.writeText(
-        `knowledge/${input.courseId}/active.json`,
-        `${JSON.stringify({ releaseId: activePointer.releaseId, manifestHash: activePointer.manifestHash }, null, 2)}\n`,
-      );
-      return {
-        courseId: input.courseId,
-        courseName: courseMeta.name,
-        releaseId: activePointer.releaseId,
-        manifestHash: activePointer.manifestHash,
-        deduplicated: true,
-      };
-    }
-
-    // Write into isolated sync-staging before moving into releases/
-    const stagingRelative = `inbox/sync-staging/${input.courseId}/${randomUUID()}`;
+  private async installRelease(
+    course: Course,
+    pointer: z.infer<typeof activePointerSchema>,
+    releasePrefix: string,
+    files: ReadonlyMap<string, Uint8Array>,
+  ): Promise<SyncedReleaseResult> {
+    const { releaseId, manifestHash } = pointer;
+    const courseDirectory = `knowledge/${course.id}`;
+    const targetReleaseDir = `${courseDirectory}/releases/${releaseId}`;
+    const stagingId = randomUUID();
+    const stagingRelative = `inbox/sync-staging/${course.id}/${stagingId}`;
+    const stagedReleaseDir = `${stagingRelative}/releases/${releaseId}`;
     try {
       for (const [entryPath, bytes] of files) {
         if (!entryPath.startsWith(releasePrefix)) continue;
         const innerPath = entryPath.slice(releasePrefix.length);
-        await this.filesystem.writeBytes(`${stagingRelative}/${innerPath}`, bytes);
+        await this.filesystem.writeBytes(`${stagedReleaseDir}/${innerPath}`, bytes);
       }
+      await this.materials.validateReleaseForSync(course.id, releaseId, manifestHash, stagingId);
 
-      if (!existingRelease) {
-        await this.filesystem.moveDirectory(stagingRelative, targetReleaseDir);
+      const deduplicated = await this.filesystem.directoryExists(targetReleaseDir);
+      if (deduplicated) await this.materials.validateReleaseForSync(course.id, releaseId, manifestHash);
+
+      const courseText = `${JSON.stringify(course, null, 2)}\n`;
+      const activeText = `${JSON.stringify(pointer, null, 2)}\n`;
+      if (await this.filesystem.directoryExists(courseDirectory)) {
+        if (!deduplicated) await this.filesystem.moveDirectory(stagedReleaseDir, targetReleaseDir);
+        await this.activateInstalledRelease(courseDirectory, courseText, activeText);
       } else {
-        await this.filesystem.removeDirectory(stagingRelative).catch(() => undefined);
-      }
-
-      await this.filesystem.writeText(`knowledge/${input.courseId}/course.json`, `${JSON.stringify(courseMeta, null, 2)}\n`);
-      await this.filesystem.writeText(
-        `knowledge/${input.courseId}/active.json`,
-        `${JSON.stringify({ releaseId: activePointer.releaseId, manifestHash: activePointer.manifestHash }, null, 2)}\n`,
-      );
-
-      // Final end-to-end verification using MaterialService
-      const snapshot = await this.materials.getActiveReleaseSnapshot(input.courseId);
-      if (!snapshot || snapshot.release.id !== activePointer.releaseId) {
-        throw new KnowledgeSyncError("INTEGRITY_FAILED", "同步后激活版本校验失败", 422);
+        await this.filesystem.writeText(`${stagingRelative}/course.json`, courseText);
+        await this.filesystem.writeText(`${stagingRelative}/active.json`, activeText);
+        await this.filesystem.moveDirectory(stagingRelative, courseDirectory);
       }
 
       return {
-        courseId: input.courseId,
-        courseName: courseMeta.name,
-        releaseId: activePointer.releaseId,
-        manifestHash: activePointer.manifestHash,
-        deduplicated: false,
+        courseId: course.id,
+        courseName: course.name,
+        releaseId,
+        manifestHash,
+        deduplicated,
       };
-    } catch (error) {
+    } catch {
+      throw new KnowledgeSyncError("INTEGRITY_FAILED", "资料同步校验或安装失败", 422);
+    } finally {
       await this.filesystem.removeDirectory(stagingRelative).catch(() => undefined);
-      if (error instanceof KnowledgeSyncError) throw error;
-      throw new KnowledgeSyncError("INTEGRITY_FAILED", error instanceof Error ? error.message : "资料同步校验失败", 422);
+    }
+  }
+
+  private async activateInstalledRelease(courseDirectory: string, courseText: string, activeText: string): Promise<void> {
+    const courseFile = `${courseDirectory}/course.json`;
+    const activeFile = `${courseDirectory}/active.json`;
+    const previousCourse = await this.filesystem.readBytes(courseFile).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!previousCourse) {
+      // An older sync may have installed the release before registering the course.
+      await this.filesystem.writeText(activeFile, activeText);
+      await this.filesystem.writeText(courseFile, courseText);
+      return;
+    }
+
+    const metadataChanged = !previousCourse.equals(Buffer.from(courseText));
+    if (metadataChanged) await this.filesystem.writeText(courseFile, courseText);
+    try {
+      await this.filesystem.writeText(activeFile, activeText);
+    } catch (error) {
+      if (metadataChanged) await this.filesystem.writeBytes(courseFile, previousCourse);
+      throw error;
     }
   }
 

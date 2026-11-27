@@ -1,6 +1,6 @@
 # Course Agent
 
-面向 Windows 的本地课程辅助软件，提供课程资料库、带引用的课程答疑、评分表设计、作业批改、教师复核与成绩导出。
+教师工作台运行于 Windows，提供课程资料库、带引用的答疑、评分标准设计、单份和批量批改、教师复核及成绩导出。独立学生端运行于 Windows 或 Linux，提供授权课程资料与限额答疑。
 
 ## 使用与开发
 
@@ -15,6 +15,6 @@
 - [工程文档入口](.docs/README.md)：架构、存储、开发、测试与运行安全。
 - [里程碑与用户验收范围](docs/superpowers/plans/2026-08-02-course-agent-milestones.md)：各阶段状态与验收条件。
 - [Windows 发布包前端验收](docs/acceptance/windows-release-frontend-state-sync.md)：页面切换、会话恢复和操作状态检查。
-- [历史文档归档](docs/archive/README.md)：2026-11-24 回归记录、2026-10 试用使用说明、验证报告及早期开发过程记录（仅作历史参考）。
+- [历史文档归档](docs/archive/README.md)：早期真实使用回归、试用说明、阶段计划和验证报告。
 
 项目当前仍处于里程碑验收阶段，具体交付范围以验收计划为准。

@@ -3,16 +3,19 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PiAssignmentGrader } from "../src/agents/assignment-grader/agent.js";
 import type { GradingAgentBuilder } from "../src/api/grading-routes.js";
 import { createServer } from "../src/api/server.js";
+import { SafeFilesystem } from "../src/core/safe-filesystem.js";
+import { validateRubric } from "../src/schemas/rubric.js";
 import type { Rubric } from "../src/schemas/rubric.js";
 import {
   ConversionUnavailableError,
   type ConversionTaskStatus,
   type DocumentConversionClient,
 } from "../src/services/document-conversion-client.js";
+import { GradingSessionService } from "../src/services/grading-session-service.js";
 import type { SubmissionConversionOptions } from "../src/services/submission-conversion-service.js";
 
 const roots: string[] = [];
@@ -44,6 +47,125 @@ const rubric: Rubric = {
 };
 
 describe("grading API", () => {
+  it("keeps all frozen versions when a session references an older version", async () => {
+    const { app, assignmentId } = await setup();
+    const assignmentUrl = `/api/rubrics/assignments/${assignmentId}`;
+    try {
+      const created = await app.inject({
+        method: "POST", url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=rubric-reference" },
+        payload: multipart("rubric-reference", {
+          assignmentId, rubricVersion: "1", studentName: "测试学生", studentNumber: "001", submissionTitle: "测试报告",
+        }, "report.md", "# 测试报告"),
+      });
+      expect(created.statusCode, created.body).toBe(201);
+
+      const revised = await app.inject({ method: "POST", url: `${assignmentUrl}/versions/1/revisions` });
+      expect(revised.statusCode, revised.body).toBe(200);
+      const draft = revised.json();
+      const acknowledgedWarningCodes = [...new Set(validateRubric(draft.rubric).warnings.map(({ code }) => code))];
+      const frozen = await app.inject({ method: "POST", url: `${assignmentUrl}/freeze`, payload: { expectedVersion: draft.version, acknowledgedWarningCodes } });
+      expect(frozen.statusCode, frozen.body).toBe(201);
+      expect(frozen.json().version).toBe(2);
+
+      const deletion = await app.inject({ method: "DELETE", url: assignmentUrl });
+      expect(deletion.statusCode, deletion.body).toBe(409);
+      expect(deletion.json()).toMatchObject({ code: "RUBRIC_IN_USE" });
+      expect((await app.inject(`${assignmentUrl}/versions`)).json().map(({ version }: { version: number }) => version)).toEqual([2, 1]);
+      expect((await app.inject(`/api/grading/sessions/${created.json().id}`)).json().rubric).toEqual(rubric);
+      expect((await app.inject({ method: "DELETE", url: `/api/grading/sessions/${created.json().id}` })).statusCode).toBe(204);
+      expect((await app.inject({ method: "DELETE", url: assignmentUrl })).statusCode).toBe(204);
+    } finally { await app.close(); }
+  });
+
+  it("protects frozen versions referenced only by a batch upload draft", async () => {
+    const { app, assignmentId } = await setup();
+    const assignmentUrl = `/api/rubrics/assignments/${assignmentId}`;
+    try {
+      const upload = await createRubricBatchUpload(app, assignmentId);
+      expect(upload.statusCode, upload.body).toBe(201);
+      const deletion = await app.inject({ method: "DELETE", url: assignmentUrl });
+      expect(deletion.statusCode, deletion.body).toBe(409);
+      expect(deletion.json()).toMatchObject({ code: "RUBRIC_IN_USE" });
+      expect((await app.inject({ method: "DELETE", url: `/api/grading/batch-uploads/${upload.json().id}` })).statusCode).toBe(200);
+      expect((await app.inject({ method: "DELETE", url: assignmentUrl })).statusCode).toBe(204);
+    } finally { await app.close(); }
+  });
+
+  it("protects a rubric still referenced by a persisted batch without member sessions", async () => {
+    const { app, assignmentId, root } = await setup();
+    const database = new Database(path.join(root, "grading.sqlite"));
+    try {
+      // Isolate the batch row so a session reference cannot mask a missing check.
+      database.prepare(`INSERT INTO grading_batches
+        (id, title, assignment_id, rubric_version, status, concurrency, created_at, updated_at)
+        VALUES ('persisted-batch', '历史批次', ?, 1, 'completed', 1, '', '')`).run(assignmentId.toUpperCase());
+      const deletion = await app.inject({ method: "DELETE", url: `/api/rubrics/assignments/${assignmentId}` });
+      expect(deletion.statusCode, deletion.body).toBe(409);
+      expect(deletion.json()).toMatchObject({ code: "RUBRIC_IN_USE" });
+    } finally { database.close(); await app.close(); }
+  });
+
+  it("rejects a new batch upload when assignment deletion acquires the lock first", async () => {
+    const { app, assignmentId } = await setup();
+    const assignmentPath = `assignments/${assignmentId}`;
+    const originalRemove = SafeFilesystem.prototype.removeDirectory;
+    let markRemoving!: () => void;
+    let allowRemoval!: () => void;
+    const removing = new Promise<void>((resolve) => { markRemoving = resolve; });
+    const removalGate = new Promise<void>((resolve) => { allowRemoval = resolve; });
+    const removal = vi.spyOn(SafeFilesystem.prototype, "removeDirectory").mockImplementation(async function (this: SafeFilesystem, relativePath) {
+      if (relativePath === assignmentPath) {
+        markRemoving();
+        await removalGate;
+      }
+      return originalRemove.call(this, relativePath);
+    });
+    try {
+      const deletion = app.inject({ method: "DELETE", url: `/api/rubrics/${assignmentPath}` });
+      await removing;
+      const creating = createRubricBatchUpload(app, assignmentId);
+      await Promise.race([creating, new Promise<void>((resolve) => setTimeout(resolve, 30))]);
+      allowRemoval();
+      expect((await deletion).statusCode).toBe(204);
+      const result = await creating;
+      expect(result.statusCode, result.body).toBe(404);
+      expect(result.json()).toMatchObject({ code: "RUBRIC_NOT_FOUND" });
+    } finally { allowRemoval(); removal.mockRestore(); await app.close(); }
+  });
+
+  it("blocks rubric deletion when an admitted session has not written its reference yet", async () => {
+    const { app, assignmentId } = await setup();
+    const originalCopy = SafeFilesystem.prototype.copyInto;
+    let markCopying!: () => void;
+    let allowCopy!: () => void;
+    const copying = new Promise<void>((resolve) => { markCopying = resolve; });
+    const copyGate = new Promise<void>((resolve) => { allowCopy = resolve; });
+    const copy = vi.spyOn(SafeFilesystem.prototype, "copyInto").mockImplementation(async function (this: SafeFilesystem, absolutePath, relativePath) {
+      markCopying();
+      await copyGate;
+      return originalCopy.call(this, absolutePath, relativePath);
+    });
+    try {
+      const creating = app.inject({
+        method: "POST", url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=concurrent-rubric-reference" },
+        payload: multipart("concurrent-rubric-reference", {
+          assignmentId, rubricVersion: "1", studentName: "测试学生", studentNumber: "001", submissionTitle: "测试报告",
+        }, "report.md", "# 测试报告"),
+      });
+      await copying;
+      const deletion = app.inject({ method: "DELETE", url: `/api/rubrics/assignments/${assignmentId}` });
+      await Promise.race([deletion, new Promise<void>((resolve) => setTimeout(resolve, 30))]);
+      allowCopy();
+      const response = await creating;
+      expect(response.statusCode, response.body).toBe(201);
+      const result = await deletion;
+      expect(result.statusCode, result.body).toBe(409);
+      expect(result.json()).toMatchObject({ code: "RUBRIC_IN_USE" });
+    } finally { allowCopy(); copy.mockRestore(); await app.close(); }
+  });
+
   it("returns the active title retry state before the naming model finishes", async () => {
     let attempt = 0;
     let release!: () => void;
@@ -998,6 +1120,82 @@ describe("grading API", () => {
     await app.close();
   });
 
+  it("recovers a ready auto-start submission whose grading run was never recorded", async () => {
+    const { app, assignmentId, root } = await setup();
+    let sessionId: string;
+    try {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=auto-recovery" },
+        payload: multipart("auto-recovery", { assignmentId, rubricVersion: "1", studentName: "Student", studentNumber: "20260819", submissionTitle: "Report" }, "report.md", "# Report"),
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      sessionId = created.json().id;
+    } finally {
+      await app.close();
+    }
+    const db = new Database(path.join(root, "grading.sqlite"));
+    try {
+      db.prepare("UPDATE grading_sessions SET auto_start = 1, grading_status = 'queued' WHERE id = ?").run(sessionId);
+    } finally {
+      db.close();
+    }
+
+    const run = vi.fn(async (): ReturnType<PiAssignmentGrader["run"]> => ({ kind: "reply", reply: "Recovered" }));
+    const restarted = await createServer({ workspaceRoot: root, gradingAgentFactory: () => ({ run }) });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    } finally {
+      await restarted.close();
+    }
+  });
+
+  it("bounds shutdown and defers database closure while an active conversion ignores cancellation", async () => {
+    const closeSessions = vi.spyOn(GradingSessionService.prototype, "close");
+    let acceptSignal!: (signal: AbortSignal | undefined) => void;
+    const request = new Promise<AbortSignal | undefined>((resolve) => { acceptSignal = resolve; });
+    let release!: (value: { taskId: string }) => void;
+    const waiting = new Promise<{ taskId: string }>((resolve) => { release = resolve; });
+    const conversionClient: DocumentConversionClient = {
+      health: async () => ({}),
+      submit: (_input, signal) => {
+        acceptSignal(signal);
+        return waiting;
+      },
+      status: async () => ({ status: "completed" }),
+      result: async () => ({ kind: "document", markdown: "# Report", assets: [] }),
+    };
+    const { app, assignmentId, root } = await setup(undefined, conversionClient);
+    try {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/grading/sessions",
+        headers: { "content-type": "multipart/form-data; boundary=shutdown" },
+        payload: multipart("shutdown", { assignmentId, rubricVersion: "1", studentName: "Student", studentNumber: "20260820", submissionTitle: "Report" }, "report.pdf", "%PDF-1.5"),
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const signal = await request;
+      expect(signal).toBeDefined();
+      const close = app.close();
+      await close;
+      expect(signal?.aborted).toBe(true);
+      expect(closeSessions).not.toHaveBeenCalled();
+      release({ taskId: "late-response" });
+      await vi.waitFor(() => expect(closeSessions).toHaveBeenCalledOnce());
+      const db = new Database(path.join(root, "grading.sqlite"));
+      try {
+        expect(db.prepare("SELECT conversion_status AS status FROM grading_sessions WHERE id = ?").get(created.json().id)).toEqual({ status: "running" });
+      } finally {
+        db.close();
+      }
+    } finally {
+      release({ taskId: "late-response" });
+      await app.close();
+      closeSessions.mockRestore();
+    }
+  });
+
   it("exposes safe retryable converter outages and rejects retry for terminal parse failures", async () => {
     const unavailableClient: DocumentConversionClient = {
       health: async () => ({}),
@@ -1277,6 +1475,13 @@ async function waitForConversionStatus(
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   throw new Error(`Conversion did not reach ${status}`);
+}
+
+function createRubricBatchUpload(app: Awaited<ReturnType<typeof createServer>>, assignmentId: string, rubricVersion = 1) {
+  return app.inject({
+    method: "POST", url: "/api/grading/batch-uploads",
+    payload: { title: "待上传批次", assignmentId, rubricVersion, concurrency: 1, items: [{ filename: "report.md" }] },
+  });
 }
 
 function multipart(

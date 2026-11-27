@@ -38,7 +38,7 @@ web/src/pages/KnowledgeLibraryPage.tsx
 web/src/pages/ModelSettingsPage.tsx
 web/src/pages/RubricPage.tsx
 web/src/pages/grading-page-model.ts
-docs/superpowers/plans/2026-10-07-trial-experience.md
+docs/archive/2026-10-trial/2026-10-07-trial-experience.md
 docs/acceptance/screenshots/2026-10-07/
 ```
 

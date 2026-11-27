@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,4 +41,18 @@ describe("GradingSummaryService", () => {
     expect(await readFile(path.join(root, "batch-grading", "batch-1", "summary.csv"), "utf8")).toBe(csv);
     expect(await readFile(path.join(root, "batch-grading", "batch-1", "results", "job-1-attempt-1.md"), "utf8")).toContain("84/100");
   });
+});
+
+it("treats a truncated or invalid derived snapshot as missing so recovery can rebuild it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "grading-summary-corrupt-"));
+  roots.push(root);
+  const dir = path.join(root, "batch-grading", "batch-1", "results");
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, "job-1-attempt-1.json");
+  const summary = new GradingSummaryService(root);
+  for (const malformed of ["{", "null"]) {
+    await writeFile(file, malformed);
+    await expect(summary.ensureSnapshotArtifacts("batch-1", "job-1", 1)).resolves.toBeUndefined();
+    expect(await readFile(file, "utf8")).toBe(malformed);
+  }
 });

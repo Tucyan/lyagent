@@ -1,8 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionService, type CourseQaSession } from "../src/services/session-service.js";
+
+import { StudentSessionService } from "../src/student/services/student-session-service.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -102,5 +104,50 @@ describe("QA session mutations", () => {
     expect(saved.messages).toHaveLength(20);
     expect(saved.messages[0]?.content).toBe("turn-2");
     expect(saved.messages.at(-1)?.content).toBe("turn-11 answer");
+  });
+});
+
+describe("QA session listing", () => {
+  it("keeps both portals' healthy sessions and reports damaged files without modifying them", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "qa-session-list-"));
+    roots.push(root);
+    const teacher = new SessionService(root);
+    const student = new StudentSessionService(root);
+    const teacherHealthy = await teacher.create("course", "release");
+    const teacherBroken = await teacher.create("course", "release");
+    const studentHealthy = await student.create("user", "course", "release");
+    const studentBroken = await student.create("user", "course", "release");
+    const files = [
+      path.join(root, "sessions", "web", "course", teacherBroken.id + ".json"),
+      path.join(root, "student-sessions", "user", "course", studentBroken.id + ".json"),
+    ];
+    const contents = [
+      JSON.stringify({ ...teacherBroken, title: { unexpected: true } }),
+      JSON.stringify({ ...studentBroken, messages: [{ role: "assistant", content: {}, citations: [] }] }),
+    ];
+    await Promise.all(files.map((file, index) => writeFile(file, contents[index]!)));
+    for (const [listing, healthy] of [
+      [await teacher.listWithDiagnostics("course"), teacherHealthy],
+      [await student.listWithDiagnostics("user", "course"), studentHealthy],
+    ] as const) {
+      expect(listing.damagedCount).toBe(1);
+      expect(listing.sessions.map(({ id }) => id)).toEqual([healthy.id]);
+    }
+    expect(await Promise.all(files.map((file) => readFile(file, "utf8")))).toEqual(contents);
+  });
+
+  it("propagates a directory-level read failure", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "qa-session-list-"));
+    roots.push(root);
+    const teacher = new SessionService(root);
+    const student = new StudentSessionService(root);
+    await teacher.create("course", "release");
+    await student.create("user", "course", "release");
+    for (const directory of [path.join(root, "sessions", "web", "course"), path.join(root, "student-sessions", "user", "course")]) {
+      await rm(directory, { recursive: true });
+      await writeFile(directory, "invalid directory");
+    }
+    await expect(teacher.listWithDiagnostics("course")).rejects.toThrow(/not a directory/);
+    await expect(student.listWithDiagnostics("user", "course")).rejects.toThrow(/not a directory/);
   });
 });

@@ -1,0 +1,44 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            portal: teacher
+          - os: ubuntu-latest
+            portal: student
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read release Node version
+        id: runtime
+        shell: pwsh
+        run: |
+          $version = (Get-Content release-lock.json -Raw | ConvertFrom-Json).node.version
+          "node_version=$version" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.runtime.outputs.node_version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+        if: runner.os == 'Windows'
+      - run: npm test -- --run tests/student-server-instance.test.ts tests/student-quota-and-qa.test.ts tests/student-knowledge-sync.test.ts
+        if: runner.os == 'Linux'
+      - run: npm run build
+      - run: node scripts/smoke-start.mjs ${{ matrix.portal }}

@@ -4,11 +4,12 @@ import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 import type { CourseQaAgentFactory } from "../api/server.js";
+import { resolveWorkspaceIdentity } from "../config/workspace-identity.js";
 import { KnowledgeAccessError } from "../services/knowledge-service.js";
 import { SessionNotFoundError } from "../services/session-service.js";
 import type { WebEvidenceService } from "../services/web-evidence-service.js";
 import type { StudentServerConfig } from "./config.js";
-import { openStudentDatabase } from "./db/student-db.js";
+import { acquireStudentWorkspaceLock, openStudentDatabase } from "./db/student-db.js";
 import { isAuthOrAdminError, registerAuthAndAdminRoutes, SESSION_COOKIE_NAME } from "./routes/auth-and-admin-routes.js";
 import { registerStudentKnowledgeRoutes } from "./routes/student-knowledge-routes.js";
 import { registerStudentQaRoutes } from "./routes/student-qa-routes.js";
@@ -33,9 +34,27 @@ export async function createStudentServer(options: StudentServerOptions): Promis
   syncService: KnowledgeSyncService;
   close: () => Promise<void>;
 }> {
+  const { canonicalRoot } = await resolveWorkspaceIdentity(options.config.workspaceRoot);
+  const release = acquireStudentWorkspaceLock(canonicalRoot);
+  let db: ReturnType<typeof openStudentDatabase> | undefined;
+  const teardown = () => {
+    db?.close();
+    release();
+  };
+  try {
+    db = openStudentDatabase(canonicalRoot, () => (options.now?.() ?? new Date()).toISOString());
+    const server = await configureStudentServer({ ...options, config: { ...options.config, workspaceRoot: canonicalRoot } }, db);
+    server.app.addHook("onClose", async () => teardown());
+    return server;
+  } catch (error) {
+    teardown();
+    throw error;
+  }
+}
+
+async function configureStudentServer(options: StudentServerOptions, db: ReturnType<typeof openStudentDatabase>) {
   const { config } = options;
   const app = Fastify({ logger: false, trustProxy: config.trustProxy });
-  const db = openStudentDatabase(config.workspaceRoot, () => (options.now ? options.now() : new Date()).toISOString());
   const auth = new StudentAuthService(db, {
     sessionTtlHours: config.sessionTtlHours,
     ...(options.now ? { now: options.now } : {}),
@@ -196,10 +215,7 @@ export async function createStudentServer(options: StudentServerOptions): Promis
     accounts,
     quotas,
     syncService,
-    close: async () => {
-      await app.close();
-      db.close();
-    },
+    close: () => app.close(),
   };
 }
 

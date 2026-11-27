@@ -129,16 +129,21 @@ export class GradingResultService {
   }
 
   async readConfirmedResult(sessionId: string): Promise<ConfirmedGradingResult | undefined> {
-    const session = await this.sessions.getSession(sessionId);
-    const confirmed = await this.readConfirmed(session);
-    if (confirmed) await this.finishConfirmation(session, confirmed);
-    return confirmed;
+    return this.withSessionLock(sessionId, async () => {
+      const session = await this.sessions.getSession(sessionId);
+      const confirmed = await this.readConfirmed(session);
+      if (confirmed) await this.finishConfirmation(session, confirmed);
+      return confirmed;
+    });
   }
 
   async readConfirmedMarkdown(sessionId: string): Promise<string> {
-    const session = await this.sessions.getSession(sessionId);
-    if (!await this.readConfirmedResult(sessionId)) throw new GradingResultServiceError("Confirmed grading result was not found");
-    return this.filesystem.readText(this.confirmedMarkdownPath(session));
+    return this.withSessionLock(sessionId, async () => {
+      const session = await this.sessions.getSession(sessionId);
+      const confirmed = await this.readConfirmed(session);
+      if (!confirmed) throw new GradingResultServiceError("Confirmed grading result was not found");
+      return this.finishConfirmation(session, confirmed, { verifyMarkdown: true });
+    });
   }
 
   private async readConfirmed(session: GradingSession): Promise<ConfirmedGradingResult | undefined> {
@@ -158,34 +163,40 @@ export class GradingResultService {
 
   private async appendAudit(session: GradingSession, event: Record<string, unknown>): Promise<void> {
     const auditPath = this.auditPath(session);
-    let existing = "";
-    try {
-      existing = await this.filesystem.readText(auditPath);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const existing = await this.readTextIfPresent(auditPath) ?? "";
     await this.filesystem.writeText(auditPath, `${existing}${JSON.stringify(event)}\n`);
   }
 
-  private async finishConfirmation(session: GradingSession, confirmed: ConfirmedGradingResult): Promise<void> {
-    const frozen = await this.rubrics.getVersion(session.assignmentId, session.rubricVersion);
-    await this.filesystem.writeText(this.confirmedMarkdownPath(session), renderStudentFeedback(confirmed, frozen.rubric));
-    await this.sessions.setGradingStatus(session.id, "confirmed");
+  private async finishConfirmation(session: GradingSession, confirmed: ConfirmedGradingResult, { verifyMarkdown = false } = {}): Promise<string> {
+    const markdownPath = this.confirmedMarkdownPath(session);
+    let markdown = await this.readTextIfPresent(markdownPath);
+    if (verifyMarkdown || markdown === undefined || markdown.trim() === "") {
+      const frozen = await this.rubrics.getVersion(session.assignmentId, session.rubricVersion);
+      const expectedMarkdown = renderStudentFeedback(confirmed, frozen.rubric);
+      if (markdown !== expectedMarkdown) await this.filesystem.writeText(markdownPath, expectedMarkdown);
+      markdown = expectedMarkdown;
+    }
+    if (session.gradingStatus !== "confirmed") await this.sessions.setGradingStatus(session.id, "confirmed");
     await this.ensureConfirmationAudit(session, confirmed);
     await this.removeIfPresent(this.confirmCommitPath(session));
+    return markdown;
   }
 
   private async ensureConfirmationAudit(session: GradingSession, confirmed: ConfirmedGradingResult): Promise<void> {
-    let existing = "";
-    try {
-      existing = await this.filesystem.readText(this.auditPath(session));
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const existing = await this.readTextIfPresent(this.auditPath(session)) ?? "";
     const alreadyRecorded = existing.split(/\r?\n/).filter(Boolean).some((line) => {
       try { const event = JSON.parse(line) as { action?: unknown; resultHash?: unknown }; return event.action === "confirm" && event.resultHash === confirmed.resultHash; } catch { return false; }
     });
     if (!alreadyRecorded) await this.appendAudit(session, { timestamp: confirmed.confirmedAt, actor: { type: "teacher", id: "local-teacher" }, action: "confirm", version: confirmed.version, resultHash: confirmed.resultHash, reviewNote: confirmed.reviewNote, acknowledgedReasons: confirmed.acknowledgedReasons });
+  }
+
+  private async readTextIfPresent(relativePath: string): Promise<string | undefined> {
+    try {
+      return await this.filesystem.readText(relativePath);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
   }
 
   private async removeIfPresent(relativePath: string): Promise<void> {

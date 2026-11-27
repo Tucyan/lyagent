@@ -40,10 +40,11 @@ export class GradingSummaryService {
   async readSnapshot(batchId: string, jobId: string, attemptCount: number): Promise<BatchResultSnapshot | undefined> {
     try {
       const snapshot = JSON.parse(await this.filesystem.readText(this.jsonPath(batchId, jobId, attemptCount))) as BatchResultSnapshot;
+      if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
       const { resultHash, ...withoutHash } = snapshot;
       return resultHash === hashJson(withoutHash) ? snapshot : undefined;
     } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
   }

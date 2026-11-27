@@ -4,6 +4,12 @@ import { apiErrorFromResponse, apiFetch, reviewReasonLabel, rubricProblemMessage
 afterEach(() => vi.unstubAllGlobals());
 
 describe("API error presentation", () => {
+  it("explains how to handle grading references when rubric deletion is blocked", async () => {
+    const error = await apiErrorFromResponse(new Response(JSON.stringify({ code: "RUBRIC_IN_USE" }), { status: 409 }));
+    expect(error.message).toContain("上传草稿");
+    expect(error.message).toContain("创建修订");
+  });
+
   it("offers separate recovery actions for missing identity and damaged or unprocessable reports", () => {
     expect(userErrorMessage("STUDENT_IDENTITY_NOT_FOUND")).toContain("补填姓名和学号");
     expect(userErrorMessage("SUBMISSION_CONTENT_MISMATCH")).toContain("重新导出");

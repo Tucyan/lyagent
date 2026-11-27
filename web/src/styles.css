@@ -374,32 +374,18 @@ button:disabled {
 .admin-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 250px minmax(0, 1fr);
-  background: #f7f7f8;
 }
 .admin-nav {
   position: fixed;
-  z-index: 5;
   inset: 0 auto 0 0;
-  width: 250px;
   display: flex;
   flex-direction: column;
-  padding: 18px 12px;
-  border-right: 1px solid #e5e5e8;
-  background: #fff;
 }
 .admin-brand {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px 22px;
   font-size: 18px;
-}
-.admin-nav-label {
-  margin: 16px 10px 7px;
-  color: #8a8a94;
-  font-size: 12px;
-  font-weight: 700;
 }
 .admin-nav nav {
   display: grid;
@@ -1868,12 +1854,6 @@ code {
 }
 .rubric-page-header {
   display: flex;
-  min-height: 104px;
-  align-items: flex-start;
-  gap: 18px;
-  padding: 18px 28px 15px;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fff;
 }
 .rubric-page-header > div {
   min-width: 0;
@@ -1954,8 +1934,6 @@ code {
   gap: 3px;
 }
 .rubric-session-row {
-  position: relative;
-  display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   border-radius: 8px;
@@ -1974,12 +1952,6 @@ code {
   text-decoration: none;
 }
 .rubric-session-row > button {
-  padding: 6px 7px;
-  border: 0;
-  color: #8a4a4a;
-  background: transparent;
-  font-size: 11px;
-  opacity: 0;
   transition:
     opacity 0.15s ease,
     background 0.15s ease;
@@ -2556,13 +2528,7 @@ code {
   background: #fff;
 }
 .grading-header {
-  display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 16px;
-  min-height: 86px;
-  padding: 14px 22px;
-  border-bottom: 1px solid #e5e7eb;
 }
 .grading-header h1 {
   margin: 1px 0 2px;
@@ -3176,14 +3142,8 @@ code {
 }
 .grading-new-dialog {
   display: grid;
-  gap: 12px;
-  width: min(540px, 100%);
   margin: 0 auto;
-  padding: 24px;
-  border: 1px solid #e0e4e9;
-  border-radius: 12px;
   background: #fff;
-  box-shadow: 0 12px 30px #1f293712;
 }
 .grading-new-dialog h2 {
   margin: 0 0 4px;

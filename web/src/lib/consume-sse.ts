@@ -11,7 +11,10 @@ export async function consumeSse(response: Response, onEvent: (event: string, da
   let buffer = "";
   let terminalEvent: SseConsumptionResult["terminalEvent"];
   while (true) {
-    const { done, value } = await reader.read();
+    const { done, value } = await reader.read().catch((error: unknown) => {
+      if (!terminalEvent) throw error;
+      return { done: true, value: undefined };
+    });
     buffer += decoder.decode(value, { stream: !done });
     let boundary = buffer.indexOf("\n\n");
     while (boundary >= 0) {

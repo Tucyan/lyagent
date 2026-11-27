@@ -46,14 +46,23 @@ export class SessionService {
   }
 
   async get(courseId: string, sessionId: string): Promise<CourseQaSession> {
-    let session: CourseQaSession;
     try {
-      session = normalizeSession(JSON.parse(await this.filesystem.readText(this.file(courseId, sessionId))) as CourseQaSession);
+      return await this.readStored(courseId, sessionId);
     } catch {
       throw new SessionNotFoundError();
     }
-    if (session.courseId !== courseId || session.id !== sessionId) throw new SessionNotFoundError();
-    return session;
+  }
+
+  private async readStored(courseId: string, sessionId: string): Promise<CourseQaSession> {
+    const text = await this.filesystem.readText(this.file(courseId, sessionId));
+    try {
+      const session = normalizeSession(JSON.parse(text) as CourseQaSession);
+      if (session.courseId === courseId && session.id === sessionId &&
+        isReadableQaSession(session)) return session;
+    } catch {
+      throw new SessionNotFoundError();
+    }
+    throw new SessionNotFoundError();
   }
 
   async appendCompletedTurn(courseId: string, sessionId: string, user: Extract<SessionMessage, { role: "user" }>, assistant: Extract<SessionMessage, { role: "assistant" }>): Promise<CourseQaSession> {
@@ -90,14 +99,12 @@ export class SessionService {
   }
 
   async list(courseId: string): Promise<CourseQaSessionSummary[]> {
+    return (await this.listWithDiagnostics(courseId)).sessions;
+  }
+
+  async listWithDiagnostics(courseId: string): Promise<CourseQaSessionListing> {
     const entries = await this.filesystem.listFiles(`sessions/web/${courseId}`);
-    const sessions = await Promise.all(entries.filter((entry) => entry.endsWith(".json")).map(async (entry) => {
-      const sessionId = entry.slice(0, -5);
-      return this.get(courseId, sessionId);
-    }));
-    return sessions
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map((session) => ({ id: session.id, releaseId: session.releaseId, updatedAt: session.updatedAt, summary: session.title ?? session.messages.find((message) => message.role === "user")?.content.slice(0, 80) ?? "新对话" }));
+    return summarizeStoredSessions(entries, (sessionId) => this.readStored(courseId, sessionId));
   }
 
   private async write(session: CourseQaSession): Promise<void> {
@@ -135,4 +142,46 @@ function normalizeSession(session: CourseQaSession): CourseQaSession {
       citations: (message.citations as Array<CourseCitation | LegacyKnowledgeCitation>).map((citation) => "type" in citation ? citation : { type: "knowledge", ...citation }),
     } : message),
   };
+}
+
+export interface CourseQaSessionListing {
+  sessions: CourseQaSessionSummary[];
+  damagedCount: number;
+}
+
+export async function summarizeStoredSessions(
+  entries: string[],
+  read: (sessionId: string) => Promise<CourseQaSession>,
+): Promise<CourseQaSessionListing> {
+  const files = entries.filter((entry) => entry.endsWith(".json"));
+  const sessions: CourseQaSessionSummary[] = [];
+  let damagedCount = 0;
+  const readOne = async (entry: string) => {
+    try {
+      const session = await read(entry.slice(0, -5));
+      sessions.push({
+        id: session.id,
+        releaseId: session.releaseId,
+        updatedAt: session.updatedAt,
+        summary: session.title ?? session.messages.find((message) => message.role === "user")?.content.slice(0, 80) ?? "新对话",
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (!(error instanceof SessionNotFoundError)) throw error;
+      damagedCount += 1;
+    }
+  };
+  const concurrency = 8;
+  for (let offset = 0; offset < files.length; offset += concurrency) {
+    await Promise.all(files.slice(offset, offset + concurrency).map(readOne));
+  }
+  sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
+  return { sessions, damagedCount };
+}
+
+export function isReadableQaSession(session: CourseQaSession): boolean {
+  return typeof session.updatedAt === "string" && typeof session.releaseId === "string" &&
+    (session.title === undefined || typeof session.title === "string") &&
+    session.messages.every((message) =>
+      (message.role === "user" || message.role === "assistant") && typeof message.content === "string");
 }

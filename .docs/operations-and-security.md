@@ -66,18 +66,9 @@ M2 的 SSE 响应同样视为安全边界：只发送回答文本、经验证引
 
 ## 启动恢复
 
-应用启动顺序：
+教师端打开 SQLite 后，依次恢复中断的批改轮次、上传替换日志和批次状态，再提交待处理的转换与命名。/api/health 和 /api/system/runtime 报告 gradingRecovery 状态。恢复期间及失败时，受影响的批改写入返回 503，已保存结果可查询。失败状态携带固定错误码 GRADING_RECOVERY_FAILED。
 
-1. 加载并校验非敏感配置；
-2. 检查Workspace目录权限和路径边界；
-3. 打开SQLite，启用外键并执行版本化迁移；
-4. 校验active knowledge指针；
-5. 协调正式结果文件与job状态；
-6. 清理无引用临时文件；
-7. 恢复未过期租约并重新排队可重试job；
-8. 最后启动API、Channel和队列消费者。
-
-恢复逻辑必须幂等，连续启动两次不能改变已经协调完成的状态。
+退出时先停止领取、发出取消信号并等待在途工序，再关闭数据库。协调超过等待上限时，服务保留仍被在途工序使用的句柄，工序退出后释放。重启按已有结果、事件和任务状态恢复。留存的批次排队轮次随所属任务重新领取，暂停批次继续等待恢复操作。
 
 M4启动时还会恢复`queued`、`running`以及未耗尽自动尝试次数的`waiting_for_converter`提交。若Docling Serve未运行，页面应显示“等待转换服务”而不是把文件判定为损坏；启动或恢复Docling后可由后台或教师手动重试。
 
@@ -87,7 +78,7 @@ M4启动时还会恢复`queued`、`running`以及未耗尽自动尝试次数的`
 
 - `workspace/knowledge/`；
 - `workspace/assignments/`；
-- `workspace/state/app.db`；
+- 批改和学生端数据库的 SQLite 一致性快照，以及两端需保留的会话历史。数据库位置见[领域与存储](domain-and-storage.md)；
 - 需要保留的非敏感配置。
 
 备份前暂停领取新job并等待当前原子发布结束。知识库回滚通过切换`active.json`完成；批改结果不原地覆盖，教师修订通过审计事件和新结果哈希表达。
@@ -124,5 +115,7 @@ M4启动时还会恢复`queued`、`running`以及未耗尽自动尝试次数的`
 故障处理不得直接修改SQLite状态或正式JSON。需要人工修复时先备份、记录原因，并通过受控维护命令执行。
 
 ## 独立学生端安全边界
+
+规范路径相同的 Workspace 由一个学生端进程使用。进程在打开业务数据库前，在本地磁盘的 state/student-portal-instance.sqlite 持有跨进程锁，再恢复遗留预占。正常关闭先关闭业务数据库再释放锁，异常退出由操作系统释放。重启采用先停旧进程再启动新进程，运行中保留锁文件。
 
 独立部署的学生端服务（`src/student-main.ts`）通过环境变量配置监听地址、模型密钥与 `STUDENT_PUBLIC_ORIGIN`（不依赖 Windows DPAPI），使用 `HttpOnly; SameSite=Lax` Cookie 会话与 `Origin` 校验；置于 Nginx/Caddy HTTPS 反向代理后需开启 `STUDENT_TRUST_PROXY=true`。本地教师端保存的远程同步令牌仍通过 Windows DPAPI 存储在 `%LOCALAPPDATA%\CourseAgent\secrets\<workspace-sha256>` 中，不进入 `app.json` 或普通日志。

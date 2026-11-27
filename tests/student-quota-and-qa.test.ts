@@ -231,3 +231,64 @@ describe("Student QuotaService & QA Server API", () => {
     await server.close();
   });
 });
+
+it("cancels a running answer and refunds the reserved quota when the HTTP connection closes", async () => {
+  const dir = makeTempDir("lyagent-student-disconnect-");
+  const course = await seedCourse(dir);
+  let reportAbort!: () => void;
+  const aborted = new Promise<void>((resolve) => { reportAbort = resolve; });
+  let finishModel!: () => void;
+  const finish = new Promise<void>((resolve) => { finishModel = resolve; });
+  const server = await createStudentServer({
+    config: loadStudentServerConfig({ STUDENT_WORKSPACE_ROOT: dir }),
+    courseQaAgentFactory: () => ({
+      async answer(_question, _onEvent, signal) {
+        if (signal?.aborted) reportAbort();
+        signal?.addEventListener("abort", reportAbort, { once: true });
+        await finish;
+        return { answer: "Synthetic answer", citations: [], insufficient: false };
+      },
+    }),
+  });
+  const client = new AbortController();
+  try {
+    const teacher = await server.auth.createInitialTeacher({ username: "admin", password: "Password123", displayName: "Admin" });
+    const student = await server.accounts.createStudent({ username: "s01", password: "Password123", displayName: "Sample", courseIds: [course.id], grantedBy: teacher.user.id });
+    const login = await server.app.inject({ method: "POST", url: "/api/auth/login", payload: { username: "s01", password: "Password123" } });
+    const cookie = (login.headers["set-cookie"] as string).split(";")[0]!;
+    const scope = "/api/student/courses/" + course.id;
+    const session = await server.app.inject({ method: "POST", url: scope + "/sessions", headers: { cookie } });
+    const detail = scope + "/sessions/" + session.json().id;
+    const base = await server.app.listen({ host: "127.0.0.1", port: 0 });
+    const response = await fetch(base + detail + "/ask", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ question: "What is a process?" }),
+      signal: client.signal,
+    });
+    expect(response.status).toBe(200);
+    await response.body!.getReader().read();
+    client.abort();
+    const outcome = await abortWithin(aborted, 900);
+    finishModel();
+    expect(outcome).toBe("aborted");
+    await expect.poll(() => server.quotas.getStudentQuotaSummary(student.user.id, course.id).dailyUsed).toBe(0);
+    expect((await server.app.inject({ url: detail, headers: { cookie } })).json().messages).toEqual([]);
+  } finally {
+    client.abort();
+    finishModel();
+    await server.close();
+  }
+});
+
+async function abortWithin(aborted: Promise<void>, timeoutMs: number): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      aborted.then(() => "aborted"),
+      new Promise<string>((resolve) => { timer = setTimeout(() => resolve("still running"), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

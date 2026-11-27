@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { PiAssignmentGrader } from "../agents/assignment-grader/agent.js";
 import { sseFrame } from "./streaming/sse.js";
@@ -146,16 +147,27 @@ export type GradingAgentBuilder = (
   },
 ) => PiAssignmentGrader;
 
+export type GradingRecoveryStatus =
+  | { status: "starting" | "ready" }
+  | { status: "failed"; errorCode: "GRADING_RECOVERY_FAILED" };
+
+const GRADING_DRAIN_TIMEOUT_MS = 2_000;
+
 export interface GradingApiControl {
   cancel(runId: string): Promise<boolean | undefined>;
   summarizeByCourse(): Record<string, { sessionCount: number; confirmedCount: number; pendingReviewCount: number; batchCount: number }>;
-  close(): void;
+  recoveryStatus(): GradingRecoveryStatus;
+  stop(): void;
+  close(): Promise<void>;
 }
 
 export function registerGradingApi(
   app: FastifyInstance,
   options: GradingApiOptions,
 ): GradingApiControl {
+  const stopping = new AbortController();
+  const background = new Set<Promise<unknown>>();
+  let recoveryStatus: GradingRecoveryStatus = { status: "starting" };
   const sessions = new GradingSessionService(
     options.workspaceRoot,
     options.rubrics,
@@ -182,15 +194,17 @@ export function registerGradingApi(
             rubrics: options.rubrics,
           })
       : () => fallback,
-    { concurrency: 8 },
+    { concurrency: 8, deferRecovery: true },
   );
   const batches = new GradingBatchService(options.workspaceRoot, {
     getSession: (sessionId) => sessions.getSession(sessionId),
+    hasDeferredRun: (sessionId) => runs.hasDeferredBatchRun(sessionId),
     async execute(sessionId, input) {
-      const started = input.kind === "grade"
+      const resumed = await runs.resumeDeferredBatchRun(sessionId, input);
+      const started = resumed ?? (input.kind === "grade"
         ? await startGrade(sessionId, input.message, true)
-        : await runs.start(sessionId, input);
-      const terminal = await runs.waitForTerminal(started.id, 10 * 60_000);
+        : await runs.start(sessionId, input));
+      const terminal = await runs.waitForTerminal(started.id, 10 * 60_000, stopping.signal);
       if (!["completed", "waiting_for_teacher", "failed", "cancelled"].includes(terminal.status))
         throw new Error("Grading run did not reach a terminal state");
       let question: string | undefined;
@@ -223,6 +237,7 @@ export function registerGradingApi(
       } : undefined;
     },
   });
+  batches.deferWorkers();
   const csv = new GradingCsvExportService(sessions, results, options.rubrics, batches);
   const conversions = options.conversionClient
     ? new SubmissionConversionService(
@@ -241,6 +256,9 @@ export function registerGradingApi(
       )
     : undefined;
   const uploads = new GradingBatchUploadService(options.workspaceRoot, {
+    async assertFrozenRubric(assignmentId, version) {
+      await options.rubrics.getVersion(assignmentId, version);
+    },
     resolveIdentity: (input) => resolveStudentIdentity({
       ...input,
       ...(options.identityClient ? { client: options.identityClient } : {}),
@@ -263,6 +281,16 @@ export function registerGradingApi(
   });
 
   app.register(async (scoped) => {
+    scoped.addHook("onRequest", async (request, reply) => {
+      const route = request.routeOptions.url ?? "";
+      if (!route.startsWith("/api/grading/") || request.method === "GET" || request.method === "HEAD"
+        || route.startsWith("/api/grading/exports/") || route.endsWith("/validate")) return;
+      if (recoveryStatus.status === "starting") await Promise.race([recovery, delay(250, undefined, { ref: false })]);
+      if (recoveryStatus.status === "starting")
+        return reply.code(503).send({ code: "GRADING_RECOVERY_IN_PROGRESS", message: "批改任务正在恢复，请稍后重试" });
+      if (recoveryStatus.status === "failed")
+        return reply.code(503).send({ code: recoveryStatus.errorCode, message: "批改任务恢复失败" });
+    });
     await scoped.register(multipart, {
       limits: {
         files: 101,
@@ -565,9 +593,7 @@ export function registerGradingApi(
           })),
         });
         if (session.conversionStatus !== "ready") {
-          void conversions?.process(session.id)
-            .then(() => finishReadySession(session.id))
-            .catch(() => undefined);
+          if (conversions) resumeConversion(session.id);
         } else await finishReadySession(session.id);
         return reply.code(201).send(await sessions.getSession(session.id));
       } finally {
@@ -741,10 +767,7 @@ export function registerGradingApi(
               message: "The document converter is not configured",
             });
         await sessions.retryConversion(id);
-        void conversions
-          .process(id)
-          .then(() => finishReadySession(id))
-          .catch(() => undefined);
+        resumeConversion(id);
         return reply.code(202).send(await sessions.getSession(id));
       },
     );
@@ -825,7 +848,7 @@ export function registerGradingApi(
           connection: "keep-alive",
         });
         let after = query.after;
-        while (true) {
+        while (!stopping.signal.aborted) {
           for (const event of await runs.listEvents(runId, after)) {
             after = event.sequence;
             reply.raw.write(
@@ -907,6 +930,7 @@ export function registerGradingApi(
     message = "请开始批改当前作业。",
     fromBatch = false,
   ): Promise<Awaited<ReturnType<GradingRunService["start"]>>> {
+    stopping.signal.throwIfAborted();
     if (!fromBatch) batches.assertDirectRunAllowed(sessionId);
     const session = await sessions.getSession(sessionId);
     if (
@@ -916,11 +940,13 @@ export function registerGradingApi(
       throw new GradingConflictError(
         "Submission title must be resolved before grading starts",
       );
+    stopping.signal.throwIfAborted();
     await sessions.lockSubmissionForGrading(sessionId, fromBatch ? { allowBatchReservation: true, resumeWaitingForTeacher: true } : {});
     return runs.start(sessionId, { kind: "grade", message }, fromBatch ? { allowBatchReservation: true } : {});
   }
 
   async function finishReadySession(sessionId: string): Promise<void> {
+    if (stopping.signal.aborted) return;
     let session = await sessions.getSession(sessionId);
     if (session.conversionStatus !== "ready") return;
     if (
@@ -935,40 +961,82 @@ export function registerGradingApi(
         return;
       }
     }
-    if (session.autoStartAfterConversion && options.gradingAgentFactory)
+    if (!stopping.signal.aborted && session.gradingStatus === "queued" && !session.activeRunId && session.autoStartAfterConversion && options.gradingAgentFactory)
       await startGrade(session.id);
   }
 
-  if (conversions) {
-    void sessions
-      .listPendingConversions()
-      .then((pending) =>
-        Promise.all(
-          pending.map((session) =>
-            conversions
-              .process(session.id)
-              .then(() => finishReadySession(session.id))
-              .catch(() => undefined),
-          ),
-        ),
-      )
-      .catch(() => undefined);
+  function trackBackground(operation: Promise<unknown>): void {
+    background.add(operation);
+    void operation.catch(() => undefined).finally(() => background.delete(operation));
   }
-  if (titles) {
-    void (async () => {
-      const all = await sessions.listSessions();
-      const pending = all.filter(
-        (session) =>
-          session.conversionStatus === "ready" &&
-          session.submissionTitleStatus === "pending",
-      );
-      for (const session of pending) await finishReadySession(session.id);
-    })().catch(() => undefined);
+
+  function resumeConversion(sessionId: string): void {
+    if (conversions && !stopping.signal.aborted)
+      trackBackground(conversions.process(sessionId).then(() => finishReadySession(sessionId)));
   }
-  void batches.recover().catch(() => undefined);
-  void uploads.recover().catch(() => undefined);
+
+  async function recover(): Promise<void> {
+    try {
+      runs.recoverInterruptedRuns((run) => batches.hasJobForQueuedRun(run));
+      const pendingUploads = await uploads.recover({ startProcessing: false });
+      if (stopping.signal.aborted) return;
+      await batches.recover();
+      if (stopping.signal.aborted) return;
+      const pendingConversions = conversions ? await sessions.listPendingConversions() : [];
+      const readySessions = titles || options.gradingAgentFactory ? await sessions.listSessions() : [];
+      if (stopping.signal.aborted) return;
+      batches.startWorkers();
+      runs.startWorkers();
+      recoveryStatus = { status: "ready" };
+      for (const { uploadId, itemId } of pendingUploads) uploads.startProcessing(uploadId, itemId);
+      for (const session of pendingConversions) resumeConversion(session.id);
+      for (const session of readySessions) {
+        if (session.conversionStatus === "ready" && (session.submissionTitleStatus === "pending"
+          || (session.autoStartAfterConversion && session.gradingStatus === "queued" && !session.activeRunId
+            && ["provided", "resolved"].includes(session.submissionTitleStatus))))
+          trackBackground(finishReadySession(session.id));
+      }
+    } catch {
+      if (!stopping.signal.aborted) recoveryStatus = { status: "failed", errorCode: "GRADING_RECOVERY_FAILED" };
+    }
+  }
+  const recovery = recover();
+
+  function stop(): void {
+    stopping.abort();
+    batches.stop();
+    uploads.stop();
+    conversions?.stop();
+    titles?.stop();
+    runs.stop();
+  }
+
+  let closePromise: Promise<void> | undefined;
+  async function drainAndClose(): Promise<void> {
+    stop();
+    const drained = Promise.allSettled([recovery, batches.drain(), uploads.drain(), runs.drain(),
+      conversions?.drain(), titles?.drain(), ...background]).then(() => {
+      uploads.close();
+      batches.close();
+      runs.close();
+      sessions.close();
+    });
+
+    // If a dependency is still settling, preserve its database handles until it exits.
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        drained,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, GRADING_DRAIN_TIMEOUT_MS); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   return {
+    recoveryStatus: () => recoveryStatus,
+    stop,
     async cancel(runId) {
       try {
         return await runs.cancel(runId);
@@ -992,12 +1060,7 @@ export function registerGradingApi(
       }
       return result;
     },
-    close() {
-      uploads.close();
-      batches.close();
-      runs.close();
-      sessions.close();
-    },
+    close: () => closePromise ??= drainAndClose(),
   };
 }
 

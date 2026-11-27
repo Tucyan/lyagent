@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { consumeSse, StudentApiError, studentFetch, studentJson } from "../lib/api";
+import { StudentApiError, studentFetch, studentJson } from "../lib/api";
+import { consumeStudentQaStream } from "../lib/qa-stream.js";
 
 type Citation =
   | { type: "knowledge"; path: string; title?: string; startLine: number; endLine: number }
@@ -44,6 +45,7 @@ interface QuotaSummary {
 }
 
 export function StudentQaPage({ courseId, courseName }: { courseId: string; courseName: string }) {
+  const [damagedSessionCount, setDamagedSessionCount] = useState(0);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [documents, setDocuments] = useState<Array<{ path: string; title: string }>>([]);
@@ -59,6 +61,9 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [source, setSource] = useState<{ citation: Extract<Citation, { type: "knowledge" }>; content: string }>();
+  const activeCourse = useRef(courseId);
+  activeCourse.current = courseId;
+  const selectionRevision = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
   const runIdRef = useRef<string | undefined>(undefined);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -91,17 +96,19 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
         webSearchAvailable: boolean;
         quota: QuotaSummary;
       }>(`/api/student/courses/${encodeURIComponent(cid)}/quota`),
-      studentJson<{ sessions: SessionSummary[] }>(`/api/student/courses/${encodeURIComponent(cid)}/sessions`),
+      studentJson<{ sessions: SessionSummary[]; damagedCount?: number }>(`/api/student/courses/${encodeURIComponent(cid)}/sessions`),
       studentJson<{ documents: Array<{ path: string; title: string }> }>(
         `/api/student/courses/${encodeURIComponent(cid)}/tree`,
       ),
     ]);
+    if (activeCourse.current !== cid) return;
     setQuota(quotaRes.quota);
     setRole(quotaRes.role);
     setModelConfigured(quotaRes.modelConfigured);
     setWebSearchAvailable(quotaRes.webSearchAvailable);
     if (!quotaRes.webSearchAvailable) setAllowWebSearch(false);
     setSessions(sessionsRes.sessions);
+    setDamagedSessionCount(sessionsRes.damagedCount ?? 0);
     setDocuments(treeRes.documents);
     if (sessionsRes.sessions.length > 0) {
       await openSession(cid, sessionsRes.sessions[0]!.id);
@@ -111,12 +118,14 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
     }
   };
 
-  const openSession = async (cid: string, sid: string) => {
+  const openSession = async (cid: string, sid: string, stillSelected?: () => boolean) => {
+    const revision = stillSelected ? selectionRevision.current : ++selectionRevision.current;
     const detail = await studentJson<{
       id: string;
       releaseId: string;
       messages: Array<{ role: "user" | "assistant"; content: string; citations?: Citation[]; insufficient?: boolean }>;
     }>(`/api/student/courses/${encodeURIComponent(cid)}/sessions/${encodeURIComponent(sid)}`);
+    if (activeCourse.current !== cid || selectionRevision.current !== revision || (stillSelected && !stillSelected())) return;
     setSessionId(detail.id);
     setMessages(detail.messages.map((m, idx) => ({ ...m, id: `${detail.id}-${idx}` })));
     setSource(undefined);
@@ -129,6 +138,7 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
     setSource(undefined);
     if (courseId) {
       void loadCourseState(courseId).catch((err) => {
+        if (activeCourse.current !== courseId) return;
         setError(err instanceof StudentApiError ? err.message : "加载答疑状态失败");
       });
     }
@@ -158,10 +168,12 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
       method: "PATCH",
       body: JSON.stringify({ title: nextTitle.trim() }),
     });
-    const list = await studentJson<{ sessions: SessionSummary[] }>(
+    const list = await studentJson<{ sessions: SessionSummary[]; damagedCount?: number }>(
       `/api/student/courses/${encodeURIComponent(courseId)}/sessions`,
     );
+    if (activeCourse.current !== courseId) return;
     setSessions(list.sessions);
+    setDamagedSessionCount(list.damagedCount ?? 0);
   };
 
   const deleteSession = async (sid: string) => {
@@ -191,10 +203,11 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
 
   const stopCurrentRun = async () => {
     const runId = runIdRef.current;
+    const controller = controllerRef.current;
     try {
       if (runId) await studentFetch(`/api/student/agent-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
     } finally {
-      controllerRef.current?.abort();
+      controller?.abort();
     }
   };
 
@@ -206,6 +219,10 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
     const userMsgId = `u-${Date.now()}`;
     setStreamingMessageId(assistantMsgId);
 
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const selectedRevision = selectionRevision.current;
+    const ownsSelection = () => activeCourse.current === courseId && selectionRevision.current === selectedRevision && controllerRef.current === controller;
     let targetSessionId = sessionId;
     try {
       if (!targetSessionId) {
@@ -213,6 +230,7 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
           `/api/student/courses/${encodeURIComponent(courseId)}/sessions`,
           { method: "POST" },
         );
+        if (!ownsSelection()) return;
         targetSessionId = created.id;
         setSessionId(created.id);
       }
@@ -224,8 +242,6 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
         { id: assistantMsgId, role: "assistant", content: "", steps: [] },
       ]);
 
-      const controller = new AbortController();
-      controllerRef.current = controller;
       const response = await studentFetch(
         `/api/student/courses/${encodeURIComponent(courseId)}/sessions/${encodeURIComponent(targetSessionId)}/ask`,
         {
@@ -236,6 +252,7 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
         },
       );
 
+      if (!ownsSelection()) { await response.body?.cancel(); return; }
       if (!response.ok) {
         let msg = `提问失败 (${response.status})`;
         try {
@@ -251,7 +268,8 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
       }
 
       runIdRef.current = response.headers.get("x-agent-run-id") ?? undefined;
-      await consumeSse(response, (event, raw) => {
+      await consumeStudentQaStream(response, (event, raw) => {
+        if (!ownsSelection()) return;
         const data = raw as {
           id?: string;
           label?: string;
@@ -300,22 +318,41 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
         if (event === "final" && data.quota) {
           setQuota(data.quota);
         }
+      }, async () => {
+        if (!ownsSelection()) return;
+        const quotaPath = `/api/student/courses/${encodeURIComponent(courseId)}/quota`;
+        const [detail, quotaResult] = await Promise.allSettled([
+          openSession(courseId, targetSessionId, ownsSelection),
+          studentJson<{ quota: QuotaSummary }>(quotaPath),
+        ]);
+        if (!ownsSelection()) return;
+        if (quotaResult.status === "fulfilled") setQuota(quotaResult.value.quota);
+        if (detail.status === "rejected") {
+          setMessages((prev) => prev.filter((message) => message.id !== assistantMsgId && message.id !== userMsgId));
+        }
+        setInput((current) => current || question);
+        setError("答疑连接已中断，请先查看会话中的已保存回复。");
       });
 
-      const list = await studentJson<{ sessions: SessionSummary[] }>(
+      const list = await studentJson<{ sessions: SessionSummary[]; damagedCount?: number }>(
         `/api/student/courses/${encodeURIComponent(courseId)}/sessions`,
       );
+      if (!ownsSelection()) return;
       setSessions(list.sessions);
+      setDamagedSessionCount(list.damagedCount ?? 0);
     } catch (err) {
+      if (!ownsSelection()) return;
       if ((err as Error).name === "AbortError") {
         setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, stopped: true } : m)));
       } else {
         setError(err instanceof Error ? err.message : "请求中断，未扣减额度");
       }
     } finally {
-      controllerRef.current = null;
-      runIdRef.current = undefined;
-      setStreamingMessageId(undefined);
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+        runIdRef.current = undefined;
+        setStreamingMessageId(undefined);
+      }
     }
   };
 
@@ -444,13 +481,14 @@ export function StudentQaPage({ courseId, courseName }: { courseId: string; cour
           </div>
         </header>
 
-        {(!modelConfigured || error) && (
+        {(!modelConfigured || error || damagedSessionCount > 0) && (
           <div className="qa-banners">
             {!modelConfigured && (
               <div className="student-info-banner">
                 当前服务尚未配置答疑大模型（需通过环境变量 <code>STUDENT_MODEL_*</code> 配置），您目前仍可正常浏览与搜索全部课程资料。
               </div>
             )}
+            {damagedSessionCount > 0 && <p role="status">有 {damagedSessionCount} 条会话记录无法读取，其余会话可正常使用。</p>}
             {error && <div className="student-error-banner">{error}</div>}
           </div>
         )}
