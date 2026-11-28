@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import Markdown from "react-markdown";
+import { SubmissionMarkdown } from "../components/grading/SubmissionMarkdown.js";
 import remarkGfm from "remark-gfm";
 import { consumeSse } from "../lib/consume-sse";
 import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, rubricProblemMessage } from "../lib/api";
@@ -1449,16 +1450,9 @@ function SubmissionPreview({
           onChange={(event) => setMarkdown(event.target.value)}
         />
       ) : (
-        <Markdown
-          remarkPlugins={[remarkGfm]}
-          urlTransform={(url, key) =>
-            key === "src" && url.startsWith("assets/")
-              ? `/api/grading/sessions/${detail.id}/assets/${encodeURIComponent(url.slice("assets/".length))}`
-              : url
-          }
-        >
+        <SubmissionMarkdown sessionId={detail.id}>
           {detail.submission.markdown}
-        </Markdown>
+        </SubmissionMarkdown>
       )}
     </div>
   );

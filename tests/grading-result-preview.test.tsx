@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { GradingPage } from "../web/src/pages/GradingPage.js";
+import { AnnotatedSubmissionViewer } from "../web/src/components/grading/AnnotatedSubmissionViewer.js";
 
 function session(id: string, score: number, reason: string, version = 1) {
   return {
@@ -317,6 +318,22 @@ it("supports annotation mode where clicking evidence on the right jumps and high
   expect(targetBlock!.classList.contains("is-highlighted")).toBe(true);
   expect(viewer!.querySelector("[data-line='3']")?.classList.contains("is-highlighted")).toBe(false);
   expect(scrollSpy).toHaveBeenCalled();
+});
+
+it.each(["assets/图表.png", "assets/图表%20.png"])("renders and highlights the original image asset %s", async (assetPath) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root.render(createElement(AnnotatedSubmissionViewer, {
+    sessionId: "first",
+    markdown: `![评分插图](${assetPath})`,
+    activeTarget: { kind: "image", path: assetPath, itemLabel: "实验数据", key: "chart", explanation: "对照组", nonce: 1 },
+  })));
+
+  const img = container.querySelector("img");
+  expect(img?.getAttribute("src")).toBe(`/api/grading/sessions/first/assets/${encodeURIComponent(assetPath.slice("assets/".length))}`);
+  expect(img?.classList.contains("is-highlighted")).toBe(true);
 });
 
 it("supports quick-fill review notes and jump-to-edit on a specific decision item", async () => {

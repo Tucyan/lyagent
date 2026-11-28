@@ -113,64 +113,55 @@ export class GradingResultService {
     input: { expectedVersion: number; reviewNote: string; acknowledgedReasons: ReviewReason[]; confirmationMode?: ConfirmationMode },
   ): Promise<ConfirmedGradingResult> {
     return this.withSessionLock(sessionId, async () => {
-    const session = await this.sessions.getSession(sessionId);
-    const existing = await this.readConfirmed(session);
-    if (existing) {
-      if (existing.version !== input.expectedVersion) throw new GradingDraftConflictError();
-      await this.finishConfirmation(session, existing);
-      return existing;
-    }
-    const draft = await this.readDraft(sessionId);
-    if (!draft || draft.version !== input.expectedVersion) throw new GradingDraftConflictError();
-    const confirmationMode: ConfirmationMode = input.confirmationMode ?? "manual";
-    if (
-      confirmationMode === "auto" &&
-      !isHighConfidenceAutoConfirmEligible(draft.result, { gradingStatus: session.gradingStatus })
-    ) {
-      throw new GradingReviewRequiredError();
-    }
-    const reviewNote = input.reviewNote.trim() || (confirmationMode === "auto" ? AUTO_CONFIRM_REVIEW_NOTE : "");
-    const missingReasons = draft.result.review.reasons.filter((reason) => !input.acknowledgedReasons.includes(reason));
-    if (draft.result.review.requiresReview && (!reviewNote || missingReasons.length > 0)) throw new GradingReviewRequiredError();
-    const confirmedAt = this.now();
-    const withoutHash = {
-      reviewStatus: "confirmed" as const,
-      confirmationMode,
-      version: draft.version,
-      result: draft.result,
-      reviewNote,
-      acknowledgedReasons: input.acknowledgedReasons,
-      confirmedAt,
-    };
-    const confirmed: ConfirmedGradingResult = { ...withoutHash, resultHash: hashJson(withoutHash) };
-    await this.filesystem.writeText(this.confirmCommitPath(session), stringify({ version: draft.version, resultHash: confirmed.resultHash }));
-    await this.filesystem.writeText(this.confirmedJsonPath(session), stringify(confirmed));
-    await this.finishConfirmation(session, confirmed);
-    return confirmed;
+      const session = await this.sessions.getSession(sessionId);
+      const existing = await this.readConfirmed(session);
+      if (existing) {
+        if (existing.version !== input.expectedVersion) throw new GradingDraftConflictError();
+        await this.finishConfirmation(session, existing);
+        return existing;
+      }
+      const draft = await this.readDraft(sessionId);
+      if (!draft || draft.version !== input.expectedVersion) throw new GradingDraftConflictError();
+      const confirmationMode = input.confirmationMode ?? "manual";
+      if (confirmationMode === "auto" && !isHighConfidenceAutoConfirmEligible(draft.result, { gradingStatus: session.gradingStatus })) {
+        throw new GradingReviewRequiredError();
+      }
+      const reviewNote = input.reviewNote.trim() || (confirmationMode === "auto" ? AUTO_CONFIRM_REVIEW_NOTE : "");
+      const missingReasons = draft.result.review.reasons.filter((reason) => !input.acknowledgedReasons.includes(reason));
+      if (draft.result.review.requiresReview && (!reviewNote || missingReasons.length > 0)) throw new GradingReviewRequiredError();
+      const confirmed = await this.publishConfirmation(session, draft, confirmationMode, reviewNote, input.acknowledgedReasons);
+      await this.finishConfirmation(session, confirmed);
+      return confirmed;
     });
   }
 
   async tryAutoConfirm(sessionId: string, expectedVersion: number): Promise<ConfirmedGradingResult | undefined> {
-    const session = await this.sessions.getSession(sessionId);
-    if (session.gradingStatus === "waiting_for_teacher") return undefined;
-    const existing = await this.readConfirmed(session);
-    if (existing) return existing;
-    const draft = await this.readDraft(sessionId);
-    if (!draft || draft.version !== expectedVersion) return undefined;
-    if (!isHighConfidenceAutoConfirmEligible(draft.result, { gradingStatus: session.gradingStatus })) return undefined;
-    return this.confirm(sessionId, {
-      expectedVersion: draft.version,
-      reviewNote: AUTO_CONFIRM_REVIEW_NOTE,
-      acknowledgedReasons: [],
-      confirmationMode: "auto",
+    return this.withSessionLock(sessionId, async () => {
+      const session = await this.sessions.getSession(sessionId);
+      if (session.gradingStatus === "waiting_for_teacher") return undefined;
+      const existing = await this.readConfirmed(session);
+      if (existing) return existing;
+      const draft = await this.readDraft(sessionId);
+      if (!draft || draft.version !== expectedVersion) return undefined;
+      if (!isHighConfidenceAutoConfirmEligible(draft.result, { gradingStatus: session.gradingStatus })) return undefined;
+
+      // Leave a saved draft available for manual confirmation if publishing the JSON fails.
+      const confirmed = await this.publishConfirmation(session, draft, "auto", AUTO_CONFIRM_REVIEW_NOTE, [])
+        .catch(() => undefined);
+      if (confirmed) await this.repairConfirmation(session, confirmed);
+      return confirmed;
     });
   }
 
-  async readConfirmedResult(sessionId: string): Promise<ConfirmedGradingResult | undefined> {
+  async readConfirmedResult(
+    sessionId: string,
+    options: { repair?: boolean } = {},
+  ): Promise<ConfirmedGradingResult | undefined> {
+    if (options.repair === false) return this.readConfirmed(await this.sessions.getSession(sessionId));
     return this.withSessionLock(sessionId, async () => {
       const session = await this.sessions.getSession(sessionId);
       const confirmed = await this.readConfirmed(session);
-      if (confirmed) await this.finishConfirmation(session, confirmed);
+      if (confirmed) await this.repairConfirmation(session, confirmed);
       return confirmed;
     });
   }
@@ -207,11 +198,48 @@ export class GradingResultService {
     await this.filesystem.writeText(auditPath, `${existing}${JSON.stringify(event)}\n`);
   }
 
+  private async publishConfirmation(
+    session: GradingSession,
+    draft: StoredGradingDraft,
+    confirmationMode: ConfirmationMode,
+    reviewNote: string,
+    acknowledgedReasons: ReviewReason[],
+  ): Promise<ConfirmedGradingResult> {
+    const withoutHash = {
+      reviewStatus: "confirmed" as const,
+      confirmationMode,
+      version: draft.version,
+      result: draft.result,
+      reviewNote,
+      acknowledgedReasons,
+      confirmedAt: this.now(),
+    };
+    const confirmed = { ...withoutHash, resultHash: hashJson(withoutHash) };
+    await this.filesystem.writeText(this.confirmCommitPath(session), stringify({ version: draft.version, resultHash: confirmed.resultHash }));
+    await this.filesystem.writeText(this.confirmedJsonPath(session), stringify(confirmed));
+    return confirmed;
+  }
+
+  private async repairConfirmation(session: GradingSession, confirmed: ConfirmedGradingResult): Promise<void> {
+    try {
+      await this.finishConfirmation(session, confirmed);
+    } catch (error: unknown) {
+      // The validated JSON remains authoritative while automatic confirmation artifacts await repair.
+      if (confirmed.confirmationMode !== "auto") throw error;
+    }
+  }
+
   private async finishConfirmation(session: GradingSession, confirmed: ConfirmedGradingResult): Promise<void> {
-    const frozen = await this.rubrics.getVersion(session.assignmentId, session.rubricVersion);
-    await this.filesystem.writeText(this.confirmedMarkdownPath(session), renderStudentFeedback(confirmed, frozen.rubric));
-    await this.sessions.setGradingStatus(session.id, "confirmed");
+    if (session.gradingStatus !== "confirmed") await this.sessions.setGradingStatus(session.id, "confirmed");
     await this.ensureConfirmationAudit(session, confirmed);
+    const frozen = await this.rubrics.getVersion(session.assignmentId, session.rubricVersion);
+    const markdownPath = this.confirmedMarkdownPath(session);
+    const feedback = renderStudentFeedback(confirmed, frozen.rubric);
+    const existing = await this.filesystem.readText(markdownPath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return undefined;
+    });
+    if (existing !== feedback) await this.filesystem.writeText(markdownPath, feedback);
     await this.removeIfPresent(this.confirmCommitPath(session));
   }
 

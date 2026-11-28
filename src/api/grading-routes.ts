@@ -188,9 +188,8 @@ export function registerGradingApi(
       concurrency: 8,
       onDraftOutcome: async (sessionId, draftVersion) => {
         const session = await sessions.getSession(sessionId);
-        if (!session.autoConfirmHighConfidence || session.gradingStatus === "waiting_for_teacher") return;
-        const confirmed = await results.tryAutoConfirm(sessionId, draftVersion);
-        if (confirmed) await batches.syncSessionResult(sessionId);
+        const enabled = batches.autoConfirmHighConfidenceForSession(sessionId) ?? session.autoConfirmHighConfidence;
+        if (enabled) await results.tryAutoConfirm(sessionId, draftVersion);
       },
     },
   );
@@ -599,11 +598,10 @@ export function registerGradingApi(
       return Promise.all(
         list.map(async (session) => {
           if (session.gradingStatus !== "confirmed") return session;
-          const confirmed = await results.readConfirmedResult(session.id).catch(() => undefined);
-          return {
-            ...session,
-            confirmationMode: confirmed?.confirmationMode ?? ("manual" as const),
-          };
+          const confirmed = await results.readConfirmedResult(session.id, { repair: false }).catch(() => undefined);
+          return confirmed
+            ? { ...session, confirmationMode: confirmed.confirmationMode ?? ("manual" as const) }
+            : session;
         }),
       );
     });

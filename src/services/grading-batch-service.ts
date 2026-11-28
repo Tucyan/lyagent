@@ -510,6 +510,15 @@ export class GradingBatchService {
     return result;
   }
 
+  autoConfirmHighConfidenceForSession(sessionId: string): boolean | undefined {
+    const owner = this.database.prepare(
+      `SELECT b.auto_confirm_high_confidence
+       FROM grading_batch_jobs j JOIN grading_batches b ON b.id = j.batch_id
+       WHERE j.session_id = ?`,
+    ).get(sessionId) as { auto_confirm_high_confidence: number } | undefined;
+    return owner && owner.auto_confirm_high_confidence === 1;
+  }
+
   owningBatchId(sessionId: string): string | undefined {
     const job = this.database.prepare("SELECT batch_id FROM grading_batch_jobs WHERE session_id = ? LIMIT 1").get(sessionId) as { batch_id: string } | undefined;
     return job?.batch_id;

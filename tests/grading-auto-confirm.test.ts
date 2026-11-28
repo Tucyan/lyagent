@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import Fastify from "fastify";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { registerGradingApi } from "../src/api/grading-routes.js";
 import {
   AUTO_CONFIRM_HIGH_CONFIDENCE_THRESHOLD,
   isHighConfidenceAutoConfirmEligible,
@@ -20,7 +23,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined)));
 });
 
-async function setupEnv(options: { autoConfirmHighConfidence?: boolean } = {}) {
+async function setupEnv(options: { autoConfirmHighConfidence?: boolean; lockSubmission?: boolean } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "grading-auto-confirm-"));
   roots.push(root);
   const rubrics = new RubricService(root);
@@ -56,7 +59,7 @@ async function setupEnv(options: { autoConfirmHighConfidence?: boolean } = {}) {
     autoStartAfterConversion: false,
     autoConfirmHighConfidence: options.autoConfirmHighConfidence ?? false,
   });
-  await sessions.lockSubmissionForGrading(session.id);
+  if (options.lockSubmission !== false) await sessions.lockSubmissionForGrading(session.id);
   const results = new GradingResultService(root, sessions, rubrics, { now: () => "2026-08-04T11:01:00.000Z" });
   return { root, rubrics, sessions, results, session };
 }
@@ -83,7 +86,127 @@ function makeDraft(confidence: number, warnings: string[] = []): Extract<Grading
   };
 }
 
+async function setupApi(autoConfirmHighConfidence: boolean) {
+  const env = await setupEnv({ autoConfirmHighConfidence, lockSubmission: false });
+  const app = Fastify();
+  const control = registerGradingApi(app, {
+    workspaceRoot: env.root,
+    rubrics: env.rubrics,
+    gradingAgentFactory(sessionId, runId, { results }) {
+      return {
+        async run() {
+          const draft = await results.submitDraft(sessionId, 0, makeDraft(0.95), { type: "agent", id: runId });
+          return { kind: "draft", draft };
+        },
+      };
+    },
+  });
+  app.addHook("onClose", () => {
+    control.close();
+    env.sessions.close();
+  });
+  const resultDir = path.join(env.root, "assignments", env.session.assignmentId, "results", env.session.batchId);
+  const startBatch = async (enabled: boolean) => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/grading/batches",
+      payload: {
+        title: "批改回归测试",
+        assignmentId: env.session.assignmentId,
+        rubricVersion: 1,
+        concurrency: 1,
+        autoConfirmHighConfidence: enabled,
+        sessionIds: [env.session.id],
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const url = `/api/grading/batches/${created.json().id}`;
+    const started = await app.inject({ method: "POST", url: `${url}/start` });
+    expect(started.statusCode, started.body).toBe(202);
+    return url;
+  };
+  return { ...env, app, resultDir, startBatch };
+}
+
 describe("High-confidence auto-confirm", () => {
+  it.each([true, false])("uses the batch opt-in (%s) for an existing session with the opposite setting", async (enabled) => {
+    const { app, startBatch } = await setupApi(!enabled);
+    try {
+      const url = await startBatch(enabled);
+      await expect.poll(async () => {
+        const batch = (await app.inject({ method: "GET", url })).json();
+        return batch.jobs[0];
+      }).toMatchObject(enabled
+        ? { status: "completed", reviewStatus: "confirmed", confirmationMode: "auto" }
+        : { status: "needs_review", reviewStatus: "needs_review" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    { blocked: "confirm-commit.json", status: "needs_review", reviewStatus: "needs_review" },
+    { blocked: "md", status: "completed", reviewStatus: "confirmed" },
+  ])("settles a batch independently of failures writing $blocked", async ({ blocked, status, reviewStatus }) => {
+    const { app, root, session, sessions, resultDir, startBatch } = await setupApi(true);
+    const blockedPath = path.join(resultDir, `${session.studentKey}.${blocked}`);
+    try {
+      await mkdir(blockedPath, { recursive: true });
+      const url = await startBatch(true);
+      await expect.poll(async () => {
+        const response = await app.inject({ method: "GET", url });
+        return response.json().jobs?.[0];
+      }).toMatchObject({ status, reviewStatus });
+
+      const db = new Database(path.join(root, "grading.sqlite"), { readonly: true });
+      try {
+        expect(db.prepare("SELECT status FROM agent_runs WHERE session_id = ?").get(session.id)).toEqual({ status: "completed" });
+      } finally {
+        db.close();
+      }
+      expect((await sessions.getSession(session.id)).gradingStatus)
+        .toBe(reviewStatus === "confirmed" ? "confirmed" : "draft_ready");
+      await rmdir(blockedPath);
+
+      if (reviewStatus === "confirmed") {
+        const csv = await app.inject({ method: "GET", url: `${url}/export.csv?scope=confirmed` });
+        expect(csv.body).toContain(session.studentNumber);
+        expect(await readFile(blockedPath, "utf8")).toContain("100/100");
+      } else {
+        const batch = (await app.inject({ url })).json();
+        const confirmed = await app.inject({
+          method: "POST",
+          url: `${url}/jobs/${batch.jobs[0].id}/confirm`,
+          payload: { expectedVersion: 1, reviewNote: "", acknowledgedReasons: [] },
+        });
+        expect(confirmed.statusCode, confirmed.body).toBe(200);
+        expect(confirmed.json()).toMatchObject({ confirmationMode: "manual" });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lists the confirmation mode without updating timestamps or recreating feedback", async () => {
+    const { app, session, sessions, resultDir, startBatch } = await setupApi(true);
+    try {
+      const url = await startBatch(true);
+      await expect.poll(async () => {
+        const response = await app.inject({ url });
+        return response.json().jobs[0]?.status;
+      }).toBe("completed");
+      const markdown = path.join(resultDir, `${session.studentKey}.md`);
+      await rm(markdown);
+      const before = await sessions.getSession(session.id);
+      const response = await app.inject({ url: "/api/grading/sessions" });
+      expect(response.json()).toEqual([expect.objectContaining({ id: session.id, confirmationMode: "auto" })]);
+      expect((await sessions.getSession(session.id)).updatedAt).toBe(before.updatedAt);
+      await expect(stat(markdown)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("evaluates high-confidence eligibility strictly using threshold 0.85 and review/warning checks", () => {
     expect(AUTO_CONFIRM_HIGH_CONFIDENCE_THRESHOLD).toBe(0.85);
     const baseResult: GradingResult = {

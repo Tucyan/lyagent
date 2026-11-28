@@ -122,7 +122,7 @@ Web /rubrics
 
 ### 批改发布
 
-评分草稿提交由服务端按会话串行化，并经前后端共享的规则引擎依据冻结评分表（同时兼容 `1.0` 与 `2.0`）校验按档定分、区间打分步长、自动推导归属等级 `selectedLevelId`、固定/按次/区间加扣分以及条件总分封顶 `scoreCaps`。文字证据的短引文必须真实出现在锁定提交的对应行段。运行中进程若重启，原运行标记为`INTERRUPTED`且不会自动再次调用模型；尚未领取的排队运行才会继续。正式结果以JSON为事实来源（并记录 `confirmationMode: "auto" | "manual"`），读取或重复确认会补齐Markdown、确认审计和SQLite终态。仅当会话（单份新建勾选，或批次新建在"更多设置"勾选并透传至成员会话）开启高置信度自动确认、Agent 提交草稿完成且未处于 `waiting_for_teacher`、同时满足 `confidence.overall >= 0.85`、`confidence.minimum >= 0.7`、`lowCount === 0`、`review.requiresReview === false` 与 `warnings.length === 0` 时，服务端才自动执行确认，否则仍保留草稿交由教师复核。
+评分草稿提交由服务端按会话串行化，并经前后端共享的规则引擎依据冻结评分表（同时兼容 `1.0` 与 `2.0`）校验按档定分、区间打分步长、自动推导归属等级 `selectedLevelId`、固定/按次/区间加扣分以及条件总分封顶 `scoreCaps`。文字证据的短引文必须真实出现在锁定提交的对应行段。运行中进程若重启，原运行标记为`INTERRUPTED`且不会自动再次调用模型；尚未领取的排队运行才会继续。正式结果以JSON为事实来源（并记录 `confirmationMode: "auto" | "manual"`），读取或重复确认会补齐Markdown、确认审计和SQLite终态。仅当单份会话或所属批次开启高置信度自动确认、Agent 提交草稿完成且未处于 `waiting_for_teacher`、同时满足 `confidence.overall >= 0.85`、`confidence.minimum >= 0.7`、`lowCount === 0`、`review.requiresReview === false` 与 `warnings.length === 0` 时，服务端才自动执行确认，否则仍保留草稿交由教师复核。批次成员使用所属批次的设置，包含从已有会话创建的批次。自动确认在正式 JSON 写入前失败时，保留可人工确认的草稿。正式 JSON 写入后，批次按该成绩结算，后续读取可补齐 Markdown、审计和状态。会话列表只读取确认方式。
 
 ```text
 领取带租约的job
@@ -148,8 +148,8 @@ Dashboard 返回课程元数据、active release 元数据、文档/答疑会话
 - `SubmissionConversionService`只依赖供应商无关的`DocumentConversionClient`，当前由仅允许环回地址的Docling Serve异步API转换DOCX、PDF、PPTX和图片；Markdown直接导入。基础设施故障在自动退避期间进入`waiting_for_converter`，工作器停止后进入`conversion_failed`并保留手动重试能力；明确解析失败和本地结果拒绝不允许直接重试。详细状态规则见[领域与存储](domain-and-storage.md)。重试始终复用不可变原件。
 - `PiAssignmentGrader`在正式批改轮次只获得固定13项批改工具。未手填作业名称时，程序在提交转换完成后强制启动专用命名轮次，该轮次只开放作业文件浏览、正文搜索、正文读取和`set_submission_title`；模型必须同时核对正文与原始文件名，冲突时以正文标题为准。冻结评分标准由服务端注入系统提示词；总分、证据、置信度和Review状态由程序在提交草稿时重算。
 - `GradingRunService`默认以并发1执行后台轮次，把安全处理摘要、模型回复、`model_switch`和脱敏工具活动写入可按序号回放的事件表；终态等待以100ms间隔查询SQLite，最后一次等待不超过剩余截止时间。视觉Provider失败不会回退主模型，页面断开不会取消运行。
-- `GradingResultService`负责乐观版本、教师审计、Review确认和不可变JSON/Markdown发布。Agent不能直接发布正式结果。
-- `GradingCsvExportService`支持按学生、精确冻结评分表或批改批次生成可重建CSV与结构化预览统计；除批次汇总显式开启`includeUnconfirmed`外，仅读取校验通过的已确认JSON结果；Agent不计算或写入成绩表。`/grading/exports`是独立成绩导出工作视图，顶栏提供可展开的列设置浮层（含独立`评分标准`列、`得分率`列与精简得分点表头），按学生跨多份评分标准（`>=2` 份）预览时自动切换为精简汇总预设并支持一键展开全部明细列；预览中满分不统一时统计卡片自动切换为平均与最高/最低得分率。预览表格默认全选并支持逐行勾选导出，采用可搜索选择器筛选批次/评分标准，仅从单份批改或批量批改入口跳转进入时才提供对应的快捷返回入口；侧栏折叠按钮与浮层保持高于导出粘性表头的层级。
+- `GradingResultService`负责乐观版本、教师审计、Review确认和不可变JSON/Markdown发布。Agent不能直接发布正式结果。单份和批次 Review 共用报告 Markdown 渲染，通过受控会话接口加载图片，批注使用原始附件路径匹配证据。
+- `GradingCsvExportService`支持按学生、精确冻结评分表或批改批次生成可重建CSV与结构化预览统计；除批次汇总显式开启`includeUnconfirmed`外，仅读取校验通过的已确认JSON结果；Agent不计算或写入成绩表。`/grading/exports`是独立成绩导出工作视图，预览区提供内嵌列设置（含独立`评分标准`列、`得分率`列与精简得分点表头），按学生跨多份评分标准（`>=2` 份）预览时自动切换为精简汇总预设并支持一键展开全部明细列；预览中满分不统一时统计概览自动切换为平均与最高/最低得分率。预览表格默认全选并支持逐行勾选导出，采用可搜索选择器筛选批次/评分标准，仅从单份批改或批量批改入口跳转进入时才提供对应的快捷返回入口；侧栏折叠按钮保持高于导出粘性表头的层级。
 
 ## 依赖方向
 

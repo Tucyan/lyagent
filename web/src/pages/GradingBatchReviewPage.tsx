@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { SubmissionMarkdown } from "../components/grading/SubmissionMarkdown.js";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { AnnotatedSubmissionViewer } from "../components/grading/AnnotatedSubmissionViewer";
 import { DecisionEditor } from "../components/grading/DecisionPanels";
@@ -552,7 +551,9 @@ export function GradingBatchReviewPage() {
                     onClearTarget={() => setActiveEvidence(undefined)}
                   />
                 ) : (
-                  <Markdown remarkPlugins={[remarkGfm]} components={{ img: ({ src = "", ...props }) => <img {...props} src={src.startsWith("assets/") ? `/api/grading/sessions/${currentDetail.id}/assets/${encodeURIComponent(src.slice("assets/".length))}` : src} /> }}>{currentDetail.submission.markdown}</Markdown>
+                  <SubmissionMarkdown sessionId={currentDetail.id}>
+                    {currentDetail.submission.markdown}
+                  </SubmissionMarkdown>
                 )
               ) : <p className="muted">正在加载报告或报告尚未准备完成…</p>}
             </section>

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, type ComponentPropsWithoutRef } from "react";
-import Markdown, { type Components, type ExtraProps } from "react-markdown";
-import remarkGfm from "remark-gfm";
+import type { Components, ExtraProps } from "react-markdown";
+import { SubmissionMarkdown } from "./SubmissionMarkdown.js";
 import type { EvidenceJumpPayload, EvidenceJumpTarget } from "./grading-result-model.js";
 
 type HastNode = ExtraProps["node"];
@@ -102,19 +102,14 @@ export function AnnotatedSubmissionViewer({
       pre: withBlock("pre"),
       table: withBlock("table"),
       li: withBlock("li"),
-      img: function AnnotatedImage({ node: _node, src = "", className, alt, ...props }) {
+      img: function AnnotatedImage({ node, className, alt, ...props }) {
         const currentTarget = useContext(AnnotationTargetContext);
         const isImageHighlighted =
-          currentTarget?.kind === "image" && src === currentTarget.path;
-        const resolvedSrc = src.startsWith("assets/")
-          ? `/api/grading/sessions/${sessionId}/assets/${encodeURIComponent(src.slice("assets/".length))}`
-          : src;
+          currentTarget?.kind === "image" && node?.properties.dataAssetPath === currentTarget.path;
         return (
           <img
             {...props}
-            src={resolvedSrc}
             alt={alt ?? "学生报告插图"}
-            data-asset-path={src}
             className={[className, "annotated-image-inline", isImageHighlighted ? "is-highlighted" : ""]
               .filter(Boolean)
               .join(" ")}
@@ -122,7 +117,7 @@ export function AnnotatedSubmissionViewer({
         );
       },
     };
-  }, [sessionId]);
+  }, []);
 
   return (
     <div className="annotated-submission" ref={containerRef}>
@@ -172,9 +167,9 @@ export function AnnotatedSubmissionViewer({
 
       <div className="annotated-markdown-body" role="document" aria-label="批注模式学生作业">
         <AnnotationTargetContext.Provider value={activeTarget}>
-          <Markdown remarkPlugins={[remarkGfm]} components={components}>
+          <SubmissionMarkdown sessionId={sessionId} components={components}>
             {markdown}
-          </Markdown>
+          </SubmissionMarkdown>
         </AnnotationTargetContext.Provider>
       </div>
     </div>
