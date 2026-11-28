@@ -161,7 +161,6 @@ export function GradingExportPage() {
     parseGradingExportOptions(safeStorageGet("grading-csv-columns")),
   );
   const [studentExpandDetails, setStudentExpandDetails] = useState(false);
-  const [columnPopoverOpen, setColumnPopoverOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [minScore, setMinScore] = useState("");
   const [maxScore, setMaxScore] = useState("");
@@ -178,7 +177,6 @@ export function GradingExportPage() {
 
   const loadGate = useRef(new LatestRequestGate());
   const previewGate = useRef(new LatestRequestGate());
-  const columnPickerRef = useRef<HTMLDivElement>(null);
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -194,24 +192,6 @@ export function GradingExportPage() {
   useEffect(() => {
     safeStorageSet("grading-csv-columns", JSON.stringify(exportOptions));
   }, [exportOptions]);
-
-  useEffect(() => {
-    if (!columnPopoverOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (columnPickerRef.current && !columnPickerRef.current.contains(event.target as Node)) {
-        setColumnPopoverOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setColumnPopoverOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [columnPopoverOpen]);
 
   useEffect(() => {
     const lease = loadGate.current.begin();
@@ -502,73 +482,6 @@ export function GradingExportPage() {
           <p>选择导出范围与列字段，勾选需导出记录并核对统计概览后下载成绩表 CSV。</p>
         </div>
         <div className="export-page-header-actions">
-          <div className="export-column-picker" ref={columnPickerRef}>
-            <button
-              type="button"
-              className={`export-column-trigger ${columnPopoverOpen ? "active" : ""} ${!hasSelectedColumn ? "has-warning" : ""}`}
-              aria-expanded={columnPopoverOpen}
-              aria-haspopup="dialog"
-              aria-controls="export-column-settings-popover"
-              onClick={() => setColumnPopoverOpen((open) => !open)}
-            >
-              <span>导出列设置</span>
-              <span className="export-column-count">
-                {hasSelectedColumn
-                  ? `已选 ${selectedColumnCount}/${TOTAL_EXPORT_COLUMNS} 列`
-                  : "未选列"}
-              </span>
-              <span aria-hidden="true">{columnPopoverOpen ? "▴" : "▾"}</span>
-            </button>
-            {columnPopoverOpen && (
-              <div
-                id="export-column-settings-popover"
-                className="export-column-popover"
-                role="dialog"
-                aria-label="导出列设置"
-              >
-                <div className="export-column-popover-head">
-                  <strong>导出列设置</strong>
-                  <span>已选 {selectedColumnCount}/{TOTAL_EXPORT_COLUMNS} 列</span>
-                </div>
-                <div className="export-presets-row">
-                  <span>快捷方案：</span>
-                  <button type="button" onClick={() => applyPreset("summary")}>仅成绩汇总</button>
-                  <button type="button" onClick={() => applyPreset("detailed")}>完整明细</button>
-                  <button type="button" onClick={() => applyPreset("full")}>含子项置信度</button>
-                  <button type="button" onClick={() => applyPreset("all")}>全部列</button>
-                </div>
-                <div className="export-column-chips" aria-label="导出列选择">
-                  {COLUMN_FIELDS.map(([key, label]) => (
-                    <label key={key} className={activeExportOptions[key] ? "checked" : ""}>
-                      <input
-                        type="checkbox"
-                        checked={activeExportOptions[key]}
-                        onChange={(event) => updateExportOption(key, event.target.checked)}
-                      />
-                      {label}
-                    </label>
-                  ))}
-                  <label
-                    className={`${activeExportOptions.itemConfidence ? "checked" : ""} ${!activeExportOptions.itemDetails ? "disabled" : ""}`}
-                    title={!activeExportOptions.itemDetails ? "需先勾选「详细得分/扣分」" : undefined}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={activeExportOptions.itemConfidence}
-                      disabled={!activeExportOptions.itemDetails}
-                      onChange={(event) => updateExportOption("itemConfidence", event.target.checked)}
-                    />
-                    子项置信度
-                  </label>
-                </div>
-                {!hasSelectedColumn && (
-                  <p className="inline-requirement-hint" role="alert">
-                    请至少选择 1 列导出字段后再预览或下载。
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
           {quickReturn && (
             <a className="secondary-link-button" href={quickReturn.href}>
               {quickReturn.label}
@@ -727,59 +640,52 @@ export function GradingExportPage() {
         </aside>
 
         <main className="export-preview-pane">
-          <section className={`export-stats-bar ${loadingOptions || previewLoading ? "is-loading" : ""}`} aria-label="成绩统计概览">
-            <article className="export-stat-card">
-              <span>{scopeKind === "student" ? "导出作业 / 人数" : "导出人数"}</span>
-              <strong>
-                {loadingOptions || previewLoading
-                  ? "—"
-                  : stats.totalCount === 0
-                    ? "0 人"
-                    : stats.uniqueStudentCount === stats.totalCount
-                      ? `${stats.uniqueStudentCount} 人`
-                      : `${stats.uniqueStudentCount} 人 · ${stats.totalCount} 份`}
-              </strong>
-            </article>
-            <article className="export-stat-card">
-              <span>确认状态</span>
-              <strong>
-                {loadingOptions || previewLoading
-                  ? "—"
-                  : `已确认 ${stats.confirmedCount} · 待复核 ${stats.needsReviewCount}`}
-              </strong>
-            </article>
-            {stats.totalCount > 0 && !stats.hasUniformPossibleScore && !(loadingOptions || previewLoading) ? (
-              <>
-                <article className="export-stat-card" title="所选记录含多种满分，已自动按各次作业满分折算百分比统计">
-                  <span>平均得分率</span>
-                  <strong>{stats.averageScoreRate !== null ? `${stats.averageScoreRate}%` : "—"}</strong>
-                </article>
-                <article className="export-stat-card" title="所选记录含多种满分，已自动按各次作业满分折算百分比统计">
-                  <span>最高 / 最低得分率</span>
-                  <strong>
-                    {stats.highestScoreRate !== null && stats.lowestScoreRate !== null
-                      ? `${stats.highestScoreRate}% / ${stats.lowestScoreRate}%`
-                      : "—"}
-                  </strong>
-                </article>
-              </>
-            ) : (
-              <>
-                <article className="export-stat-card">
-                  <span>平均分</span>
-                  <strong>{loadingOptions || previewLoading ? "—" : stats.averageScore !== null ? stats.averageScore : "—"}</strong>
-                </article>
-                <article className="export-stat-card">
-                  <span>最高 / 最低分</span>
-                  <strong>
-                    {loadingOptions || previewLoading
-                      ? "—"
-                      : stats.highestScore !== null && stats.lowestScore !== null
-                        ? `${stats.highestScore} / ${stats.lowestScore}`
-                        : "—"}
-                  </strong>
-                </article>
-              </>
+          <section className="export-column-inline-panel" aria-label="导出列设置">
+            <div className="export-column-inline-head">
+              <div className="export-column-inline-title">
+                <strong>导出列设置</strong>
+                <span className={`export-column-count${!hasSelectedColumn ? " has-warning" : ""}`}>
+                  {hasSelectedColumn
+                    ? `已选 ${selectedColumnCount}/${TOTAL_EXPORT_COLUMNS} 列`
+                    : "未选列"}
+                </span>
+              </div>
+              <div className="export-presets-row">
+                <span>快捷方案：</span>
+                <button type="button" onClick={() => applyPreset("summary")}>仅成绩汇总</button>
+                <button type="button" onClick={() => applyPreset("detailed")}>完整明细</button>
+                <button type="button" onClick={() => applyPreset("full")}>含子项置信度</button>
+                <button type="button" onClick={() => applyPreset("all")}>全部列</button>
+              </div>
+            </div>
+            <div className="export-column-chips" aria-label="导出列选择">
+              {COLUMN_FIELDS.map(([key, label]) => (
+                <label key={key} className={activeExportOptions[key] ? "checked" : ""}>
+                  <input
+                    type="checkbox"
+                    checked={activeExportOptions[key]}
+                    onChange={(event) => updateExportOption(key, event.target.checked)}
+                  />
+                  {label}
+                </label>
+              ))}
+              <label
+                className={`${activeExportOptions.itemConfidence ? "checked" : ""} ${!activeExportOptions.itemDetails ? "disabled" : ""}`}
+                title={!activeExportOptions.itemDetails ? "需先勾选「详细得分/扣分」" : undefined}
+              >
+                <input
+                  type="checkbox"
+                  checked={activeExportOptions.itemConfidence}
+                  disabled={!activeExportOptions.itemDetails}
+                  onChange={(event) => updateExportOption("itemConfidence", event.target.checked)}
+                />
+                子项置信度
+              </label>
+            </div>
+            {!hasSelectedColumn && (
+              <p className="inline-requirement-hint" role="alert">
+                请至少选择 1 列导出字段后再预览或下载。
+              </p>
             )}
           </section>
 
@@ -827,13 +733,38 @@ export function GradingExportPage() {
             </div>
 
             <div className="export-preview-bar">
-              <span>
-                {loadingOptions || previewLoading
-                  ? "正在生成预览…"
-                  : hasActiveFilter
-                    ? `筛选结果：显示 ${filteredRows.length} / 共 ${previewData.rows.length} 条记录 · 已勾选 ${exportableRows.length} 条 · ${previewData.headers.length} 列`
-                    : `预览结果：共 ${previewData.rows.length} 条记录 · 已勾选 ${exportableRows.length} 条 · ${previewData.headers.length} 列`}
-              </span>
+              <div className="export-preview-bar-meta">
+                <span>
+                  {loadingOptions || previewLoading
+                    ? "正在生成预览…"
+                    : hasActiveFilter
+                      ? `筛选结果：显示 ${filteredRows.length} / 共 ${previewData.rows.length} 条记录 · 已勾选 ${exportableRows.length} 条 · ${previewData.headers.length} 列`
+                      : `预览结果：共 ${previewData.rows.length} 条记录 · 已勾选 ${exportableRows.length} 条 · ${previewData.headers.length} 列`}
+                </span>
+                <div className={`export-stats-bar is-compact ${loadingOptions || previewLoading ? "is-loading" : ""}`} aria-label="成绩统计概览">
+                  <span>
+                    {loadingOptions || previewLoading
+                      ? "—"
+                      : stats.totalCount === 0
+                        ? "0 人"
+                        : stats.uniqueStudentCount === stats.totalCount
+                          ? `${stats.uniqueStudentCount} 人`
+                          : `${stats.uniqueStudentCount} 人 · ${stats.totalCount} 份`}
+                  </span>
+                  <span>
+                    已确认 {stats.confirmedCount} · 待复核 {stats.needsReviewCount}
+                  </span>
+                  {stats.totalCount > 0 && !stats.hasUniformPossibleScore && !(loadingOptions || previewLoading) ? (
+                    <span title="所选记录含多种满分，已自动按各次作业满分折算百分比统计">
+                      平均得分率 {stats.averageScoreRate !== null ? `${stats.averageScoreRate}%` : "—"} · 最高/最低 {stats.highestScoreRate !== null && stats.lowestScoreRate !== null ? `${stats.highestScoreRate}% / ${stats.lowestScoreRate}%` : "—"}
+                    </span>
+                  ) : (
+                    <span>
+                      平均分 {loadingOptions || previewLoading ? "—" : stats.averageScore !== null ? stats.averageScore : "—"} · 最高/最低 {loadingOptions || previewLoading ? "—" : stats.highestScore !== null && stats.lowestScore !== null ? `${stats.highestScore} / ${stats.lowestScore}` : "—"}
+                    </span>
+                  )}
+                </div>
+              </div>
               <div className="export-preview-bar-actions">
                 {isMultiRubricStudent && (
                   <button

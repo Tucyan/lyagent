@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   computeDecisionScorePreview,
   normalizeRubric,
@@ -12,27 +12,36 @@ import {
 } from "../../../../src/schemas/rubric-engine.js";
 import { gradingItemLabel } from "../../pages/grading-page-model";
 import { rubricLevelLabel } from "../../pages/rubric-page-model";
-
-function decisionEntries(decisions: Record<string, unknown>) {
-  return ["criteria", "deductions", "bonuses", "scoreCaps"].flatMap((key) =>
-    Array.isArray(decisions[key])
-      ? (decisions[key] as Array<Record<string, unknown>>).map(
-          (item, index) => ({ key, index, item }),
-        )
-      : [],
-  );
-}
+import {
+  decisionEntries,
+  isAttentionDecisionItem,
+  LOW_CONFIDENCE_DISPLAY_THRESHOLD,
+  partitionDecisionEvidence,
+  type EvidenceJumpPayload,
+} from "./grading-result-model.js";
 
 export function DecisionCards({
   decisions,
   sessionId,
   rubric,
   expandEvidence,
+  attentionOnly = false,
+  expandEpoch = 0,
+  annotationMode = false,
+  activeEvidenceKey,
+  onSelectEvidence,
+  onEditItem,
 }: {
   decisions: Record<string, unknown>;
   sessionId: string;
   rubric?: AnyRubricLike;
   expandEvidence?: boolean;
+  attentionOnly?: boolean;
+  expandEpoch?: number;
+  annotationMode?: boolean;
+  activeEvidenceKey?: string | undefined;
+  onSelectEvidence?: (target: EvidenceJumpPayload) => void;
+  onEditItem?: (itemKey: string) => void;
 }) {
   const normalized = useMemo(() => (rubric ? normalizeRubric(rubric) : undefined), [rubric]);
   const criteriaById = useMemo(
@@ -44,12 +53,26 @@ export function DecisionCards({
     [normalized],
   );
 
+  const visibleEntries = useMemo(() => {
+    const all = decisionEntries(decisions);
+    return attentionOnly ? all.filter(({ item }) => isAttentionDecisionItem(item)) : all;
+  }, [decisions, attentionOnly]);
+
+  if (visibleEntries.length === 0) {
+    return (
+      <section className="decision-list">
+        <p className="muted">当前筛选下暂无分项判断。</p>
+      </section>
+    );
+  }
+
   return (
     <section className="decision-list">
-      {decisionEntries(decisions).map(({ key, item }, index) => {
+      {visibleEntries.map(({ key, item }, index) => {
         const evidence = Array.isArray(item.evidence)
           ? (item.evidence as Array<Record<string, unknown>>)
           : [];
+        const { citations, analyses } = partitionDecisionEvidence(evidence);
         const id = String(item.criterionId ?? item.ruleId ?? "");
         const criterion = key === "criteria" ? criteriaById.get(id) : undefined;
         const cap = key === "scoreCaps" ? capsById.get(id) : undefined;
@@ -76,30 +99,169 @@ export function DecisionCards({
                     ? "未加分"
                     : `加 ${item.bonus} 分`
                   : "";
+        const confidenceValue = Number(item.confidence ?? 0);
+        const confidencePercent = Math.round(confidenceValue * 100);
+        const isLowConfidence = Number.isFinite(confidenceValue) && confidenceValue < LOW_CONFIDENCE_DISPLAY_THRESHOLD;
+        const evidenceInsufficient = item.evidenceInsufficient === true;
+        const detailHints = [
+          "评分理由",
+          citations.length > 0 ? `引用证据 ${citations.length} 条` : null,
+          analyses.length > 0 ? "Agent 分析" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const itemLabel = cap?.name ?? gradingItemLabel(rubric, id, index);
+        const itemKey = `${key}:${id || index}`;
+        const firstCitation = citations[0];
+        const firstCitationPayload: EvidenceJumpPayload | undefined = firstCitation
+          ? firstCitation.kind === "image"
+            ? {
+                key: `${itemKey}:0`,
+                kind: "image",
+                itemLabel,
+                path: String(firstCitation.path ?? ""),
+                explanation: String(firstCitation.explanation ?? ""),
+              }
+            : {
+                key: `${itemKey}:0`,
+                kind: "text",
+                itemLabel,
+                path: String(firstCitation.path ?? ""),
+                startLine: Number(firstCitation.startLine ?? 1),
+                endLine: Number(firstCitation.endLine ?? firstCitation.startLine ?? 1),
+                quote: String(firstCitation.quote ?? ""),
+              }
+          : undefined;
+        const openProp = expandEvidence ? true : undefined;
+        const itemOpenProp = expandEvidence || annotationMode ? true : undefined;
+        const citationOpenProp = expandEvidence || annotationMode ? true : undefined;
+
         return (
-          <article key={`${key}-${id || index}`}>
-            <div>
-              <strong>
-                {cap?.name ?? gradingItemLabel(rubric, id, index)}
-              </strong>
-              <span>{badgeText}</span>
-            </div>
-            <p><b>当前评分理由：</b>{String(item.reason ?? "")}</p>
-            <small>
-              置信度 {Math.round(Number(item.confidence ?? 0) * 100)}% ·
-              分析依据 {evidence.length} 条
-            </small>
-            {evidence.length > 0 && (
-              <details open={expandEvidence}>
-                <summary>{evidence.some((entry) => entry.kind === "analysis") ? "查看评分草稿分析及依据" : "查看评分依据"}</summary>
-                {evidence.map((entry, evidenceIndex) => (
-                  <div
-                    className="grading-evidence"
-                    key={`${String(entry.path ?? entry.kind)}-${evidenceIndex}`}
+          <article
+            key={`${key}-${id || index}-${expandEpoch}`}
+            className={isLowConfidence || evidenceInsufficient ? "is-attention-item" : undefined}
+          >
+            <div className="decision-card-head">
+              <strong>{itemLabel}</strong>
+              <div className="decision-card-badges">
+                {badgeText && <span className="decision-score-badge">{badgeText}</span>}
+                <span className={`decision-confidence-badge${isLowConfidence ? " is-low" : ""}`}>
+                  置信度 {confidencePercent}%
+                </span>
+                {evidenceInsufficient && (
+                  <span className="decision-warning-badge">证据不足</span>
+                )}
+                {onSelectEvidence && firstCitationPayload && (
+                  <button
+                    type="button"
+                    className="decision-inline-action"
+                    onClick={() => onSelectEvidence(firstCitationPayload)}
                   >
-                    {entry.kind === "analysis" ? (
-                      <>
-                        <strong>评分草稿分析（供参考）</strong>
+                    定位原文
+                  </button>
+                )}
+                {onEditItem && (
+                  <button
+                    type="button"
+                    className="decision-inline-action"
+                    onClick={() => onEditItem(itemKey)}
+                  >
+                    调整此项
+                  </button>
+                )}
+              </div>
+            </div>
+            <details className="decision-item-details" open={itemOpenProp}>
+              <summary>查看{detailHints}</summary>
+              <div className="decision-item-body">
+                <p><b>当前评分理由：</b>{String(item.reason ?? "")}</p>
+                {typeof item.confidenceReason === "string" && item.confidenceReason.trim() && (
+                  <p className="decision-confidence-reason">
+                    <b>置信度说明：</b>{item.confidenceReason}
+                  </p>
+                )}
+                {citations.length > 0 ? (
+                  <details className="decision-sub-details" open={citationOpenProp}>
+                    <summary>引用证据（{citations.length} 条）</summary>
+                    {citations.map((entry, evidenceIndex) => {
+                      const evidenceKey = `${key}:${id || index}:${evidenceIndex}`;
+                      const isActive = activeEvidenceKey === evidenceKey;
+                      const body = entry.kind === "image" ? (
+                        <>
+                          <img
+                            src={`/api/grading/sessions/${sessionId}/assets/${encodeURIComponent(String(entry.path).replace(/^assets\//, ""))}`}
+                            alt="评分佐证"
+                          />
+                          <p>{String(entry.explanation ?? "")}</p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="grading-evidence-head">
+                            <code>
+                              {String(entry.path)}:{String(entry.startLine)}-
+                              {String(entry.endLine)}
+                            </code>
+                            {onSelectEvidence && (
+                              <span className="grading-evidence-jump-tag">
+                                {isActive ? "已定位" : "点击定位原文"}
+                              </span>
+                            )}
+                          </div>
+                          <blockquote>{String(entry.quote ?? "")}</blockquote>
+                        </>
+                      );
+
+                      if (onSelectEvidence) {
+                        const payload: EvidenceJumpPayload = entry.kind === "image"
+                          ? {
+                              key: evidenceKey,
+                              kind: "image",
+                              itemLabel,
+                              path: String(entry.path ?? ""),
+                              explanation: String(entry.explanation ?? ""),
+                            }
+                          : {
+                              key: evidenceKey,
+                              kind: "text",
+                              itemLabel,
+                              path: String(entry.path ?? ""),
+                              startLine: Number(entry.startLine ?? 1),
+                              endLine: Number(entry.endLine ?? entry.startLine ?? 1),
+                              quote: String(entry.quote ?? ""),
+                            };
+                        return (
+                          <button
+                            type="button"
+                            className={`grading-evidence is-clickable${isActive ? " is-active" : ""}`}
+                            aria-pressed={isActive}
+                            key={`${String(entry.path ?? entry.kind)}-${evidenceIndex}`}
+                            onClick={() => onSelectEvidence(payload)}
+                          >
+                            {body}
+                          </button>
+                        );
+                      }
+
+                      return (
+                        <div
+                          className="grading-evidence"
+                          key={`${String(entry.path ?? entry.kind)}-${evidenceIndex}`}
+                        >
+                          {body}
+                        </div>
+                      );
+                    })}
+                  </details>
+                ) : (
+                  evidenceInsufficient && (
+                    <p className="decision-evidence-note">当前判断未引用到充分原文或图片证据。</p>
+                  )
+                )}
+                {analyses.length > 0 && (
+                  <details className="decision-sub-details" open={openProp}>
+                    <summary>Agent 分析（评分草稿参考）</summary>
+                    {analyses.map((entry, analysisIndex) => (
+                      <div className="grading-evidence" key={`analysis-${analysisIndex}`}>
                         <p>
                           <b>作业表现：</b>
                           {String(entry.observation ?? "")}
@@ -112,28 +274,12 @@ export function DecisionCards({
                           <b>草稿分值理由：</b>
                           {String(entry.scoreJustification ?? "")}
                         </p>
-                      </>
-                    ) : entry.kind === "image" ? (
-                      <>
-                        <img
-                          src={`/api/grading/sessions/${sessionId}/assets/${encodeURIComponent(String(entry.path).replace(/^assets\//, ""))}`}
-                          alt="评分佐证"
-                        />
-                        <p>{String(entry.explanation ?? "")}</p>
-                      </>
-                    ) : (
-                      <>
-                        <code>
-                          {String(entry.path)}:{String(entry.startLine)}-
-                          {String(entry.endLine)}
-                        </code>
-                        <blockquote>{String(entry.quote ?? "")}</blockquote>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </details>
-            )}
+                      </div>
+                    ))}
+                  </details>
+                )}
+              </div>
+            </details>
           </article>
         );
       })}
@@ -146,12 +292,20 @@ export function DecisionEditor({
   onChange,
   rubric,
   baselineScore,
+  focusItemKey,
 }: {
   decisions: Record<string, unknown>;
   onChange(value: Record<string, unknown>): void;
   rubric?: AnyRubricLike;
   baselineScore?: number;
+  focusItemKey?: string | undefined;
 }) {
+  const editorRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!focusItemKey || !editorRef.current) return;
+    const target = editorRef.current.querySelector<HTMLElement>(`[data-item-key="${focusItemKey}"]`);
+    target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  }, [focusItemKey]);
   const normalized = useMemo(() => (rubric ? normalizeRubric(rubric) : undefined), [rubric]);
   const criteriaById = useMemo(
     () => new Map((normalized?.criteria ?? []).map((item) => [item.id, item])),
@@ -272,7 +426,7 @@ export function DecisionEditor({
       : undefined;
 
   return (
-    <section className="decision-list decision-editor">
+    <section className="decision-list decision-editor" ref={editorRef}>
       {preview && (
         <div className="decision-editor-summary" role="status">
           <span>
@@ -288,6 +442,7 @@ export function DecisionEditor({
       {decisionEntries(decisions).map(({ key, index, item }) => {
         const id = String(item.criterionId ?? item.ruleId ?? "");
         const errorKey = `${key}:${id}`;
+        const itemKey = `${key}:${id || index}`;
         const inlineError = inlineErrors[errorKey];
         const criterion = key === "criteria" ? criteriaById.get(id) : undefined;
         const rule =
@@ -297,9 +452,13 @@ export function DecisionEditor({
               ? bonusesById.get(id)
               : undefined;
         const cap: NormalizedScoreCap | undefined = key === "scoreCaps" ? capsById.get(id) : undefined;
+        const articleClass = [
+          inlineError ? "has-inline-error" : "",
+          focusItemKey && focusItemKey === itemKey ? "is-jump-focused" : "",
+        ].filter(Boolean).join(" ") || undefined;
 
         return (
-          <article key={`${key}-${index}`} className={inlineError ? "has-inline-error" : undefined}>
+          <article key={`${key}-${index}`} data-item-key={itemKey} className={articleClass}>
             <div className="decision-editor-heading">
               <strong>{cap?.name ?? gradingItemLabel(rubric, id, index)}</strong>
               {criterion && <small>满分 {criterion.maxScore} 分</small>}

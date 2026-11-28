@@ -76,6 +76,7 @@ const createBatchSchema = z.object({
   assignmentId: z.string().uuid(),
   rubricVersion: z.number().int().positive(),
   concurrency: z.number().int().min(1).max(8),
+  autoConfirmHighConfidence: z.boolean().default(false),
   sessionIds: z.array(z.string().uuid()).min(1).max(120),
 });
 const batchAnswerSchema = z.object({ answer: z.string().trim().min(1).max(8_000) });
@@ -87,6 +88,7 @@ const createBatchUploadSchema = z.object({
   assignmentId: z.string().uuid(),
   rubricVersion: z.number().int().positive(),
   concurrency: z.number().int().min(1).max(8),
+  autoConfirmHighConfidence: z.boolean().default(false),
   items: z.array(z.object({ filename: z.string().trim().min(1).max(240) })).min(1).max(120),
 });
 const batchUploadIdentitySchema = z.object({
@@ -182,7 +184,15 @@ export function registerGradingApi(
             rubrics: options.rubrics,
           })
       : () => fallback,
-    { concurrency: 8 },
+    {
+      concurrency: 8,
+      onDraftOutcome: async (sessionId, draftVersion) => {
+        const session = await sessions.getSession(sessionId);
+        if (!session.autoConfirmHighConfidence || session.gradingStatus === "waiting_for_teacher") return;
+        const confirmed = await results.tryAutoConfirm(sessionId, draftVersion);
+        if (confirmed) await batches.syncSessionResult(sessionId);
+      },
+    },
   );
   const batches = new GradingBatchService(options.workspaceRoot, {
     getSession: (sessionId) => sessions.getSession(sessionId),
@@ -210,6 +220,7 @@ export function registerGradingApi(
       const confirmed = await results.readConfirmedResult(sessionId);
       if (confirmed) return {
         reviewStatus: "confirmed" as const,
+        confirmationMode: confirmed.confirmationMode ?? ("manual" as const),
         version: confirmed.version,
         result: confirmed.result,
         updatedAt: confirmed.confirmedAt,
@@ -414,6 +425,7 @@ export function registerGradingApi(
         expectedVersion: payload.expectedVersion,
         reviewNote: payload.reviewNote,
         acknowledgedReasons: payload.acknowledgedReasons as ReviewReason[],
+        confirmationMode: "manual",
       });
       await batches.refreshResultsAndRebuildSummary(batchId);
       return confirmed;
@@ -495,6 +507,7 @@ export function registerGradingApi(
           studentNumber: z.string().default(""),
           submissionTitle: z.string().trim().max(200).default(""),
           autoStartAfterConversion: z.enum(["true", "false"]).default("false"),
+          autoConfirmHighConfidence: z.enum(["true", "false"]).default("false"),
         })
         .parse(fields);
       let assetManifest: string[] = [];
@@ -558,6 +571,7 @@ export function registerGradingApi(
           originalPath: tempPath,
           originalFilename: upload.filename,
           autoStartAfterConversion: values.autoStartAfterConversion === "true",
+          autoConfirmHighConfidence: values.autoConfirmHighConfidence === "true",
           converterAvailable: Boolean(conversions),
           revisionAssets: assetUploads.map((asset, index) => ({
             path: assetManifest[index]!,
@@ -577,11 +591,21 @@ export function registerGradingApi(
 
     scoped.get("/api/grading/sessions", async (request) => {
       const query = sessionListSchema.parse(request.query);
-      return sessions.listSessions({
+      const list = await sessions.listSessions({
         ...(query.courseId ? { courseId: query.courseId } : {}),
         ...(query.assignmentId ? { assignmentId: query.assignmentId } : {}),
         ...(query.rubricVersion ? { rubricVersion: query.rubricVersion } : {}),
       });
+      return Promise.all(
+        list.map(async (session) => {
+          if (session.gradingStatus !== "confirmed") return session;
+          const confirmed = await results.readConfirmedResult(session.id).catch(() => undefined);
+          return {
+            ...session,
+            confirmationMode: confirmed?.confirmationMode ?? ("manual" as const),
+          };
+        }),
+      );
     });
 
     scoped.post("/api/grading/exports/preview", async (request) => {
@@ -878,6 +902,7 @@ export function registerGradingApi(
         expectedVersion: payload.expectedVersion,
         reviewNote: payload.reviewNote,
         acknowledgedReasons: payload.acknowledgedReasons as ReviewReason[],
+        confirmationMode: "manual",
       });
       await batches.syncSessionResult(id);
       return confirmed;

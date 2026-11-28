@@ -56,18 +56,31 @@ export type BatchReviewJob = {
   maxAttempts: number;
   resultVersion?: number;
   reviewStatus?: "needs_review" | "confirmed";
+  confirmationMode?: "auto" | "manual";
   requiresReview?: boolean;
   reviewReasons?: string[];
   score?: { earned: number; possible: number };
   confidence?: { overall: number };
 };
 
-export function batchJobStatusLabel(job: Pick<BatchReviewJob, "status" | "reviewStatus">): string {
-  return job.reviewStatus === "confirmed" ? "成绩已确认" : batchStatusLabel(job.status);
+export function batchJobStatusLabel(
+  job: Pick<BatchReviewJob, "status" | "reviewStatus" | "confirmationMode">,
+): string {
+  if (job.reviewStatus === "confirmed") {
+    if (job.confirmationMode === "auto") return "已自动确认";
+    if (job.confirmationMode === "manual") return "已人工确认";
+    return "成绩已确认";
+  }
+  return batchStatusLabel(job.status);
 }
 
-export function batchJobStatusTone(job: Pick<BatchReviewJob, "status" | "reviewStatus">): string {
-  return job.reviewStatus === "confirmed" ? "completed" : job.status;
+export function batchJobStatusTone(
+  job: Pick<BatchReviewJob, "status" | "reviewStatus" | "confirmationMode">,
+): string {
+  if (job.reviewStatus === "confirmed") {
+    return job.confirmationMode === "auto" ? "auto-confirmed" : "completed";
+  }
+  return job.status;
 }
 
 export function formatBatchScore(job: Pick<BatchReviewJob, "score">): string {

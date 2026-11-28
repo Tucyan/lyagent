@@ -139,7 +139,11 @@ export function conversionPresentation(
 }
 
 
-export function gradingStatusLabel(status: string): string {
+export function gradingStatusLabel(status: string, confirmationMode?: "auto" | "manual"): string {
+  if (status === "confirmed") {
+    if (confirmationMode === "auto") return "已自动确认";
+    if (confirmationMode === "manual") return "已人工确认";
+  }
   const map: Record<string, string> = {
     not_started: "未开始批改",
     queued: "排队批改",
@@ -160,6 +164,7 @@ export function gradingStatusLabel(status: string): string {
 export function gradingSessionWorkflowSummary(input: {
   conversionStatus: string;
   gradingStatus: string;
+  confirmationMode?: "auto" | "manual";
 }): string {
   const convMap: Record<string, string> = {
     ready: "转换完成",
@@ -171,7 +176,7 @@ export function gradingSessionWorkflowSummary(input: {
     result_rejected: "转换被拒",
   };
   const cText = convMap[input.conversionStatus] ?? input.conversionStatus;
-  const gText = gradingStatusLabel(input.gradingStatus);
+  const gText = gradingStatusLabel(input.gradingStatus, input.confirmationMode);
   return `${cText} · ${gText}`;
 }
 export function shouldPollConversion(

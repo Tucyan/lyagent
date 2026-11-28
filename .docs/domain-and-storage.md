@@ -64,9 +64,9 @@ M1已由资料导入服务安全创建`inbox/materials`和`knowledge/{courseId}`
 
 ## M5 批次状态与结果
 
-SQLite 表 `grading_batches` 保存批次绑定的唯一 Assignment、冻结 Rubric 版本、并发上限和运行状态；`grading_batch_jobs` 保存与 M4 会话的一对一成员关系、学生标识、尝试次数、下一轮会话信息、租约拥有者和租约到期时间。一个 M4 会话全局只能属于一个批次，同一批次内学生编号唯一；被批次预留的会话不能从 M4 直接启动 grade/chat 或删除，以免两个运行争用同一草稿或破坏成员文件。批次预留、M4 状态 CAS、run 创建与删除 claim 均使用 SQLite immediate 事务，并在事务内同时检查会话状态、删除标记、活动 run 与 reservation。批次允许 `draft`、`running`、`paused`、`completed`，job 允许 `pending`、`running`、`waiting_for_teacher`、`needs_review`、`completed`、`failed`、`cancelled`。
+SQLite 表 `grading_batches` 保存批次绑定的唯一 Assignment、冻结 Rubric 版本、并发上限、高置信度自动确认开关（`auto_confirm_high_confidence`，作用于该批次创建的成员会话）和运行状态；`grading_batch_jobs` 保存与 M4 会话的一对一成员关系、学生标识、尝试次数、下一轮会话信息、租约拥有者和租约到期时间。一个 M4 会话全局只能属于一个批次，同一批次内学生编号唯一；被批次预留的会话不能从 M4 直接启动 grade/chat 或删除，以免两个运行争用同一草稿或破坏成员文件。批次预留、M4 状态 CAS、run 创建与删除 claim 均使用 SQLite immediate 事务，并在事务内同时检查会话状态、删除标记、活动 run 与 reservation。批次允许 `draft`、`running`、`paused`、`completed`，job 允许 `pending`、`running`、`waiting_for_teacher`、`needs_review`、`completed`、`failed`、`cancelled`。
 
-`grading_batch_uploads` 与 `grading_batch_upload_items` 保存正式批次创建前的可恢复上传状态。草稿项允许 `pending`、`identity_required`、`converting`、`naming`、`ready`、`failed`、`committed`；报告与筛选后的附件位于受控 staging。同一 item 的文件替换、处理、身份修改、重试和移除使用项级串行锁，避免旧转换/命名轮次把新文件状态写成 `ready`；不同 item 仍可并行处理。正式提交和取消会按 item ID 稳定顺序取得该上传草稿全部现有 item 锁，并在锁内重新读取草稿与 item 状态；因此提交等待正在进行的替换/处理，替换也不能在批次创建 await 窗口改写已提交 session 快照。批次仅从锁内复读的全部 `ready` 项创建；创建失败保持草稿可重试，成功后 item 状态与批次 session 集合一致。替换先验证报告、附件引用并将完整新文件集写入临时目录；`grading_batch_upload_replacements` 以版本迁移记录 prepare/cleanup 意图，文件切换与 item 变为 `pending`、清空旧 `session_id` 同事务提交，之后才删除旧会话。清理 journal 的 ID 必须是 UUID、路径必须落在受控 Workspace 并通过 `SafeFilesystem`；旧会话删除或备份目录清理失败时保留清理记录供启动恢复重试，不回滚到可能已 tombstone 或部分删除的旧会话；准备阶段中断则恢复原文件。无效替换不会覆盖原 `ready` 项。移除或取消草稿默认保留已创建会话；正式提交在创建 `grading_batches/grading_batch_jobs` 的同一事务内写入 `committed_batch_id`，因此重复请求只能得到同一正式批次。
+`grading_batch_uploads` 与 `grading_batch_upload_items` 保存正式批次创建前的可恢复上传状态（包括 `auto_confirm_high_confidence` 开关，并在处理单项报告和提交批次时透传到成员会话与正式批次）。草稿项允许 `pending`、`identity_required`、`converting`、`naming`、`ready`、`failed`、`committed`；报告与筛选后的附件位于受控 staging。同一 item 的文件替换、处理、身份修改、重试和移除使用项级串行锁，避免旧转换/命名轮次把新文件状态写成 `ready`；不同 item 仍可并行处理。正式提交和取消会按 item ID 稳定顺序取得该上传草稿全部现有 item 锁，并在锁内重新读取草稿与 item 状态；因此提交等待正在进行的替换/处理，替换也不能在批次创建 await 窗口改写已提交 session 快照。批次仅从锁内复读的全部 `ready` 项创建；创建失败保持草稿可重试，成功后 item 状态与批次 session 集合一致。替换先验证报告、附件引用并将完整新文件集写入临时目录；`grading_batch_upload_replacements` 以版本迁移记录 prepare/cleanup 意图，文件切换与 item 变为 `pending`、清空旧 `session_id` 同事务提交，之后才删除旧会话。清理 journal 的 ID 必须是 UUID、路径必须落在受控 Workspace 并通过 `SafeFilesystem`；旧会话删除或备份目录清理失败时保留清理记录供启动恢复重试，不回滚到可能已 tombstone 或部分删除的旧会话；准备阶段中断则恢复原文件。无效替换不会覆盖原 `ready` 项。移除或取消草稿默认保留已创建会话；正式提交在创建 `grading_batches/grading_batch_jobs` 的同一事务内写入 `committed_batch_id`，因此重复请求只能得到同一正式批次。
 
 批量结果的受控目录为：
 
@@ -83,7 +83,7 @@ workspace/batch-grading/{batchId}/
 
 运行实例通过有期限租约拥有 job，并可续租；租约 owner 与尝试次数是发布快照、失败和终态提交的 fencing 条件。进程重启时，已存在有效快照或可用草稿的 job 直接协调为待复核，不再调用模型；前一进程拥有的运行租约立即回到等待队列。单个 job 最多尝试三次，等待教师回答和失败状态都不占用并发槽。暂停时若最后一组已领取 job 全部结束且没有 pending，批次仍会进入 `completed`，不会形成无法恢复的 paused 状态。
 
-待复核或失败 job 在未达到最大尝试次数时可以重试。重试将 job 重新排队并递增后续尝试号，既有按尝试编号保存的有效快照不被覆盖；新结果仍需教师 Review。批次表格和 Review 工作台显示的分数、整体置信度、草稿版本与复核原因均在读取时来自当前 M4 草稿或正式结果。批次列表保留 Review 导航；只有结果明确标记 `requiresReview: false` 时列表才可直接确认。需要复核的成绩必须进入 Review 页面查看原因、填写备注并逐项确认原因后才能正式确认。教师修改调用乐观版本草稿接口并追加审计记录；只有确认接口会生成不可变正式成绩，并把 job 同步为 `completed`。
+待复核或失败 job 在未达到最大尝试次数时可以重试。重试将 job 重新排队并递增后续尝试号，既有按尝试编号保存的有效快照不被覆盖；新结果仍需教师 Review。批次表格和 Review 工作台显示的分数、整体置信度、草稿版本、复核原因与确认方式（`confirmationMode`：`auto` 为高置信度自动确认，`manual` 为人工确认）均在读取时来自当前 M4 草稿或正式结果；未携带该字段的历史正式结果按 `manual` 展示。批次列表保留 Review 导航；只有结果明确标记 `requiresReview: false` 时列表才可直接确认。需要复核的成绩必须进入 Review 页面查看原因、填写备注并逐项确认原因后才能正式确认。教师修改调用乐观版本草稿接口并追加审计记录；人工确认或满足高置信度自动确认规则的自动确认均由 `GradingResultService` 生成不可变正式成绩（并在审计中区分 `teacher` 与 `system/auto-high-confidence`），再把 job 同步为 `completed`。
 
 ## Web 答疑会话
 

@@ -72,6 +72,7 @@ export interface GradingSession {
   submissionTitleStatus: SubmissionTitleStatus;
   submissionTitleError?: SubmissionTitleErrorDetails;
   autoStartAfterConversion: boolean;
+  autoConfirmHighConfidence: boolean;
   conversionStatus: ConversionStatus;
   conversionAttemptCount: number;
   conversionError?: ConversionErrorDetails;
@@ -100,6 +101,7 @@ interface SessionRow {
   submission_title_error_message: string | null;
   submission_title_last_failed_at: string | null;
   auto_start: number;
+  auto_confirm_high_confidence: number;
   conversion_status: ConversionStatus;
   conversion_attempt_count: number;
   conversion_error_code: ConversionErrorCode | null;
@@ -282,6 +284,7 @@ export class GradingSessionService {
     originalPath: string;
     originalFilename: string;
     autoStartAfterConversion: boolean;
+    autoConfirmHighConfidence?: boolean | undefined;
     converterAvailable?: boolean;
     revisionAssets?: Array<{ path: string; bytes: Uint8Array }>;
   }): Promise<GradingSession> {
@@ -394,6 +397,7 @@ export class GradingSessionService {
       ...(submissionTitle ? { submissionTitle } : {}),
       submissionTitleStatus: submissionTitle ? "provided" : "pending",
       autoStartAfterConversion: input.autoStartAfterConversion,
+      autoConfirmHighConfidence: input.autoConfirmHighConfidence ?? false,
       conversionStatus,
       conversionAttemptCount: 0,
       gradingStatus,
@@ -1234,6 +1238,7 @@ export class GradingSessionService {
         submission_title_error_message TEXT,
         submission_title_last_failed_at TEXT,
         auto_start INTEGER NOT NULL CHECK (auto_start IN (0, 1)),
+        auto_confirm_high_confidence INTEGER NOT NULL DEFAULT 0 CHECK (auto_confirm_high_confidence IN (0, 1)),
         conversion_status TEXT NOT NULL,
         conversion_attempt_count INTEGER NOT NULL DEFAULT 0,
         conversion_error_code TEXT,
@@ -1361,7 +1366,11 @@ export class GradingSessionService {
       END,
       conversion_last_failed_at = updated_at
       WHERE conversion_status = 'failed'`);
-    this.database.pragma("user_version = 5");
+    if (!columns.has("auto_confirm_high_confidence"))
+      this.database.exec(
+        "ALTER TABLE grading_sessions ADD COLUMN auto_confirm_high_confidence INTEGER NOT NULL DEFAULT 0 CHECK (auto_confirm_high_confidence IN (0, 1))",
+      );
+    this.database.pragma("user_version = 6");
   }
 
   private insertSession(session: GradingSession): void {
@@ -1370,10 +1379,10 @@ export class GradingSessionService {
         `INSERT INTO grading_sessions (
       id, course_id, assignment_id, rubric_version, rubric_hash, batch_id, student_key, student_name, student_number, title,
       submission_title, submission_title_status, submission_title_error_code, submission_title_error_message,
-      submission_title_last_failed_at, auto_start, conversion_status, conversion_attempt_count,
+      submission_title_last_failed_at, auto_start, auto_confirm_high_confidence, conversion_status, conversion_attempt_count,
       conversion_error_code, conversion_error_message, conversion_retryable, conversion_last_failed_at, conversion_next_retry_at,
       grading_status, active_run_id, deletion_pending, submission_version, submission_hash, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
@@ -1392,6 +1401,7 @@ export class GradingSessionService {
         null,
         null,
         session.autoStartAfterConversion ? 1 : 0,
+        session.autoConfirmHighConfidence ? 1 : 0,
         session.conversionStatus,
         session.conversionAttemptCount,
         null,
@@ -1476,6 +1486,7 @@ function fromRow(row: SessionRow): GradingSession {
           },
         }),
     autoStartAfterConversion: row.auto_start === 1,
+    autoConfirmHighConfidence: row.auto_confirm_high_confidence === 1,
     conversionStatus: row.conversion_status,
     conversionAttemptCount: row.conversion_attempt_count,
     ...(row.conversion_error_code === null ||

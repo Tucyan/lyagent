@@ -45,11 +45,11 @@ type BatchJob = {
   lastErrorCode?: string; question?: string; resultVersion?: number;
   score?: { earned: number; possible: number };
   confidence?: { overall: number; minimum: number; lowCount: number };
-  reviewStatus?: "needs_review" | "confirmed"; requiresReview?: boolean; reviewReasons?: string[];
+  reviewStatus?: "needs_review" | "confirmed"; confirmationMode?: "auto" | "manual"; requiresReview?: boolean; reviewReasons?: string[];
 };
 type Batch = {
   id: string; title: string; assignmentId: string; rubricVersion: number; status: string;
-  concurrency: number; totalJobs: number; counts: BatchJobCounts; jobs?: BatchJob[];
+  concurrency: number; autoConfirmHighConfidence?: boolean; totalJobs: number; counts: BatchJobCounts; jobs?: BatchJob[];
 };
 type BatchUploadItem = {
   id: string; filename: string; status: string; studentName?: string; studentNumber?: string;
@@ -57,7 +57,7 @@ type BatchUploadItem = {
 };
 type BatchUpload = {
   id: string; title: string; assignmentId: string; rubricVersion: number; concurrency: number;
-  status: string; committedBatchId?: string; items: BatchUploadItem[];
+  autoConfirmHighConfidence?: boolean; status: string; committedBatchId?: string; items: BatchUploadItem[];
 };
 
 const DRAFT_STORAGE_KEY = "batch-grading-upload-draft";
@@ -98,6 +98,9 @@ export function GradingBatchPage() {
   const [renameError, setRenameError] = useState("");
   const [renamingBatch, setRenamingBatch] = useState(false);
   const [concurrency, setConcurrency] = useState(4);
+  const [autoConfirmHighConfidence, setAutoConfirmHighConfidence] = useState(
+    () => localStorage.getItem("batch-auto-confirm") === "true",
+  );
   const [notice, setNotice] = useState("正在加载批次…");
   const [busy, setBusy] = useState(false);
   const [busyItemIds, setBusyItemIds] = useState<string[]>([]);
@@ -392,7 +395,7 @@ export function GradingBatchPage() {
         method: "POST",
         body: JSON.stringify({
           title, assignmentId: selectedRubric.assignmentId, rubricVersion: selectedRubric.version,
-          concurrency, items: files.map(({ name }) => ({ filename: name })),
+          concurrency, autoConfirmHighConfidence, items: files.map(({ name }) => ({ filename: name })),
         }),
       });
       uploadDraftIdRef.current.set(draft.id);
@@ -715,10 +718,27 @@ export function GradingBatchPage() {
           <section className="batch-step-block compact">
             <label className="batch-title-field">批次名称<input value={title} maxLength={120} onChange={(event) => { setTitle(event.target.value); setTitleManuallyEdited(true); }} placeholder="例如：2026 春季班第一次作业" /></label>
             <details className="batch-advanced-options">
-              <summary>更多设置（并发数：{concurrency}{assetFiles.length ? ` · 已选 ${assetFiles.length} 个图片附件` : ""}）</summary>
+              <summary>更多设置（并发数：{concurrency}{autoConfirmHighConfidence ? " · 高置信度自动确认" : ""}{assetFiles.length ? ` · 已选 ${assetFiles.length} 个图片附件` : ""}）</summary>
               <div className="batch-advanced-grid">
                 <label>同时批改并发数<select aria-label="并发数" value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8].map((value) => <option key={value}>{value}</option>)}</select></label>
                 <label className="batch-file-input">Markdown 共享 assets 目录（可选）<input aria-label="选择共享 assets 目录" type="file" multiple {...({ webkitdirectory: "" } as object)} onChange={(event) => setAssetFiles(Array.from(event.target.files ?? []))} /><span>{assetFiles.length ? `已选择 ${assetFiles.length} 个附件` : "仅 Markdown 引用本地图片时需要选择"}</span></label>
+                <label className="inline-check inline-check-with-hint batch-auto-confirm-check">
+                  <input
+                    type="checkbox"
+                    checked={autoConfirmHighConfidence}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setAutoConfirmHighConfidence(checked);
+                      localStorage.setItem("batch-auto-confirm", String(checked));
+                    }}
+                  />
+                  <span>
+                    <strong>高置信度结果自动复核确认</strong>
+                    <small>
+                      作用于本批次全部作业：整体置信度 ≥ 85%、单项 ≥ 70%、无低置信度项、无复核提示或警告且未等待教师回答时自动确认。
+                    </small>
+                  </span>
+                </label>
               </div>
             </details>
           </section>
@@ -729,7 +749,7 @@ export function GradingBatchPage() {
           </footer>
         </form>}
         {uploadDraft && <section className="batch-detail">
-          <header><div><p className="eyebrow">可恢复上传草稿</p><h2>{uploadDraft.title}</h2><p>每份文件独立处理；补填身份或替换失败项不会丢失其他已就绪的报告。</p></div><strong>{draftReadyCount}/{uploadDraft.items.length}</strong></header>
+          <header><div><p className="eyebrow">可恢复上传草稿{uploadDraft.autoConfirmHighConfidence ? " · 已启用高置信度自动确认（≥ 85%）" : ""}</p><h2>{uploadDraft.title}</h2><p>每份文件独立处理；补填身份或替换失败项不会丢失其他已就绪的报告。</p></div><strong>{draftReadyCount}/{uploadDraft.items.length}</strong></header>
           {uploadErrors.length > 0 && <div className="batch-error-summary" role="alert">
             <div><strong>部分文件上传需要处理（{uploadErrors.length}）</strong><button type="button" onClick={() => setUploadErrors([])}>收起</button></div>
             <ul>{uploadErrors.slice(0, 5).map((item, idx) => <li key={idx}>{item}</li>)}</ul>
@@ -746,7 +766,7 @@ export function GradingBatchPage() {
           })}</tbody></table></div>
         </section>}
         {!uploadDraft && !showGuidedCreate && detail && <section className="batch-detail">
-          <header><div><p className="eyebrow">{batchStatusLabel(detail.status)}</p><h2>{detail.title}</h2><p>并发 {detail.concurrency} · {progress?.settled}/{detail.totalJobs} 已结束本轮处理</p></div><strong>{progress?.percent}%</strong></header>
+          <header><div><p className="eyebrow">{batchStatusLabel(detail.status)}</p><h2>{detail.title}</h2><p>并发 {detail.concurrency}{detail.autoConfirmHighConfidence ? " · 已开启高置信度自动确认（≥ 85%）" : ""} · {progress?.settled}/{detail.totalJobs} 已结束本轮处理</p></div><strong>{progress?.percent}%</strong></header>
           <div className="batch-progress"><i style={{ width: `${progress?.percent ?? 0}%` }} /></div>
           <div className="batch-controls">
             {actions?.canStart && <button className="primary-button" disabled={busy} onClick={() => void command("start")}>启动批改</button>}

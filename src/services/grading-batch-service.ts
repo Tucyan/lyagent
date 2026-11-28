@@ -43,6 +43,7 @@ export interface GradingBatchJob {
   score?: { earned: number; possible: number };
   confidence?: { overall: number; minimum: number; lowCount: number };
   reviewStatus?: "needs_review" | "confirmed";
+  confirmationMode?: "auto" | "manual";
   requiresReview?: boolean;
   reviewReasons?: string[];
   resultVersion?: number;
@@ -58,6 +59,7 @@ export interface GradingBatch {
   rubricVersion: number;
   status: GradingBatchStatus;
   concurrency: number;
+  autoConfirmHighConfidence: boolean;
   totalJobs: number;
   counts: Record<GradingBatchJobStatus, number>;
   createdAt: string;
@@ -77,6 +79,7 @@ export interface BatchExecutionResult {
 
 export interface BatchResultSource {
   reviewStatus: "needs_review" | "confirmed";
+  confirmationMode?: "auto" | "manual";
   version: number;
   result: unknown;
   updatedAt: string;
@@ -115,6 +118,7 @@ interface BatchRow {
   rubric_version: number;
   status: GradingBatchStatus;
   concurrency: number;
+  auto_confirm_high_confidence: number;
   created_at: string;
   updated_at: string;
 }
@@ -183,6 +187,7 @@ export class GradingBatchService {
     assignmentId: string;
     rubricVersion: number;
     concurrency: number;
+    autoConfirmHighConfidence?: boolean;
     sessionIds: string[];
     sourceUploadId?: string;
   }): Promise<GradingBatch> {
@@ -233,8 +238,8 @@ export class GradingBatchService {
       }
       const courseId = (members[0] as { courseId?: string } | undefined)?.courseId ?? null;
       this.database.prepare(
-        "INSERT INTO grading_batches (id, course_id, title, assignment_id, rubric_version, status, concurrency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?)",
-      ).run(id, courseId, title, input.assignmentId, input.rubricVersion, input.concurrency, now, now);
+        "INSERT INTO grading_batches (id, course_id, title, assignment_id, rubric_version, status, concurrency, auto_confirm_high_confidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)",
+      ).run(id, courseId, title, input.assignmentId, input.rubricVersion, input.concurrency, input.autoConfirmHighConfidence ? 1 : 0, now, now);
       const statement = this.database.prepare(
         `INSERT INTO grading_batch_jobs
          (id, batch_id, session_id, student_name, student_number, submission_title, status, attempt_count, max_attempts, created_at, updated_at)
@@ -297,6 +302,7 @@ export class GradingBatchService {
           lowCount: result.confidence.lowCount,
         },
         reviewStatus: source.reviewStatus,
+        ...(source.confirmationMode ? { confirmationMode: source.confirmationMode } : {}),
         ...(typeof result.review?.requiresReview === "boolean" ? { requiresReview: result.review.requiresReview } : {}),
         ...(Array.isArray(result.review?.reasons) && result.review.reasons.every((reason): reason is string => typeof reason === "string")
           ? { reviewReasons: result.review.reasons as string[] }
@@ -720,6 +726,7 @@ export class GradingBatchService {
       rubricVersion: row.rubric_version,
       status: row.status,
       concurrency: row.concurrency,
+      autoConfirmHighConfidence: row.auto_confirm_high_confidence === 1,
       totalJobs: Object.values(counts).reduce((sum, count) => sum + count, 0),
       counts,
       createdAt: row.created_at,
@@ -752,6 +759,7 @@ export class GradingBatchService {
         rubric_version INTEGER NOT NULL,
         status TEXT NOT NULL,
         concurrency INTEGER NOT NULL CHECK (concurrency BETWEEN 1 AND 8),
+        auto_confirm_high_confidence INTEGER NOT NULL DEFAULT 0 CHECK (auto_confirm_high_confidence IN (0, 1)),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -789,6 +797,11 @@ export class GradingBatchService {
     if (!batchColumns.has("course_id")) {
       this.database.exec("ALTER TABLE grading_batches ADD COLUMN course_id TEXT");
     }
+    if (!batchColumns.has("auto_confirm_high_confidence")) {
+      this.database.exec(
+        "ALTER TABLE grading_batches ADD COLUMN auto_confirm_high_confidence INTEGER NOT NULL DEFAULT 0 CHECK (auto_confirm_high_confidence IN (0, 1))",
+      );
+    }
     if (this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'grading_sessions'").get()) {
       const sessionColumns = new Set((this.database.prepare("PRAGMA table_info(grading_sessions)").all() as Array<{ name: string }>).map(({ name }) => name));
       if (sessionColumns.has("course_id")) {
@@ -805,7 +818,7 @@ export class GradingBatchService {
         `);
       }
     }
-    this.database.pragma("user_version = 6");
+    this.database.pragma("user_version = 7");
   }
 }
 

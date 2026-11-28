@@ -26,9 +26,15 @@ describe("teacher review presentation", () => {
     expect(html).toContain("checkbox");
     expect(html).toContain("checked");
     expect(html).toContain("需要教师复核");
+    expect(html).not.toContain("全部勾选");
+
+    const multiHtml = renderToStaticMarkup(<GradingReviewChecklist confirmed={false} reasons={["LOW_CONFIDENCE", "CONVERSION_WARNING"]} acknowledgedReasons={[]} onChange={() => undefined} />);
+    expect(multiHtml).toContain("全部勾选");
   });
   it("distinguishes a formally confirmed grade from completion of batch processing", () => {
     expect(batchJobStatusLabel({ status: "completed", reviewStatus: "confirmed" })).toBe("成绩已确认");
+    expect(batchJobStatusLabel({ status: "completed", reviewStatus: "confirmed", confirmationMode: "auto" })).toBe("已自动确认");
+    expect(batchJobStatusLabel({ status: "completed", reviewStatus: "confirmed", confirmationMode: "manual" })).toBe("已人工确认");
     expect(batchJobStatusLabel({ status: "needs_review", reviewStatus: "needs_review" })).toBe("待复核");
     expect(batchJobStatusLabel({ status: "running" })).toBe("批改中");
   });

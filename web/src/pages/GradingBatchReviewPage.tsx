@@ -2,8 +2,16 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { DecisionCards, DecisionEditor } from "../components/grading/DecisionPanels";
-import { GradingReviewChecklist } from "../components/GradingReviewChecklist.js";
+import { AnnotatedSubmissionViewer } from "../components/grading/AnnotatedSubmissionViewer";
+import { DecisionEditor } from "../components/grading/DecisionPanels";
+import { GradingResultReviewShell } from "../components/grading/GradingResultReviewShell";
+import {
+  collectAllEvidenceTargets,
+  QUICK_EDIT_NOTES,
+  QUICK_REVIEW_NOTES,
+  summarizeGradingResult,
+  type EvidenceJumpTarget,
+} from "../components/grading/grading-result-model.js";
 import type { RubricValue } from "../components/RubricPreviewEditor.js";
 import { useToast } from "../components/ToastProvider";
 import { apiErrorFromResponse, withJsonHeaders, apiFetch } from "../lib/api";
@@ -37,6 +45,7 @@ type BatchJob = {
   score?: { earned: number; possible: number };
   confidence?: { overall: number; minimum: number; lowCount: number };
   reviewStatus?: "needs_review" | "confirmed";
+  confirmationMode?: "auto" | "manual";
   reviewReasons?: string[];
 };
 type Batch = {
@@ -52,7 +61,7 @@ type Draft = {
   version: number;
   result: {
     score: { earned: number; possible: number };
-    confidence: { overall: number; minimum: number; lowConfidenceCount: number };
+    confidence: { overall: number; minimum: number; lowCount?: number; lowConfidenceCount?: number };
     review: { requiresReview: boolean; reasons: string[] };
     decisions: Record<string, unknown>;
   };
@@ -65,7 +74,7 @@ type SessionDetail = {
   submissionTitle?: string;
   submission: { markdown: string; locked: boolean } | null;
   draft: Draft | null;
-  confirmed: ({ resultHash: string } & Draft) | null;
+  confirmed: ({ resultHash: string; confirmationMode?: "auto" | "manual" } & Draft) | null;
 };
 
 type ReviewFilter = "all" | "needs_review" | "unconfirmed" | "confirmed" | "attention";
@@ -107,6 +116,11 @@ export function GradingBatchReviewPage() {
   const [sortBy, setSortBy] = useState<BatchReviewSort>("default");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandEvidence, setExpandEvidence] = useState(false);
+  const [expandEpoch, setExpandEpoch] = useState(0);
+  const [showOptionalNote, setShowOptionalNote] = useState(false);
+  const [annotationMode, setAnnotationMode] = useState(false);
+  const [activeEvidence, setActiveEvidence] = useState<EvidenceJumpTarget>();
+  const [focusItemKey, setFocusItemKey] = useState<string>();
   const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string>();
   const splitRef = useRef<HTMLDivElement>(null);
   const activeJobRef = useRef<HTMLButtonElement | null>(null);
@@ -218,6 +232,11 @@ export function GradingBatchReviewPage() {
     setEditNote("");
     setReviewNote("");
     setAcknowledgedReasons([]);
+    setShowOptionalNote(false);
+    setExpandEvidence(false);
+    setExpandEpoch(0);
+    setActiveEvidence(undefined);
+    setFocusItemKey(undefined);
   }, [detail?.id, detail?.draft?.version, detail?.confirmed?.version]);
 
   useEffect(() => {
@@ -349,6 +368,14 @@ export function GradingBatchReviewPage() {
   const reasons = result?.result.review.reasons ?? [];
   const allAcknowledged = reasons.every((reason) => acknowledgedReasons.includes(reason));
   const requiresReview = Boolean(currentDetail?.draft?.result.review.requiresReview);
+  const headerSummary = result
+    ? summarizeGradingResult(result.result, {
+        mode: "batch",
+        confirmed: Boolean(currentDetail?.confirmed),
+        ...(currentDetail?.confirmed?.confirmationMode ? { confirmationMode: currentDetail.confirmed.confirmationMode } : {}),
+      })
+    : undefined;
+  const noteVisible = requiresReview || showOptionalNote || reviewNote.length > 0;
   const confirmDisabled = busy || !selectedJob || !currentDetail?.draft || !canConfirmBatchJob(selectedJob)
     || (requiresReview && (!reviewNote.trim() || !allAcknowledged));
   const confirmBlockHint = !currentDetail?.draft
@@ -370,6 +397,30 @@ export function GradingBatchReviewPage() {
       setFilter("all");
     }
   }, [filter, attentionCount]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || editing) return;
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      if (event.key === "ArrowLeft" && prevJob) {
+        event.preventDefault();
+        chooseSession(prevJob.sessionId);
+      } else if (event.key === "ArrowRight" && nextJob) {
+        event.preventDefault();
+        chooseSession(nextJob.sessionId);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editing, prevJob?.sessionId, nextJob?.sessionId]);
+
+  const totalBatchJobs = batch?.jobs.length ?? 0;
+  const confirmedPercent = totalBatchJobs > 0 ? Math.round((confirmedCount / totalBatchJobs) * 100) : 0;
+  const allEvidenceTargets = useMemo(
+    () => (result ? collectAllEvidenceTargets(result.result.decisions, currentDetail?.rubric) : []),
+    [result, currentDetail?.rubric],
+  );
 
   const returnParams = new URLSearchParams();
   if (batch) {
@@ -423,7 +474,7 @@ export function GradingBatchReviewPage() {
               <div className="batch-review-row-top">
                 <strong>{job.studentName}</strong>
                 <small>{job.studentNumber}</small>
-                <span className={`batch-review-mini-badge ${job.reviewStatus === "confirmed" ? "is-confirmed" : isLowConfidence ? "is-warn" : ""}`}>
+                <span className={`batch-review-mini-badge ${job.reviewStatus === "confirmed" ? (job.confirmationMode === "auto" ? "is-confirmed is-auto-confirmed" : "is-confirmed") : isLowConfidence ? "is-warn" : ""}`}>
                   {batchJobStatusLabel(job)}
                 </span>
               </div>
@@ -443,25 +494,227 @@ export function GradingBatchReviewPage() {
               <p>{selectedJob.submissionTitle}</p>
             </div>
             <div className="batch-review-student-actions">
-              <span>{formatBatchScore(selectedJob)} · 置信度 {formatBatchConfidence(selectedJob)}</span>
-              <button type="button" disabled={!prevJob} onClick={() => prevJob && chooseSession(prevJob.sessionId)}>上一份</button>
-              <button type="button" disabled={!nextJob} onClick={() => nextJob && chooseSession(nextJob.sessionId)}>下一份</button>
+              <div className="batch-review-progress" aria-label="批次复核进度">
+                <span>
+                  已确认 {confirmedCount}/{totalBatchJobs} 份
+                  {needsReviewCount > 0 ? ` · 待复核 ${needsReviewCount} 份` : ""}
+                </span>
+                <div className="batch-review-progress-track">
+                  <div className="batch-review-progress-fill" style={{ width: `${confirmedPercent}%` }} />
+                </div>
+              </div>
+              <button
+                type="button"
+                title="快捷键：Alt + ←"
+                disabled={!prevJob}
+                onClick={() => prevJob && chooseSession(prevJob.sessionId)}
+              >
+                上一份
+              </button>
+              <button
+                type="button"
+                title="快捷键：Alt + →"
+                disabled={!nextJob}
+                onClick={() => nextJob && chooseSession(nextJob.sessionId)}
+              >
+                下一份
+              </button>
             </div>
           </div>
           <div className="batch-review-split" ref={splitRef} style={{ gridTemplateColumns: `${reportPercent}fr 8px ${100 - reportPercent}fr` }}>
-            <section className="batch-review-report"><header><h3>学生报告</h3></header>{currentDetail?.submission ? <Markdown remarkPlugins={[remarkGfm]} components={{ img: ({ src = "", ...props }) => <img {...props} src={src.startsWith("assets/") ? `/api/grading/sessions/${currentDetail.id}/assets/${encodeURIComponent(src.slice("assets/".length))}` : src} /> }}>{currentDetail.submission.markdown}</Markdown> : <p className="muted">正在加载报告或报告尚未准备完成…</p>}</section>
+            <section className="batch-review-report">
+              <header className="batch-review-report-header">
+                <h3>{annotationMode ? "学生报告（批注模式）" : "学生报告"}</h3>
+                <button
+                  type="button"
+                  className={annotationMode ? "active" : ""}
+                  onClick={() => {
+                    setAnnotationMode((value) => {
+                      if (value) setActiveEvidence(undefined);
+                      return !value;
+                    });
+                  }}
+                >
+                  {annotationMode ? "退出批注" : "批注模式"}
+                </button>
+              </header>
+              {currentDetail?.submission ? (
+                annotationMode ? (
+                  <AnnotatedSubmissionViewer
+                    sessionId={currentDetail.id}
+                    markdown={currentDetail.submission.markdown}
+                    decisions={result?.result.decisions}
+                    allTargets={allEvidenceTargets}
+                    activeTarget={activeEvidence}
+                    onSelectTarget={(payload) => {
+                      setActiveEvidence((prev) => ({ ...payload, nonce: (prev?.nonce ?? 0) + 1 }));
+                    }}
+                    onClearTarget={() => setActiveEvidence(undefined)}
+                  />
+                ) : (
+                  <Markdown remarkPlugins={[remarkGfm]} components={{ img: ({ src = "", ...props }) => <img {...props} src={src.startsWith("assets/") ? `/api/grading/sessions/${currentDetail.id}/assets/${encodeURIComponent(src.slice("assets/".length))}` : src} /> }}>{currentDetail.submission.markdown}</Markdown>
+                )
+              ) : <p className="muted">正在加载报告或报告尚未准备完成…</p>}
+            </section>
             <div className="batch-review-resizer" role="separator" aria-label="调整报告与评分结果宽度" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(reportPercent)} tabIndex={0} onPointerDown={startResize} onPointerMove={resize} onKeyDown={(event) => { if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); setReportPercent((value) => clampBatchReviewReportPercent(value + (event.key === "ArrowLeft" ? -2 : 2))); } }} />
-            <section className="batch-review-result"><header><div><h3>评分结果</h3>{result && <strong>{result.result.score.earned}/{result.result.score.possible}</strong>}</div><div className="batch-review-result-meta">{result && <span>整体置信度 {Math.round(result.result.confidence.overall * 100)}%</span>}{result && !editing && <button type="button" className="text-button" onClick={() => setExpandEvidence((value) => !value)}>{expandEvidence ? "收起依据" : "展开全部依据"}</button>}</div></header>
+            <section className="batch-review-result">
+              <header>
+                <div>
+                  <h3>评分结果</h3>
+                  {result && <strong>{result.result.score.earned}/{result.result.score.possible}</strong>}
+                  {headerSummary && (
+                    <span className={`grading-status-pill is-${headerSummary.statusTone}${currentDetail?.confirmed?.confirmationMode === "auto" ? " is-auto-confirmed" : ""}`}>
+                      {headerSummary.statusLabel}
+                    </span>
+                  )}
+                </div>
+                <div className="batch-review-result-meta">
+                  {headerSummary && (
+                    <span>
+                      整体置信度 {headerSummary.overallConfidencePercent}%
+                      {headerSummary.attentionItemCount > 0 ? ` · ${headerSummary.attentionItemCount} 项需关注` : ""}
+                    </span>
+                  )}
+                  {result && !editing && (
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => {
+                        setExpandEvidence((value) => !value);
+                        setExpandEpoch((epoch) => epoch + 1);
+                      }}
+                    >
+                      {expandEvidence ? "收起全部详情" : "展开全部详情"}
+                    </button>
+                  )}
+                </div>
+              </header>
               <div className="batch-review-result-body">
-              {loadingSessionDetail ? <p className="muted">正在加载学生评分详情…</p> : !result ? <p className="muted">尚无评分结果。</p> : <>
-                <GradingReviewChecklist confirmed={Boolean(currentDetail?.confirmed)} reasons={reasons} notices={Array.isArray(result.result.decisions.warnings) ? result.result.decisions.warnings as string[] : []} acknowledgedReasons={acknowledgedReasons} onChange={setAcknowledgedReasons} />
-                {editing && currentDetail?.draft ? <DecisionEditor decisions={edited} rubric={currentDetail.rubric} baselineScore={result.result.score.earned} onChange={setEdited} /> : <DecisionCards decisions={result.result.decisions} rubric={currentDetail?.rubric} sessionId={currentDetail?.id ?? selectedJob.sessionId} expandEvidence={expandEvidence} />}
-                {editing && <section className="batch-review-edit-actions"><label>修改备注（必填）<textarea value={editNote} onChange={(event) => setEditNote(event.target.value)} placeholder="简述人工调整分数的原因…" /></label><div><button type="button" onClick={() => setEditing(false)}>取消修改</button><button className="primary-button" type="button" disabled={busy || !editNote.trim()} onClick={() => void saveEdit()}>{busyAction === "save" ? "保存中…" : "保存修改"}</button></div></section>}
-                {!editing && currentDetail?.draft && !currentDetail.confirmed && <button type="button" onClick={() => setEditing(true)}>修改评分结果</button>}
-                {currentDetail?.draft && !currentDetail.confirmed && <label className="batch-review-note">复核备注{requiresReview ? "（必填）" : "（可选）"}<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder={requiresReview ? "请说明核对结果与确认依据…" : "可选：补充复核说明"} /></label>}
-              </>}
+              {loadingSessionDetail ? <p className="muted">正在加载学生评分详情…</p> : !result ? <p className="muted">尚无评分结果。</p> : (
+                <GradingResultReviewShell
+                  key={currentDetail?.id ?? selectedJob.sessionId}
+                  mode="batch"
+                  sessionId={currentDetail?.id ?? selectedJob.sessionId}
+                  result={result.result}
+                  rubric={currentDetail?.rubric}
+                  confirmed={Boolean(currentDetail?.confirmed)}
+                  confirmationMode={currentDetail?.confirmed?.confirmationMode}
+                  editing={Boolean(editing && currentDetail?.draft)}
+                  acknowledgedReasons={acknowledgedReasons}
+                  onChangeAcknowledgedReasons={setAcknowledgedReasons}
+                  showHeader={false}
+                  externalExpandAll={expandEvidence}
+                  externalExpandEpoch={expandEpoch}
+                  onToggleExternalExpandAll={(next) => {
+                    setExpandEvidence(next);
+                    setExpandEpoch((epoch) => epoch + 1);
+                  }}
+                  annotationMode={annotationMode}
+                  activeEvidenceKey={activeEvidence?.key}
+                  onSelectEvidence={(payload) => {
+                    setAnnotationMode(true);
+                    setActiveEvidence((prev) => ({ ...payload, nonce: (prev?.nonce ?? 0) + 1 }));
+                  }}
+                  onEditItem={currentDetail?.draft && !currentDetail.confirmed ? (itemKey) => {
+                    setFocusItemKey(itemKey);
+                    setEditing(true);
+                  } : undefined}
+                  confirmedSection={currentDetail?.confirmed ? (
+                    <section className={`confirmed-badge${currentDetail.confirmed.confirmationMode === "auto" ? " is-auto-confirmed" : ""}`}>
+                      <p>
+                        {currentDetail.confirmed.confirmationMode === "auto"
+                          ? "成绩已自动确认（整体置信度 ≥ 85%，系统自动归档），可在下方查看依据或前往单份批改修订。"
+                          : "成绩已人工确认，教师复核记录已保存。"}
+                      </p>
+                      <a href={withCourseQuery(`/grading?session=${currentDetail.id}`, readCourseFromUrl())}>查看正式结果与导出；需要改分时创建结果修订</a>
+                    </section>
+                  ) : undefined}
+                  reviewActions={currentDetail?.draft && !currentDetail.confirmed ? (
+                    <div className="batch-review-top-actions">
+                      {noteVisible ? (
+                        <>
+                          <label className="batch-review-note">
+                            复核备注{requiresReview ? "（必填）" : "（可选）"}
+                            <textarea
+                              value={reviewNote}
+                              onChange={(event) => setReviewNote(event.target.value)}
+                              placeholder={requiresReview ? "请说明核对结果与确认依据…" : "可选：补充复核说明"}
+                            />
+                          </label>
+                          <div className="grading-quick-note-chips" aria-label="常用复核备注快捷填入">
+                            {QUICK_REVIEW_NOTES.map((preset) => (
+                              <button
+                                type="button"
+                                key={preset}
+                                onClick={() => setReviewNote(preset)}
+                              >
+                                {preset}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+                      <div className="batch-review-top-buttons">
+                        <button type="button" onClick={() => setEditing(true)}>修改评分结果</button>
+                        {!noteVisible && (
+                          <button
+                            type="button"
+                            className="text-button grading-optional-note-toggle"
+                            onClick={() => setShowOptionalNote(true)}
+                          >
+                            + 添加复核备注（可选）
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : undefined}
+                  editorSection={editing && currentDetail?.draft ? (
+                    <>
+                      <DecisionEditor
+                        decisions={edited}
+                        rubric={currentDetail.rubric}
+                        baselineScore={result.result.score.earned}
+                        focusItemKey={focusItemKey}
+                        onChange={setEdited}
+                      />
+                      <section className="batch-review-edit-actions">
+                        <label>
+                          修改备注（必填）
+                          <textarea
+                            value={editNote}
+                            onChange={(event) => setEditNote(event.target.value)}
+                            placeholder="简述人工调整分数的原因…"
+                          />
+                        </label>
+                        <div className="grading-quick-note-chips" aria-label="常用修订备注快捷填入">
+                          {QUICK_EDIT_NOTES.map((preset) => (
+                            <button
+                              type="button"
+                              key={preset}
+                              onClick={() => setEditNote(preset)}
+                            >
+                              {preset}
+                            </button>
+                          ))}
+                        </div>
+                        <div>
+                          <button type="button" onClick={() => { setEditing(false); setFocusItemKey(undefined); }}>取消修改</button>
+                          <button
+                            className="primary-button"
+                            type="button"
+                            disabled={busy || !editNote.trim()}
+                            onClick={() => void saveEdit()}
+                          >
+                            {busyAction === "save" ? "保存中…" : "保存修改"}
+                          </button>
+                        </div>
+                      </section>
+                    </>
+                  ) : undefined}
+                />
+              )}
               </div>
-              {currentDetail?.confirmed ? <section className="confirmed-badge"><p>成绩已确认，教师复核记录已保存。</p><a href={withCourseQuery(`/grading?session=${currentDetail.id}`, readCourseFromUrl())}>查看正式结果与导出；需要改分时创建结果修订</a></section> : !loadingSessionDetail && <footer>
+              {!currentDetail?.confirmed && !loadingSessionDetail && <footer>
                 {confirmBlockHint && <span className="inline-requirement-hint">{confirmBlockHint}</span>}
                 <div className="batch-review-footer-buttons">
                   <button type="button" disabled={busy || !selectedJob || !canRetryBatchJob(selectedJob)} onClick={() => void retry()}>{busyAction === "retry" ? "重试中…" : "重试"}</button>

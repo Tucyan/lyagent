@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import { SafeFilesystem } from "../core/safe-filesystem.js";
-import { finalizeGradingDraft, gradingDraftSchema, type GradingDraft, type GradingResult, type ReviewReason } from "../schemas/grading.js";
+import {
+  AUTO_CONFIRM_REVIEW_NOTE,
+  finalizeGradingDraft,
+  gradingDraftSchema,
+  isHighConfidenceAutoConfirmEligible,
+  type GradingDraft,
+  type GradingResult,
+  type ReviewReason,
+} from "../schemas/grading.js";
 import { normalizeRubric } from "../schemas/rubric-engine.js";
 import type { GradingSession, GradingSessionService } from "./grading-session-service.js";
 import type { RubricService } from "./rubric-service.js";
@@ -17,8 +25,11 @@ export interface GradingActor {
   note?: string;
 }
 
+export type ConfirmationMode = "auto" | "manual";
+
 export interface ConfirmedGradingResult {
   reviewStatus: "confirmed";
+  confirmationMode?: ConfirmationMode;
   version: number;
   result: GradingResult;
   reviewNote: string;
@@ -97,7 +108,10 @@ export class GradingResultService {
     });
   }
 
-  async confirm(sessionId: string, input: { expectedVersion: number; reviewNote: string; acknowledgedReasons: ReviewReason[] }): Promise<ConfirmedGradingResult> {
+  async confirm(
+    sessionId: string,
+    input: { expectedVersion: number; reviewNote: string; acknowledgedReasons: ReviewReason[]; confirmationMode?: ConfirmationMode },
+  ): Promise<ConfirmedGradingResult> {
     return this.withSessionLock(sessionId, async () => {
     const session = await this.sessions.getSession(sessionId);
     const existing = await this.readConfirmed(session);
@@ -108,12 +122,20 @@ export class GradingResultService {
     }
     const draft = await this.readDraft(sessionId);
     if (!draft || draft.version !== input.expectedVersion) throw new GradingDraftConflictError();
-    const reviewNote = input.reviewNote.trim();
+    const confirmationMode: ConfirmationMode = input.confirmationMode ?? "manual";
+    if (
+      confirmationMode === "auto" &&
+      !isHighConfidenceAutoConfirmEligible(draft.result, { gradingStatus: session.gradingStatus })
+    ) {
+      throw new GradingReviewRequiredError();
+    }
+    const reviewNote = input.reviewNote.trim() || (confirmationMode === "auto" ? AUTO_CONFIRM_REVIEW_NOTE : "");
     const missingReasons = draft.result.review.reasons.filter((reason) => !input.acknowledgedReasons.includes(reason));
     if (draft.result.review.requiresReview && (!reviewNote || missingReasons.length > 0)) throw new GradingReviewRequiredError();
     const confirmedAt = this.now();
     const withoutHash = {
       reviewStatus: "confirmed" as const,
+      confirmationMode,
       version: draft.version,
       result: draft.result,
       reviewNote,
@@ -128,11 +150,29 @@ export class GradingResultService {
     });
   }
 
-  async readConfirmedResult(sessionId: string): Promise<ConfirmedGradingResult | undefined> {
+  async tryAutoConfirm(sessionId: string, expectedVersion: number): Promise<ConfirmedGradingResult | undefined> {
     const session = await this.sessions.getSession(sessionId);
-    const confirmed = await this.readConfirmed(session);
-    if (confirmed) await this.finishConfirmation(session, confirmed);
-    return confirmed;
+    if (session.gradingStatus === "waiting_for_teacher") return undefined;
+    const existing = await this.readConfirmed(session);
+    if (existing) return existing;
+    const draft = await this.readDraft(sessionId);
+    if (!draft || draft.version !== expectedVersion) return undefined;
+    if (!isHighConfidenceAutoConfirmEligible(draft.result, { gradingStatus: session.gradingStatus })) return undefined;
+    return this.confirm(sessionId, {
+      expectedVersion: draft.version,
+      reviewNote: AUTO_CONFIRM_REVIEW_NOTE,
+      acknowledgedReasons: [],
+      confirmationMode: "auto",
+    });
+  }
+
+  async readConfirmedResult(sessionId: string): Promise<ConfirmedGradingResult | undefined> {
+    return this.withSessionLock(sessionId, async () => {
+      const session = await this.sessions.getSession(sessionId);
+      const confirmed = await this.readConfirmed(session);
+      if (confirmed) await this.finishConfirmation(session, confirmed);
+      return confirmed;
+    });
   }
 
   async readConfirmedMarkdown(sessionId: string): Promise<string> {
@@ -185,7 +225,11 @@ export class GradingResultService {
     const alreadyRecorded = existing.split(/\r?\n/).filter(Boolean).some((line) => {
       try { const event = JSON.parse(line) as { action?: unknown; resultHash?: unknown }; return event.action === "confirm" && event.resultHash === confirmed.resultHash; } catch { return false; }
     });
-    if (!alreadyRecorded) await this.appendAudit(session, { timestamp: confirmed.confirmedAt, actor: { type: "teacher", id: "local-teacher" }, action: "confirm", version: confirmed.version, resultHash: confirmed.resultHash, reviewNote: confirmed.reviewNote, acknowledgedReasons: confirmed.acknowledgedReasons });
+    const mode: ConfirmationMode = confirmed.confirmationMode ?? "manual";
+    const actor = mode === "auto"
+      ? { type: "system", id: "auto-high-confidence" }
+      : { type: "teacher", id: "local-teacher" };
+    if (!alreadyRecorded) await this.appendAudit(session, { timestamp: confirmed.confirmedAt, actor, action: "confirm", confirmationMode: mode, version: confirmed.version, resultHash: confirmed.resultHash, reviewNote: confirmed.reviewNote, acknowledgedReasons: confirmed.acknowledgedReasons });
   }
 
   private async removeIfPresent(relativePath: string): Promise<void> {
@@ -226,6 +270,7 @@ function isConfirmedGradingResult(value: unknown): value is ConfirmedGradingResu
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const confirmed = value as Record<string, unknown>;
   if (confirmed.reviewStatus !== "confirmed"
+    || (confirmed.confirmationMode !== undefined && !["auto", "manual"].includes(String(confirmed.confirmationMode)))
     || !Number.isInteger(confirmed.version) || (confirmed.version as number) < 1
     || typeof confirmed.reviewNote !== "string"
     || typeof confirmed.confirmedAt !== "string" || !Number.isFinite(Date.parse(confirmed.confirmedAt))

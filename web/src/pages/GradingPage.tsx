@@ -9,12 +9,20 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { consumeSse } from "../lib/consume-sse";
-import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, reviewReasonLabel, rubricProblemMessage } from "../lib/api";
+import { ApiError, apiErrorFromResponse, withJsonHeaders, apiFetch, userErrorMessage, rubricProblemMessage } from "../lib/api";
 import { LatestRequestGate, startSerialPolling } from "../lib/async-state";
 import type { RubricValue } from "../components/RubricPreviewEditor";
-import { GradingReviewChecklist } from "../components/GradingReviewChecklist.js";
 import { ConfirmDialog, PromptDialog } from "../components/ConfirmDialog";
 import { DecisionCards, DecisionEditor } from "../components/grading/DecisionPanels";
+import { AnnotatedSubmissionViewer } from "../components/grading/AnnotatedSubmissionViewer";
+import { GradingResultReviewShell } from "../components/grading/GradingResultReviewShell";
+import {
+  collectAllEvidenceTargets,
+  QUICK_EDIT_NOTES,
+  QUICK_REVIEW_NOTES,
+  type EvidenceJumpPayload,
+  type EvidenceJumpTarget,
+} from "../components/grading/grading-result-model.js";
 import { useToast } from "../components/ToastProvider";
 import { useUnsavedGuard } from "../lib/use-unsaved-guard";
 import { COURSE_CHANGED_EVENT, readCourseFromUrl, resolveActiveCourseId, withCourseQuery } from "../lib/course-context";
@@ -80,6 +88,8 @@ type GradingSession = {
     nextRetryAt?: string;
   };
   gradingStatus: string;
+  autoConfirmHighConfidence?: boolean;
+  confirmationMode?: "auto" | "manual";
   activeRunId?: string;
   submissionVersion?: number;
 };
@@ -98,7 +108,8 @@ type Draft = {
     confidence: {
       overall: number;
       minimum: number;
-      lowConfidenceCount: number;
+      lowCount?: number;
+      lowConfidenceCount?: number;
     };
     review: { requiresReview: boolean; reasons: string[] };
     decisions: Record<string, unknown>;
@@ -109,7 +120,7 @@ type SessionDetail = GradingSession & {
   rubric: RubricValue;
   submission: { markdown: string; locked: boolean } | null;
   draft: Draft | null;
-  confirmed: ({ resultHash: string } & Draft) | null;
+  confirmed: ({ resultHash: string; confirmationMode?: "auto" | "manual" } & Draft) | null;
   conversation: { messages: ConversationMessage[] };
 };
 type FrozenRubric = {
@@ -150,6 +161,8 @@ export function GradingPage() {
       "submission",
     ),
     [fullscreen, setFullscreen] = useState(false),
+    [annotationMode, setAnnotationMode] = useState(false),
+    [activeEvidence, setActiveEvidence] = useState<EvidenceJumpTarget>(),
     [editing, setEditing] = useState(false);
   const [markdown, setMarkdown] = useState(""),
     [message, setMessage] = useState(""),
@@ -638,6 +651,26 @@ export function GradingPage() {
       })
     : undefined;
 
+  const dualPaneFullscreen = fullscreen && !creating && Boolean(detail);
+  const closeFullscreen = () => {
+    setFullscreen(false);
+    setAnnotationMode(false);
+    setActiveEvidence(undefined);
+  };
+  useEffect(() => {
+    setActiveEvidence(undefined);
+  }, [detail?.id]);
+  useEffect(() => {
+    if (!dualPaneFullscreen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !sessionToRename && !sessionToDelete) {
+        closeFullscreen();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [dualPaneFullscreen, sessionToRename, sessionToDelete]);
+
   return (
     <div className="grading-page">
       <header className="grading-header">
@@ -769,7 +802,11 @@ export function GradingPage() {
               «
             </button>
           </div>
-          <button type="button" onClick={() => setCreating(true)}>
+          <button
+            type="button"
+            className="grading-upload-trigger"
+            onClick={() => setCreating(true)}
+          >
             ＋ 上传作业
           </button>
           {(() => {
@@ -784,6 +821,14 @@ export function GradingPage() {
               sessionStatusFilter,
               sessionSearch,
             );
+            const filterItems: Array<[GradingSessionFilterStatus, string, number]> = [
+              ["all", "全部", statusCounts.all],
+              ["pending", "待确认", statusCounts.pending],
+              ["confirmed", "已确认", statusCounts.confirmed],
+              ...(statusCounts.attention > 0 || sessionStatusFilter === "attention"
+                ? ([["attention", "异常", statusCounts.attention]] as Array<[GradingSessionFilterStatus, string, number]>)
+                : []),
+            ];
             return (
               <>
                 {sessions.length > 0 && (
@@ -797,21 +842,15 @@ export function GradingPage() {
                       placeholder="搜索姓名、学号或作业…"
                     />
                     <div className="grading-session-filters" role="tablist" aria-label="按批改状态筛选">
-                      {(
-                        [
-                          ["all", `全部 ${statusCounts.all}`],
-                          ["pending", `待确认 ${statusCounts.pending}`],
-                          ["confirmed", `已确认 ${statusCounts.confirmed}`],
-                          ["attention", `异常 ${statusCounts.attention}`],
-                        ] as Array<[GradingSessionFilterStatus, string]>
-                      ).map(([statusKey, label]) => (
+                      {filterItems.map(([statusKey, label, count]) => (
                         <button
                           key={statusKey}
                           type="button"
                           className={sessionStatusFilter === statusKey ? "active" : ""}
                           onClick={() => setSessionStatusFilter(statusKey)}
                         >
-                          {label}
+                          <span>{label}</span>
+                          <em>{count}</em>
                         </button>
                       ))}
                     </div>
@@ -840,7 +879,10 @@ export function GradingPage() {
                           ? "is-error"
                           : session.gradingStatus === "confirmed"
                             ? "is-confirmed"
-                            : "";
+                            : ["needs_review", "waiting_for_teacher"].includes(session.gradingStatus) ||
+                                session.conversionStatus === "waiting_for_converter"
+                              ? "is-warn"
+                              : "";
                       return (
                         <article
                           className={session.id === selectedId ? "active" : ""}
@@ -856,36 +898,48 @@ export function GradingPage() {
                             }}
                           >
                             <div className="grading-session-card-head">
-                              <strong>{session.studentName} · {session.studentNumber}</strong>
-                              <small className={`grading-workflow-tag ${statusTone}`}>
-                                {gradingSessionWorkflowSummary(session)}
-                              </small>
+                              <strong className="grading-session-student-name">{session.studentName}</strong>
+                              <span className="grading-session-student-no">{session.studentNumber}</span>
                             </div>
                             {displayTitle &&
                               displayTitle !== session.studentName &&
                               displayTitle !== `${session.studentName} · ${session.studentNumber}` && (
                                 <span className="grading-session-card-subtitle">{displayTitle}</span>
                               )}
+                            <div className="grading-session-card-meta">
+                              <small className={`grading-workflow-tag ${statusTone}${session.gradingStatus === "confirmed" && session.confirmationMode === "auto" ? " is-auto-confirmed" : ""}`}>
+                                {gradingSessionWorkflowSummary(session)}
+                              </small>
+                            </div>
                           </a>
                           <div className="grading-session-actions">
                             <button
                               type="button"
+                              aria-label="重命名"
+                              title="重命名"
                               onClick={() => {
                                 setSessionToRename(session);
                                 setRenameTitle(session.title);
                                 setSessionActionError("");
                               }}
                             >
-                              重命名
+                              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5.5 12.74l-3 .76.76-3 8.24-8Z" />
+                              </svg>
                             </button>
                             <button
                               type="button"
+                              className="is-danger"
+                              aria-label="删除"
+                              title="删除"
                               onClick={() => {
                                 setSessionToDelete(session);
                                 setSessionActionError("");
                               }}
                             >
-                              删除
+                              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M2.5 4.5h11M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5m2 0-.6 8.1a1.5 1.5 0 0 1-1.5 1.4H6.1a1.5 1.5 0 0 1-1.5-1.4L4 4.5" />
+                              </svg>
                             </button>
                           </div>
                         </article>
@@ -926,7 +980,8 @@ export function GradingPage() {
                     <h2>与批改 Agent 对话</h2>
                     <p>
                       评分标准版本 {detail.rubricVersion} ·{" "}
-                      {gradingStatusLabel(detail.gradingStatus)}
+                      {gradingStatusLabel(detail.gradingStatus, detail.confirmed?.confirmationMode ?? detail.confirmationMode)}
+                      {detail.autoConfirmHighConfidence ? " · 已启用高置信度自动确认" : ""}
                     </p>
                     <p>
                       作业名称：
@@ -1037,28 +1092,83 @@ export function GradingPage() {
             onPointerDown={() => setDragging(true)}
           />
           <aside
-            className={`grading-preview ${fullscreen ? "fullscreen" : ""}`}
+            className={`grading-preview ${dualPaneFullscreen ? "fullscreen" : ""}`}
           >
             <div className="grading-preview-toolbar">
-              <div>
-                <button
-                  disabled={creating}
-                  className={previewMode === "submission" ? "active" : ""}
-                  onClick={() => setPreviewMode("submission")}
-                >
-                  学生作业
-                </button>
-                <button
-                  disabled={creating}
-                  className={previewMode === "result" ? "active" : ""}
-                  onClick={() => setPreviewMode("result")}
-                >
-                  评分结果
-                </button>
+              {dualPaneFullscreen && detail ? (
+                <div className="grading-fullscreen-title">
+                  <strong>{annotationMode ? "批注模式" : "双栏全屏对照"}</strong>
+                  <span>
+                    {detail.studentName}（{detail.studentNumber}）· {detail.submissionTitle ?? detail.title}
+                  </span>
+                </div>
+              ) : (
+                <div>
+                  <button
+                    disabled={creating}
+                    className={previewMode === "submission" ? "active" : ""}
+                    onClick={() => setPreviewMode("submission")}
+                  >
+                    学生作业
+                  </button>
+                  <button
+                    disabled={creating}
+                    className={previewMode === "result" ? "active" : ""}
+                    onClick={() => setPreviewMode("result")}
+                  >
+                    评分结果
+                  </button>
+                </div>
+              )}
+              <div className="grading-preview-toolbar-actions">
+                {dualPaneFullscreen ? (
+                  <>
+                    <button
+                      type="button"
+                      className={!annotationMode ? "active" : ""}
+                      onClick={() => {
+                        setAnnotationMode(false);
+                        setActiveEvidence(undefined);
+                      }}
+                    >
+                      双栏对照
+                    </button>
+                    <button
+                      type="button"
+                      className={annotationMode ? "active" : ""}
+                      onClick={() => setAnnotationMode(true)}
+                    >
+                      批注模式
+                    </button>
+                    <button type="button" onClick={closeFullscreen}>
+                      退出全屏
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={creating || !detail}
+                      onClick={() => {
+                        setFullscreen(true);
+                        setAnnotationMode(true);
+                      }}
+                    >
+                      批注模式
+                    </button>
+                    <button
+                      type="button"
+                      disabled={creating || !detail}
+                      onClick={() => {
+                        setFullscreen(true);
+                        setAnnotationMode(false);
+                      }}
+                    >
+                      双栏全屏
+                    </button>
+                  </>
+                )}
               </div>
-              <button disabled={creating} onClick={() => setFullscreen((value) => !value)}>
-                {fullscreen ? "退出全屏" : "全屏"}
-              </button>
             </div>
             <div className="grading-preview-body">
               {creating ? (
@@ -1066,26 +1176,61 @@ export function GradingPage() {
               ) : !detail ? (
                 <p>选择会话后在此预览。</p>
               ) : (
-                <>
-                  {previewMode === "submission" && (
-                    <SubmissionPreview
-                      detail={detail}
-                      editing={editing}
-                      markdown={markdown}
-                      setMarkdown={setMarkdown}
-                      setEditing={setEditing}
-                      save={saveSubmission}
-                      retry={retryConversion}
-                      reupload={() => setCreating(true)}
-                      createRevision={createRevision}
-                      operationBusy={{
-                        conversion: isSessionOperationBusy("conversion"),
-                        revision: isSessionOperationBusy("revision"),
-                        save: isSessionOperationBusy("save"),
-                      }}
-                    />
+                <div className={dualPaneFullscreen ? "grading-fullscreen-split" : "grading-single-pane-stack"}>
+                  {(dualPaneFullscreen || previewMode === "submission") && (
+                    <section className="grading-fullscreen-pane is-submission">
+                      {dualPaneFullscreen && (
+                        <header className="grading-fullscreen-pane-header">
+                          <h3>{annotationMode ? "学生作业（批注视图）" : "学生作业"}</h3>
+                          <span>提交版本 {detail.submissionVersion ?? 1}</span>
+                        </header>
+                      )}
+                      {dualPaneFullscreen && annotationMode && !editing && detail.submission ? (
+                        <AnnotatedSubmissionViewer
+                          sessionId={detail.id}
+                          markdown={detail.submission.markdown}
+                          decisions={(detail.confirmed ?? detail.draft)?.result.decisions}
+                          allTargets={
+                            (detail.confirmed ?? detail.draft)?.result.decisions
+                              ? collectAllEvidenceTargets((detail.confirmed ?? detail.draft)!.result.decisions, detail.rubric)
+                              : []
+                          }
+                          activeTarget={activeEvidence}
+                          onSelectTarget={(payload) => {
+                            setActiveEvidence((prev) => ({ ...payload, nonce: (prev?.nonce ?? 0) + 1 }));
+                          }}
+                          onClearTarget={() => setActiveEvidence(undefined)}
+                        />
+                      ) : (
+                        <SubmissionPreview
+                          detail={detail}
+                          editing={editing}
+                          markdown={markdown}
+                          setMarkdown={setMarkdown}
+                          setEditing={setEditing}
+                          save={saveSubmission}
+                          retry={retryConversion}
+                          reupload={() => setCreating(true)}
+                          createRevision={createRevision}
+                          operationBusy={{
+                            conversion: isSessionOperationBusy("conversion"),
+                            revision: isSessionOperationBusy("revision"),
+                            save: isSessionOperationBusy("save"),
+                          }}
+                        />
+                      )}
+                    </section>
                   )}
-                  <div hidden={previewMode !== "result"}>
+                  <section
+                    className="grading-fullscreen-pane is-result"
+                    hidden={!dualPaneFullscreen && previewMode !== "result"}
+                  >
+                    {dualPaneFullscreen && (
+                      <header className="grading-fullscreen-pane-header">
+                        <h3>评分结果与复核</h3>
+                        <span>评分标准 v{detail.rubricVersion}</span>
+                      </header>
+                    )}
                     <ResultPreview
                       key={`${detail.id}:${detail.confirmed ? "confirmed" : "draft"}:${(detail.confirmed ?? detail.draft)?.version ?? ""}`}
                       detail={detail}
@@ -1102,9 +1247,15 @@ export function GradingPage() {
                         confirm: isSessionOperationBusy("confirm"),
                         revision: isSessionOperationBusy("revision"),
                       }}
+                      annotationMode={dualPaneFullscreen && annotationMode}
+                      activeEvidenceKey={activeEvidence?.key}
+                      onSelectEvidence={dualPaneFullscreen ? (payload) => {
+                        setAnnotationMode(true);
+                        setActiveEvidence((prev) => ({ ...payload, nonce: (prev?.nonce ?? 0) + 1 }));
+                      } : undefined}
                     />
-                  </div>
-                </>
+                  </section>
+                </div>
               )}
             </div>
           </aside>
@@ -1322,6 +1473,9 @@ function ResultPreview({
   createRevision,
   refresh,
   operationBusy,
+  annotationMode = false,
+  activeEvidenceKey,
+  onSelectEvidence,
 }: {
   detail: SessionDetail;
   reviewNote: string;
@@ -1332,11 +1486,16 @@ function ResultPreview({
   createRevision(): Promise<void>;
   refresh(): Promise<void>;
   operationBusy: { confirm: boolean; revision: boolean };
+  annotationMode?: boolean;
+  activeEvidenceKey?: string | undefined;
+  onSelectEvidence?: ((target: EvidenceJumpPayload) => void) | undefined;
 }) {
   const draft = detail.confirmed ?? detail.draft;
   const toast = useToast();
   const [manual, setManual] = useState(false);
+  const [focusItemKey, setFocusItemKey] = useState<string>();
   const [savingManual, setSavingManual] = useState(false);
+  const [showOptionalNote, setShowOptionalNote] = useState(false);
   useUnsavedGuard(manual);
   const [edited, setEdited] = useState<Record<string, unknown>>({});
   const [editNote, setEditNote] = useState("");
@@ -1350,6 +1509,7 @@ function ResultPreview({
   const result = draft.result;
   const closeManual = () => {
     setManual(false);
+    setFocusItemKey(undefined);
     setEdited({});
     setEditNote("");
   };
@@ -1377,55 +1537,150 @@ function ResultPreview({
   const allAcknowledged = result.review.reasons.every((reason) =>
     acknowledgedReasons.includes(reason),
   );
+  const requiresReview = result.review.requiresReview;
+  const noteVisible = requiresReview || showOptionalNote || reviewNote.length > 0;
+
   return (
     <div className="grading-result">
-      <header>
-        <div>
-          <span>程序计算总分</span>
-          <strong>
-            {result.score.earned}/{result.score.possible}
-          </strong>
-        </div>
-        <span>置信度 {(result.confidence.overall * 100).toFixed(0)}%</span>
-      </header>
-      <GradingReviewChecklist confirmed={Boolean(detail.confirmed)} reasons={result.review.reasons} notices={Array.isArray(result.decisions.warnings) ? result.decisions.warnings as string[] : []} acknowledgedReasons={acknowledgedReasons} onChange={setAcknowledgedReasons} />
-      {manual && !detail.confirmed ? (
-        <DecisionEditor decisions={edited} rubric={detail.rubric} baselineScore={result.score.earned} onChange={setEdited} />
-      ) : (
-        <DecisionCards decisions={result.decisions} rubric={detail.rubric} sessionId={detail.id} />
-      )}
-      {detail.confirmed ? (
-        <section className="confirmed-badge">
-          <p>已确认 · 结果哈希 {detail.confirmed.resultHash.slice(0, 12)}…</p>
-          <div className="preview-actions">
-            <a href={`/api/grading/sessions/${detail.id}/export.json`} download>
-              导出 JSON
-            </a>
-            <a href={`/api/grading/sessions/${detail.id}/export.md`} download>
-              导出 Markdown
-            </a>
-            <button
-              type="button"
-              disabled={operationBusy.revision}
-              onClick={() => void createRevision()}
-            >
-              {operationBusy.revision ? "正在创建…" : "创建结果修订"}
-            </button>
-          </div>
-        </section>
-      ) : (
-        <section className="confirm-panel">
-          {manual ? (
-            <>
+      <GradingResultReviewShell
+        mode="single"
+        sessionId={detail.id}
+        result={result}
+        rubric={detail.rubric}
+        confirmed={Boolean(detail.confirmed)}
+        confirmationMode={detail.confirmed?.confirmationMode}
+        editing={Boolean(manual && !detail.confirmed)}
+        acknowledgedReasons={acknowledgedReasons}
+        onChangeAcknowledgedReasons={setAcknowledgedReasons}
+        annotationMode={annotationMode}
+        activeEvidenceKey={activeEvidenceKey}
+        onSelectEvidence={onSelectEvidence}
+        onEditItem={!detail.confirmed ? (itemKey) => {
+          setEdited(structuredClone(result.decisions));
+          setFocusItemKey(itemKey);
+          setManual(true);
+        } : undefined}
+        confirmedSection={detail.confirmed ? (
+          <section className={`confirmed-badge${detail.confirmed.confirmationMode === "auto" ? " is-auto-confirmed" : ""}`}>
+            <p title={`防篡改校验摘要：${detail.confirmed.resultHash}`}>
+              {detail.confirmed.confirmationMode === "auto"
+                ? "成绩已自动确认并归档（整体置信度 ≥ 85%）"
+                : "成绩已人工确认并归档"}
+            </p>
+            <div className="preview-actions">
+              <a href={`/api/grading/sessions/${detail.id}/export.json`} download>
+                导出 JSON
+              </a>
+              <a href={`/api/grading/sessions/${detail.id}/export.md`} download>
+                导出 Markdown
+              </a>
+              <button
+                type="button"
+                disabled={operationBusy.revision}
+                onClick={() => void createRevision()}
+              >
+                {operationBusy.revision ? "正在创建…" : "创建结果修订"}
+              </button>
+            </div>
+          </section>
+        ) : undefined}
+        reviewActions={!detail.confirmed && !manual ? (
+          <section className="confirm-panel">
+            {noteVisible ? (
+              <>
+                <label>
+                  复核备注{requiresReview ? "（必填）" : "（可选）"}
+                  <textarea
+                    value={reviewNote}
+                    onChange={(event) => setReviewNote(event.target.value)}
+                    placeholder={requiresReview ? "请说明核对结果与确认依据…" : "可选：补充复核说明"}
+                  />
+                </label>
+                <div className="grading-quick-note-chips" aria-label="常用复核备注快捷填入">
+                  {QUICK_REVIEW_NOTES.map((preset) => (
+                    <button
+                      type="button"
+                      key={preset}
+                      onClick={() => setReviewNote(preset)}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="text-button grading-optional-note-toggle"
+                onClick={() => setShowOptionalNote(true)}
+              >
+                + 添加复核备注（可选）
+              </button>
+            )}
+            <div className="confirm-panel-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setEdited(structuredClone(result.decisions));
+                  setManual(true);
+                }}
+              >
+                人工修订评分项
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void confirm()}
+                disabled={
+                  operationBusy.confirm ||
+                  (requiresReview && (!reviewNote.trim() || !allAcknowledged))
+                }
+              >
+                {operationBusy.confirm ? "正在确认…" : "确认并发布正式结果"}
+              </button>
+            </div>
+            {requiresReview && (!reviewNote.trim() || !allAcknowledged) && (
+              <small className="inline-requirement-hint">
+                {!allAcknowledged && !reviewNote.trim()
+                  ? "请先勾选上方全部复核原因，并填写复核备注后即可确认"
+                  : !allAcknowledged
+                    ? "请先勾选上方全部复核原因后即可确认"
+                    : "请填写复核备注后即可确认"}
+              </small>
+            )}
+          </section>
+        ) : undefined}
+        editorSection={manual && !detail.confirmed ? (
+          <>
+            <DecisionEditor
+              decisions={edited}
+              rubric={detail.rubric}
+              baselineScore={result.score.earned}
+              focusItemKey={focusItemKey}
+              onChange={setEdited}
+            />
+            <section className="confirm-panel">
               <label>
                 人工修订备注
                 <textarea
                   value={editNote}
                   onChange={(event) => setEditNote(event.target.value)}
+                  placeholder="简述人工调整分数或理由的原因…"
                 />
               </label>
+              <div className="grading-quick-note-chips" aria-label="常用修订备注快捷填入">
+                {QUICK_EDIT_NOTES.map((preset) => (
+                  <button
+                    type="button"
+                    key={preset}
+                    onClick={() => setEditNote(preset)}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
               <div>
-                <button onClick={closeManual}>取消修订</button>
+                <button type="button" onClick={closeManual}>取消修订</button>
                 <button
                   type="button"
                   className="primary-button"
@@ -1435,45 +1690,10 @@ function ResultPreview({
                   {savingManual ? "正在保存…" : "保存结构化修订"}
                 </button>
               </div>
-            </>
-          ) : (
-            <>
-              <button onClick={() => {
-                setEdited(structuredClone(result.decisions));
-                setManual(true);
-              }}>人工修订评分项</button>
-              <label>
-                复核备注
-                <textarea
-                  value={reviewNote}
-                  onChange={(event) => setReviewNote(event.target.value)}
-                />
-              </label>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => void confirm()}
-                disabled={
-                  operationBusy.confirm ||
-                  (result.review.requiresReview &&
-                    (!reviewNote.trim() || !allAcknowledged))
-                }
-              >
-                {operationBusy.confirm ? "正在确认…" : "确认并发布正式结果"}
-              </button>
-              {result.review.requiresReview && (!reviewNote.trim() || !allAcknowledged) && (
-                <small className="inline-requirement-hint">
-                  {!allAcknowledged && !reviewNote.trim()
-                    ? "请先勾选上方全部复核原因，并填写复核备注后即可确认"
-                    : !allAcknowledged
-                      ? "请先勾选上方全部复核原因后即可确认"
-                      : "请填写复核备注后即可确认"}
-                </small>
-              )}
-            </>
-          )}
-        </section>
-      )}
+            </section>
+          </>
+        ) : undefined}
+      />
     </div>
   );
 }
@@ -1512,6 +1732,8 @@ function NewSessionPanel({
       form.set("assetManifest", JSON.stringify(assetManifest));
       if (!form.has("autoStartAfterConversion"))
         form.set("autoStartAfterConversion", "false");
+      if (!form.has("autoConfirmHighConfidence"))
+        form.set("autoConfirmHighConfidence", "false");
       const response = await apiFetch("/api/grading/sessions", {
         method: "POST",
         body: form,
@@ -1627,6 +1849,28 @@ function NewSessionPanel({
             }
           />
           转换完成后自动开始批改
+        </label>
+        <label className="inline-check inline-check-with-hint">
+          <input
+            name="autoConfirmHighConfidence"
+            type="checkbox"
+            value="true"
+            defaultChecked={
+              localStorage.getItem("grading-auto-confirm") === "true"
+            }
+            onChange={(event) =>
+              localStorage.setItem(
+                "grading-auto-confirm",
+                String(event.target.checked),
+              )
+            }
+          />
+          <span>
+            <strong>高置信度结果自动复核确认</strong>
+            <small>
+              仅作用于本次会话：Agent 批改完成且整体置信度 ≥ 85%、单项 ≥ 70%、无低置信度项、无复核提示或警告且未等待教师回答时自动确认。
+            </small>
+          </span>
         </label>
         {error?.message && <p className="modal-error">{error.message}</p>}
         <div className="modal-actions">

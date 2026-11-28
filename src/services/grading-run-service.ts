@@ -66,12 +66,14 @@ export class GradingRunService {
   private readonly queue: PQueue;
   private readonly controllers = new Map<string, AbortController>();
   private readonly now: () => string;
+  private readonly onDraftOutcome?: ((sessionId: string, draftVersion: number) => Promise<void>) | undefined;
 
-  constructor(private readonly root: string, private readonly sessions: GradingSessionService, private readonly graderFactory: GradingAgentFactory, options: { now?: () => string; concurrency?: number } = {}) {
+  constructor(private readonly root: string, private readonly sessions: GradingSessionService, private readonly graderFactory: GradingAgentFactory, options: { now?: () => string; concurrency?: number; onDraftOutcome?: ((sessionId: string, draftVersion: number) => Promise<void>) | undefined } = {}) {
     this.database = new Database(path.join(path.resolve(root), "grading.sqlite"));
     this.database.pragma("journal_mode = WAL");
     this.filesystem = new SafeFilesystem(root, { allowedExtensions: new Set([".json"]) });
     this.now = options.now ?? (() => new Date().toISOString());
+    this.onDraftOutcome = options.onDraftOutcome;
     const concurrency = options.concurrency ?? 1;
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error("Grading run concurrency must be an integer from 1 to 8");
     this.queue = new PQueue({ concurrency });
@@ -217,6 +219,7 @@ export class GradingRunService {
       await this.sessions.setGradingStatus(run.sessionId, "waiting_for_teacher", run.id);
     } else if (outcome.kind === "draft") {
       content = `批改草稿已更新：${outcome.draft.result.score.earned}/${outcome.draft.result.score.possible}。`;
+      await this.onDraftOutcome?.(run.sessionId, outcome.draft.version);
     } else if (outcome.kind === "title") {
       throw new Error("A submission-title outcome cannot complete a grading run");
     } else {

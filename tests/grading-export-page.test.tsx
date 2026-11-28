@@ -296,7 +296,7 @@ describe("GradingExportPage", () => {
     }
   });
 
-  it("places column settings in top bar popover, handles stale responses, and prevents empty-column exports", async () => {
+  it("displays column settings directly expanded in preview top panel, handles stale responses, and prevents empty-column exports", async () => {
     let resolveSlow!: (res: Response) => void;
     let callCount = 0;
     setupDom("/grading/exports?course=course-1", {
@@ -329,17 +329,12 @@ describe("GradingExportPage", () => {
     await act(async () => root!.render(createElement(GradingExportPage)));
     await flush();
 
-    // Column settings must be in the top header, not inside aside.export-config-pane
+    // Column settings must be directly expanded in the top preview panel, not inside aside.export-config-pane or popover
     expect(container!.querySelector(".export-config-pane")?.textContent).not.toContain("导出列设置");
-    const columnTrigger = container!.querySelector<HTMLButtonElement>(".export-page-header .export-column-trigger");
-    expect(columnTrigger).not.toBeNull();
-    expect(columnTrigger!.getAttribute("aria-expanded")).toBe("false");
-
-    await act(async () => {
-      columnTrigger!.click();
-    });
-    expect(columnTrigger!.getAttribute("aria-expanded")).toBe("true");
-    expect(container!.querySelector("#export-column-settings-popover")?.textContent).toContain("评分标准");
+    expect(container!.querySelector(".export-page-header .export-column-trigger")).toBeNull();
+    const inlinePanel = container!.querySelector(".export-preview-pane .export-column-inline-panel");
+    expect(inlinePanel).not.toBeNull();
+    expect(inlinePanel!.textContent).toContain("评分标准");
 
     // Trigger a newer request (summary preset) while first request is still pending
     const summaryPresetBtn = Array.from(container!.querySelectorAll(".export-presets-row button"))

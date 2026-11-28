@@ -122,7 +122,7 @@ Web /rubrics
 
 ### 批改发布
 
-评分草稿提交由服务端按会话串行化，并经前后端共享的规则引擎依据冻结评分表（同时兼容 `1.0` 与 `2.0`）校验按档定分、区间打分步长、自动推导归属等级 `selectedLevelId`、固定/按次/区间加扣分以及条件总分封顶 `scoreCaps`。文字证据的短引文必须真实出现在锁定提交的对应行段。运行中进程若重启，原运行标记为`INTERRUPTED`且不会自动再次调用模型；尚未领取的排队运行才会继续。正式结果以JSON为事实来源，读取或重复确认会补齐Markdown、确认审计和SQLite终态。
+评分草稿提交由服务端按会话串行化，并经前后端共享的规则引擎依据冻结评分表（同时兼容 `1.0` 与 `2.0`）校验按档定分、区间打分步长、自动推导归属等级 `selectedLevelId`、固定/按次/区间加扣分以及条件总分封顶 `scoreCaps`。文字证据的短引文必须真实出现在锁定提交的对应行段。运行中进程若重启，原运行标记为`INTERRUPTED`且不会自动再次调用模型；尚未领取的排队运行才会继续。正式结果以JSON为事实来源（并记录 `confirmationMode: "auto" | "manual"`），读取或重复确认会补齐Markdown、确认审计和SQLite终态。仅当会话（单份新建勾选，或批次新建在"更多设置"勾选并透传至成员会话）开启高置信度自动确认、Agent 提交草稿完成且未处于 `waiting_for_teacher`、同时满足 `confidence.overall >= 0.85`、`confidence.minimum >= 0.7`、`lowCount === 0`、`review.requiresReview === false` 与 `warnings.length === 0` 时，服务端才自动执行确认，否则仍保留草稿交由教师复核。
 
 ```text
 领取带租约的job

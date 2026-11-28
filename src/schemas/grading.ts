@@ -134,6 +134,22 @@ export interface GradingResult {
 
 export type ReviewReason = "LOW_CONFIDENCE" | "EVIDENCE_INSUFFICIENT" | "CONVERSION_WARNING" | "NEAR_PASSING_BOUNDARY";
 
+export const AUTO_CONFIRM_HIGH_CONFIDENCE_THRESHOLD = 0.85;
+export const AUTO_CONFIRM_MINIMUM_CONFIDENCE_THRESHOLD = 0.7;
+export const AUTO_CONFIRM_REVIEW_NOTE = "高置信度自动复核确认（整体置信度 ≥ 85%，无待教师回答或人工复核事项）";
+
+export function isHighConfidenceAutoConfirmEligible(
+  result: GradingResult,
+  input: { gradingStatus?: string | undefined; threshold?: number | undefined } = {},
+): boolean {
+  if (input.gradingStatus === "waiting_for_teacher") return false;
+  if (result.review.requiresReview || result.review.reasons.length > 0) return false;
+  if (result.decisions.warnings.length > 0) return false;
+  if (result.confidence.lowCount > 0) return false;
+  if (result.confidence.minimum < AUTO_CONFIRM_MINIMUM_CONFIDENCE_THRESHOLD) return false;
+  return result.confidence.overall >= (input.threshold ?? AUTO_CONFIRM_HIGH_CONFIDENCE_THRESHOLD);
+}
+
 export class GradingResultValidationError extends Error {
   constructor(message: string) {
     super(message);

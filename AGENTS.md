@@ -31,6 +31,7 @@
 - 修改行为时，在同一变更中更新受影响文档；文档只描述当前事实，未来工作写入`plan.md`或阶段计划。
 - 避免在多份文档复制Schema、命令或规则；指定一个事实来源，其余位置只链接。
 - 提交前运行`npm run check`和`npm run build`。若只改文档，仍需检查Markdown链接、代码围栏和示例格式。
+- **2026-11-28 Windows 启动记录：** 本机已有的 `better-sqlite3` 原生模块使用 ABI 141，默认 PATH 中的 Node.js 24.11.1 需要 ABI 137，启动报 `ERR_DLOPEN_FAILED`。改用本机 `%USERPROFILE%\node_modules\node\bin\node.exe`（Node.js 25.5.0，ABI 141），已通过内存 SQLite 查询并启动教师工作台。遇到同类问题先用 `node -p "process.version + ' ABI ' + process.versions.modules"` 核对实际运行时；重建依赖前先确认暂无进程占用原生模块。通用处理见 [本地开发环境](.docs/development.md#环境)。
 
 ## 长命令、下载与 Release 解压
 

@@ -40,6 +40,7 @@ export interface GradingBatchUpload {
   assignmentId: string;
   rubricVersion: number;
   concurrency: number;
+  autoConfirmHighConfidence: boolean;
   status: "draft" | "committed";
   committedBatchId?: string;
   items: GradingBatchUploadItem[];
@@ -65,6 +66,7 @@ export interface GradingBatchUploadDependencies {
     originalPath: string;
     originalFilename: string;
     autoStartAfterConversion: false;
+    autoConfirmHighConfidence?: boolean;
     revisionAssets: Array<{ path: string; bytes: Uint8Array }>;
   }): Promise<BatchUploadSessionSummary>;
   getSession(id: string): Promise<BatchUploadSessionSummary>;
@@ -77,6 +79,7 @@ export interface GradingBatchUploadDependencies {
     assignmentId: string;
     rubricVersion: number;
     concurrency: number;
+    autoConfirmHighConfidence?: boolean;
     sessionIds: string[];
     sourceUploadId: string;
   }): Promise<{ id: string }>;
@@ -93,6 +96,7 @@ interface UploadRow {
   assignment_id: string;
   rubric_version: number;
   concurrency: number;
+  auto_confirm_high_confidence?: number;
   status: "draft" | "committed";
   committed_batch_id: string | null;
   created_at: string;
@@ -166,6 +170,7 @@ export class GradingBatchUploadService {
     assignmentId: string;
     rubricVersion: number;
     concurrency: number;
+    autoConfirmHighConfidence?: boolean;
     items: Array<{ filename: string }>;
   }): Promise<GradingBatchUpload> {
     const title = input.title.trim();
@@ -178,12 +183,13 @@ export class GradingBatchUploadService {
     const filenames = input.items.map(({ filename }) => validateFilename(filename));
     const id = randomUUID();
     const now = this.now();
+    const autoConfirm = input.autoConfirmHighConfidence === true ? 1 : 0;
     this.database.transaction(() => {
       this.database.prepare(
         `INSERT INTO grading_batch_uploads
-         (id, title, assignment_id, rubric_version, concurrency, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)`,
-      ).run(id, title, input.assignmentId, input.rubricVersion, input.concurrency, now, now);
+         (id, title, assignment_id, rubric_version, concurrency, auto_confirm_high_confidence, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+      ).run(id, title, input.assignmentId, input.rubricVersion, input.concurrency, autoConfirm, now, now);
       const insert = this.database.prepare(
         `INSERT INTO grading_batch_upload_items
          (id, upload_id, filename, asset_manifest_json, status, created_at, updated_at)
@@ -206,6 +212,7 @@ export class GradingBatchUploadService {
       assignmentId: row.assignment_id,
       rubricVersion: row.rubric_version,
       concurrency: row.concurrency,
+      autoConfirmHighConfidence: row.auto_confirm_high_confidence === 1,
       status: row.status,
       ...(row.committed_batch_id ? { committedBatchId: row.committed_batch_id } : {}),
       items: items.map(itemFromRow),
@@ -391,6 +398,7 @@ export class GradingBatchUploadService {
       assignmentId: upload.assignmentId,
       rubricVersion: upload.rubricVersion,
       concurrency: upload.concurrency,
+      autoConfirmHighConfidence: upload.autoConfirmHighConfidence,
       sessionIds: upload.items.map((item) => item.sessionId!),
       sourceUploadId: upload.id,
     });
@@ -474,6 +482,7 @@ export class GradingBatchUploadService {
           originalPath: path.join(this.root, ...row.report_path.split("/")),
           originalFilename: row.filename,
           autoStartAfterConversion: false,
+          autoConfirmHighConfidence: upload.autoConfirmHighConfidence,
           revisionAssets,
         });
         this.database.prepare(
@@ -694,6 +703,20 @@ export class GradingBatchUploadService {
       `);
       this.database.prepare(
         "INSERT INTO grading_batch_upload_schema_migrations(version, applied_at) VALUES (1, ?)",
+      ).run(this.now());
+    }).immediate();
+    const migration2 = this.database.prepare(
+      "SELECT 1 FROM grading_batch_upload_schema_migrations WHERE version = 2",
+    ).get();
+    if (!migration2) this.database.transaction(() => {
+      const cols = new Set((this.database.prepare("PRAGMA table_info(grading_batch_uploads)").all() as Array<{ name: string }>).map(({ name }) => name));
+      if (!cols.has("auto_confirm_high_confidence")) {
+        this.database.exec(
+          "ALTER TABLE grading_batch_uploads ADD COLUMN auto_confirm_high_confidence INTEGER NOT NULL DEFAULT 0 CHECK (auto_confirm_high_confidence IN (0, 1))",
+        );
+      }
+      this.database.prepare(
+        "INSERT INTO grading_batch_upload_schema_migrations(version, applied_at) VALUES (2, ?)",
       ).run(this.now());
     }).immediate();
   }
